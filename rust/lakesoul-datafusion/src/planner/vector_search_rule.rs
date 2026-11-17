@@ -14,6 +14,11 @@
 //!         └── TableScan
 //! ```
 //!
+//! `inner_product` orders descending (the `IP` metric); pgvector spells it
+//! as the *negative* inner product (`ORDER BY vec <#> q` ==
+//! `-inner_product(vec, q) ASC`), which is the same ordering with the sign
+//! outside and is accepted too.
+//!
 //! and appends an internal marker call to the `TableScan.filters` list.
 //! The scan provider then switches the table read to the vector-index
 //! candidate path while the physical `Sort` + `Limit` stay in place for the
@@ -21,6 +26,8 @@
 //! not match — including `cosine_distance`, which the LakeSoul index does
 //! not support — is left untouched and executes as a regular full scan.
 use std::sync::Arc;
+
+use downcast_rs::Downcast;
 
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::ScalarValue;
@@ -30,10 +37,19 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{Cast, Expr, LogicalPlan, Operator, Sort, TableScan};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
+use tracing::debug;
+
+use crate::udf::vector_distance_handle::{
+    handle_metric, handle_query, is_handle_distance_name, resolve_query_vector,
+};
 use crate::udf::vector_search_marker::{
     LakeSoulVectorSearchConfig, RerankMode, VectorColumnQuery, is_marker_expr,
     marker_expr, multi_marker_expr,
 };
+
+/// Candidates per bucket in exact mode when the session does not say
+/// otherwise (`top_k * this`); the historical value.
+pub const DEFAULT_EXACT_OVERFETCH: usize = 10;
 
 /// Logical optimizer rule for the vector-search pushdown (see module docs).
 #[derive(Debug, Default)]
@@ -59,6 +75,15 @@ pub(crate) struct VectorSearchSpec {
     pub narrow: bool,
     /// The matched sort key; used to drop exactly that `Sort` node.
     pub sort_key: Expr,
+    /// Ascending flag of the matched `Sort` expression.  It is the canonical
+    /// direction (`L2` ascending / `IP` descending) unless the sort key is a
+    /// negated inner product, which ranks in the canonical order while the
+    /// expression sorts ascending.
+    pub plan_sort_asc: bool,
+    /// Predicate of the `Filter` node(s) between the scan and the sort, when
+    /// the plan has any.  The scan evaluates it on its candidates so it can
+    /// widen the probe until it found enough matching rows.
+    pub filter: Option<Expr>,
 }
 
 /// One weighted column of a detected vector search.
@@ -83,12 +108,25 @@ impl OptimizerRule for VectorSearchPushdownRule {
         plan: LogicalPlan,
         config: &dyn OptimizerConfig,
     ) -> DFResult<Transformed<LogicalPlan>> {
-        let index_only = config
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let started = std::time::Instant::now();
+        let (index_only, exact_overfetch) = match config
             .options()
             .extensions
             .get::<LakeSoulVectorSearchConfig>()
-            .is_some_and(|options| options.rerank_mode() == RerankMode::Index);
-        match detect(&plan, index_only) {
+        {
+            Some(options) => (
+                options.rerank_mode() == RerankMode::Index,
+                std::env::var("LAKESOUL_VECTOR_EXACT_OVERFETCH")
+                    .ok()
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(options.exact_overfetch)
+                    .max(1),
+            ),
+            None => (false, DEFAULT_EXACT_OVERFETCH),
+        };
+        let result = match detect(&plan, index_only, exact_overfetch) {
             Some((spec, target)) => {
                 // Index-only ordering drops the distance sort, and the index
                 // plan describes published files only: while the connection's
@@ -104,7 +142,15 @@ impl OptimizerRule for VectorSearchPushdownRule {
                 Ok(Transformed::yes(rewritten))
             }
             None => Ok(Transformed::no(plan)),
+        };
+        if profile {
+            debug!(
+                elapsed_us = started.elapsed().as_micros() as u64,
+                matched = result.as_ref().is_ok_and(|t| t.transformed),
+                "vector search pushdown rule"
+            );
         }
+        result
     }
 }
 
@@ -114,6 +160,7 @@ impl OptimizerRule for VectorSearchPushdownRule {
 fn detect(
     plan: &LogicalPlan,
     index_only: bool,
+    exact_overfetch: usize,
 ) -> Option<(VectorSearchSpec, Arc<LogicalPlan>)> {
     let limit = match plan {
         LogicalPlan::Limit(limit) => limit,
@@ -142,13 +189,26 @@ fn detect(
         return None;
     }
     let metric = terms_metric(&raw_terms)?;
-    let expected_asc = metric == "L2";
-    if sort_expr.asc != expected_asc {
+    // Canonical order: L2 sorts ascending by distance, IP descending by dot
+    // product.  pgvector's `<#>` operator is the negative inner product
+    // (`ORDER BY vec <#> q` == `-inner_product(vec, q) ASC`): the same
+    // ordering with the sign outside, so accept that spelling too and carry
+    // the positive weight into the marker.
+    let canonical_asc = metric == "L2";
+    // pgvector's `<#>` is the negated inner product (`ORDER BY vec <#> q` ==
+    // `-inner_product(vec, q) ASC`).  A weighted sum of them is the same
+    // ordering with the sign outside, so a multi-term negated fusion is
+    // accepted too; the positive magnitude becomes the fusion weight.
+    let negated_ip = metric == "IP"
+        && sort_expr.asc
+        && raw_terms.iter().all(|(_, weight)| *weight < 0.0);
+    if sort_expr.asc != canonical_asc && !negated_ip {
         return None;
     }
 
     let mut current = Arc::clone(&sort.input);
     let mut saw_filter = false;
+    let mut filter_predicate: Option<Expr> = None;
     loop {
         match current.as_ref() {
             LogicalPlan::Projection(projection) => {
@@ -156,10 +216,29 @@ fn detect(
             }
             LogicalPlan::Filter(filter) => {
                 saw_filter = true;
+                filter_predicate = Some(match filter_predicate {
+                    Some(previous) => {
+                        Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
+                            Box::new(previous),
+                            datafusion::logical_expr::Operator::And,
+                            Box::new(filter.predicate.clone()),
+                        ))
+                    }
+                    None => filter.predicate.clone(),
+                });
                 current = Arc::clone(&filter.input);
             }
             LogicalPlan::TableScan(ts) => {
                 if ts.filters.iter().any(is_marker_expr) {
+                    return None;
+                }
+                // A declaration can outlive its index (drop with
+                // keep_declaration=true).  Do not rewrite to an index-only
+                // plan until a rebuild/redeclare marks the index available.
+                let table_name = ts.table_name.table();
+                let namespace = ts.table_name.schema().unwrap_or("default");
+                if crate::vector_index::is_vector_index_unavailable(namespace, table_name)
+                {
                     return None;
                 }
                 // Every term must be a distance call on a vector column of
@@ -167,10 +246,14 @@ fn detect(
                 let mut columns = Vec::with_capacity(raw_terms.len());
                 for (expr, weight) in &raw_terms {
                     let (column, query) = extract_distance_args(expr, ts)?;
+                    // A negated inner product ranks by the dot product itself,
+                    // so the marker carries the positive weight and the index
+                    // ordering (IP descending) matches the plan's order.
+                    let weight = if negated_ip { weight.abs() } else { *weight };
                     columns.push(VectorSearchTerm {
                         column,
                         query,
-                        weight: *weight,
+                        weight,
                     });
                 }
                 // Index-only ordering is safe while the distances are used
@@ -179,15 +262,23 @@ fn detect(
                 // out of the projection.  (L2 only for now — the IP
                 // estimator is not directly comparable with
                 // `inner_product`.)
-                let order_by =
-                    index_only && metric == "L2" && distance_calls(plan) == columns.len();
+                // Index-only ordering is available for both metrics: the scan
+                // returns rows ordered by the index distance (L2 ascending,
+                // IP descending), which is exactly the plan's order.
+                let order_by = index_only
+                    && (metric == "L2" || metric == "IP")
+                    && distance_calls(plan) == columns.len();
                 // Index-only ordering needs each bucket's top-k only (a
                 // globally top-k row is within its own bucket's top-k), so the
                 // per-bucket candidate count shrinks by the over-fetch factor.
                 // A filter between the scan and the sort can drop candidates,
                 // so it keeps the exact-mode margin; the exact re-rank itself
                 // needs the margin for the sort above the scan.
-                let overfetch = if order_by && !saw_filter { 2 } else { 10 };
+                let overfetch = if order_by && !saw_filter {
+                    2
+                } else {
+                    exact_overfetch
+                };
                 // A filter above the scan can drop rows the scan kept, so
                 // the scan cannot reduce its result to the sort's top-k and
                 // must read every candidate's payload.
@@ -201,6 +292,8 @@ fn detect(
                         overfetch,
                         narrow,
                         sort_key,
+                        plan_sort_asc: sort_expr.asc,
+                        filter: filter_predicate,
                     },
                     current,
                 ));
@@ -225,6 +318,9 @@ fn fetch_value(fetch: Option<&Expr>) -> Option<usize> {
 /// the LakeSoul index cannot serve (e.g. `cosine_distance`).
 fn distance_metric(expr: &Expr) -> Option<&'static str> {
     let call = as_scalar_function(unwrap_cast(expr))?;
+    if let Some(metric) = handle_metric(call) {
+        return Some(metric);
+    }
     match call.func.name() {
         "array_distance" => Some("L2"),
         "inner_product" | "dot_product" => Some("IP"),
@@ -242,8 +338,33 @@ fn as_scalar_function(expr: &Expr) -> Option<&ScalarFunction> {
 /// Collect the terms of a weighted distance sum (`w1*d1 + w2*d2 - ...`).
 /// Every term is stored with its signed weight; the caller validates that
 /// each term is a distance call.
+/// Push one weighted distance term, unwrapping a nested negation (pgvector's
+/// `<#>` is `-inner_product(..)`, and `0.7 * -(vec <#> q)` must become the
+/// positive magnitude 0.7 on the inner-product term).
+fn push_term(
+    expr: &Expr,
+    weight: f32,
+    sign: f32,
+    terms: &mut Vec<(Expr, f32)>,
+) -> Option<()> {
+    let weight = sign * weight;
+    match unwrap_cast(expr) {
+        Expr::Negative(inner) => {
+            terms.push((unwrap_cast(inner).clone(), -weight));
+            Some(())
+        }
+        other => {
+            terms.push((other.clone(), weight));
+            Some(())
+        }
+    }
+}
+
 fn collect_terms(expr: &Expr, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option<()> {
     match unwrap_cast(expr) {
+        // pgvector's `<#>` is planned as `-inner_product(vec, q)`; the sign
+        // belongs to the ordering, not to the term.
+        Expr::Negative(inner) => collect_terms(inner, -sign, terms),
         Expr::BinaryExpr(binary) => match binary.op {
             Operator::Plus => {
                 collect_terms(&binary.left, sign, terms)?;
@@ -255,11 +376,9 @@ fn collect_terms(expr: &Expr, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option
             }
             Operator::Multiply => {
                 if let Some(weight) = numeric_literal(&binary.left) {
-                    terms.push((unwrap_cast(&binary.right).clone(), sign * weight));
-                    Some(())
+                    push_term(&binary.right, weight, sign, terms)
                 } else if let Some(weight) = numeric_literal(&binary.right) {
-                    terms.push((unwrap_cast(&binary.left).clone(), sign * weight));
-                    Some(())
+                    push_term(&binary.left, weight, sign, terms)
                 } else {
                     None
                 }
@@ -314,10 +433,21 @@ fn numeric_literal(expr: &Expr) -> Option<f32> {
 /// validating the column type against the scan schema.
 fn extract_distance_args(expr: &Expr, ts: &TableScan) -> Option<(String, Vec<f32>)> {
     let call = as_scalar_function(unwrap_cast(expr))?;
-    if call.args.len() != 2 {
-        return None;
-    }
-    let col = match unwrap_cast(&call.args[0]) {
+    // A handle call carries its query vector in the process registry; a
+    // literal call carries it inline.
+    let (column_expr, query) = if let Some(handle) = handle_query(call) {
+        let query = resolve_query_vector(handle)?;
+        (unwrap_cast(&call.args[0]), query.as_ref().clone())
+    } else {
+        if call.args.len() != 2 {
+            return None;
+        }
+        (
+            unwrap_cast(&call.args[0]),
+            extract_query(unwrap_cast(&call.args[1]))?,
+        )
+    };
+    let col = match column_expr {
         Expr::Column(col) => col,
         _ => return None,
     };
@@ -335,7 +465,6 @@ fn extract_distance_args(expr: &Expr, ts: &TableScan) -> Option<(String, Vec<f32
     if !is_vector_type(field.data_type()) {
         return None;
     }
-    let query = extract_query(unwrap_cast(&call.args[1]))?;
     if query.is_empty() {
         return None;
     }
@@ -500,7 +629,7 @@ fn sort_matches_spec(sort: &Sort, spec: &VectorSearchSpec) -> bool {
         return false;
     }
     let sort_expr = &sort.expr[0];
-    sort_expr.asc == (spec.metric == "L2") && sort_expr.expr == spec.sort_key
+    sort_expr.asc == spec.plan_sort_asc && sort_expr.expr == spec.sort_key
 }
 
 /// Number of `array_distance`/`inner_product` calls on the matched path,
@@ -538,10 +667,10 @@ fn count_distance_calls(expr: &Expr) -> usize {
         // Count the call nodes themselves: `distance_metric` unwraps
         // aliases/casts, so using it here would count a wrapped call twice.
         if let Expr::ScalarFunction(call) = node
-            && matches!(
+            && (matches!(
                 call.func.name(),
                 "array_distance" | "inner_product" | "dot_product"
-            )
+            ) || is_handle_distance_name(call.func.name()))
         {
             count += 1;
         }
@@ -565,6 +694,7 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
             spec.order_by,
             spec.overfetch,
             spec.narrow,
+            spec.filter.as_ref(),
         )
     } else {
         // Several columns travel as one JSON payload; the reader intersects
@@ -591,6 +721,7 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
             spec.order_by,
             spec.overfetch,
             spec.narrow,
+            spec.filter.as_ref(),
         )
     };
     filters.push(marker);

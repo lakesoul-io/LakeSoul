@@ -30,6 +30,11 @@ pub struct ResolvedIndex {
     ///
     /// The catalog stores the same JSON in `index_commit.segments`.
     pub segments: serde_json::Value,
+    /// Head object of the vector index mutation chain (`None` for text
+    /// indexes and for vector commits without mutations).
+    pub mutation_head: Option<String>,
+    /// Number of records in the mutation chain.
+    pub mutation_records: u32,
 }
 
 impl ResolvedIndex {

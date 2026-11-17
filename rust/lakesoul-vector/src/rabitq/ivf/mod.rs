@@ -1,4 +1,4 @@
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -13,6 +13,7 @@ use rayon::prelude::*;
 use crate::rabitq::key::IndexKey;
 use crate::rabitq::kmeans::{KMeansResult, run_kmeans};
 use crate::rabitq::math::{dot, l2_distance_sqr};
+use crate::rabitq::mutation::MutationState;
 use crate::rabitq::quantizer::{
     QuantizedParams, QuantizedVector, RabitqConfig, quantize_with_centroid,
 };
@@ -20,8 +21,11 @@ use crate::rabitq::rotation::{DynamicRotator, RotatorType};
 use crate::rabitq::simd;
 use crate::rabitq::{Metric, RabitqError};
 
+pub mod batch;
+pub use batch::{BatchSearchDiagnostics, BatchSearchOptions, BatchSearchOutput};
 pub mod builder;
 pub mod cluster;
+pub mod lazy;
 use cluster::*;
 pub mod lut;
 use lut::*;
@@ -62,6 +66,9 @@ pub struct SearchResult {
     /// Segment version the entry came from; callers keep the newest entry
     /// when a key is present in several delta segments.
     pub version: u32,
+    /// Global catalog revision the physical record was born at. Unlike
+    /// `version`, this is comparable across clusters.
+    pub birth_version: u64,
     pub score: f32,
 }
 
@@ -107,6 +114,76 @@ impl SearchDiagnostics {
         self.extended_evaluations += other.extended_evaluations;
         self.fastscan_ns += other.fastscan_ns;
         self.scalar_ns += other.scalar_ns;
+    }
+}
+
+/// Per-cluster invalid lanes, aligned with 32-vector FastScan batches.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum InvalidMask {
+    #[default]
+    None,
+    Dense(Vec<u32>),
+    Sparse(Vec<(u32, u32)>),
+}
+
+impl InvalidMask {
+    /// Invalid lane bitmap for one FastScan batch.
+    #[inline]
+    fn lane_mask(&self, batch_idx: usize) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Dense(masks) => masks.get(batch_idx).copied().unwrap_or(0),
+            Self::Sparse(entries) => entries
+                .binary_search_by_key(&(batch_idx as u32), |(batch, _)| *batch)
+                .ok()
+                .map(|index| entries[index].1)
+                .unwrap_or(0),
+        }
+    }
+
+    #[inline]
+    fn position_is_valid(&self, vec_idx: usize) -> bool {
+        let batch = vec_idx / simd::FASTSCAN_BATCH_SIZE;
+        let lane = vec_idx % simd::FASTSCAN_BATCH_SIZE;
+        (self.lane_mask(batch) >> lane) & 1 == 0
+    }
+
+    #[inline]
+    fn memory_usage(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Dense(masks) => masks.capacity() * std::mem::size_of::<u32>(),
+            Self::Sparse(entries) => {
+                entries.capacity() * std::mem::size_of::<(u32, u32)>()
+            }
+        }
+    }
+}
+
+/// Compress per-vector validity into one bitmap per FastScan batch.
+fn build_invalid_mask(valid: &[bool]) -> InvalidMask {
+    let mut nonzero = Vec::new();
+    for (batch_idx, lanes) in valid.chunks(simd::FASTSCAN_BATCH_SIZE).enumerate() {
+        let mut mask = 0u32;
+        for (lane, &is_valid) in lanes.iter().enumerate() {
+            if !is_valid {
+                mask |= 1u32 << lane;
+            }
+        }
+        if mask != 0 {
+            nonzero.push((batch_idx as u32, mask));
+        }
+    }
+    if nonzero.is_empty() {
+        InvalidMask::None
+    } else if nonzero.len() * 2 >= valid.len().div_ceil(simd::FASTSCAN_BATCH_SIZE) {
+        let mut dense = vec![0u32; valid.len().div_ceil(simd::FASTSCAN_BATCH_SIZE)];
+        for (batch_idx, mask) in nonzero {
+            dense[batch_idx as usize] = mask;
+        }
+        InvalidMask::Dense(dense)
+    } else {
+        InvalidMask::Sparse(nonzero)
     }
 }
 
@@ -186,6 +263,11 @@ pub struct IvfRabitqIndex {
     ip_func: crate::rabitq::simd::ExIpFunc,
     /// Fingerprint of the external key layout this index was built with.
     key_kind: u64,
+    /// Per-cluster logical-delete masks; all `None` when no mutation state is
+    /// loaded.
+    invalid_masks: Vec<InvalidMask>,
+    /// Number of physical records not masked by a delete/upsert mutation.
+    live_vectors: usize,
 }
 
 // ========================================================================
@@ -486,6 +568,7 @@ impl IvfRabitqIndex {
                 centroid: c.clone(),
                 ids: Vec::new(),
                 ids_version: Vec::new(),
+                ids_birth: Vec::new(),
                 batch_data: Vec::new(),
                 ex_codes_packed: Vec::new(),
                 f_add_ex: Vec::new(),
@@ -581,11 +664,18 @@ impl IvfRabitqIndex {
         println!("Quantisation complete ({} vectors)", global_id);
 
         let ip_func = crate::rabitq::simd::select_excode_ipfunc(ex_bits);
+        let live_vectors = clusters
+            .iter()
+            .map(|cluster| cluster.num_vectors + cluster.pending_ids.len())
+            .sum();
+        let invalid_masks = vec![InvalidMask::None; clusters.len()];
         Ok(Self {
             dim,
             padded_dim,
             metric,
             rotator,
+            invalid_masks,
+            live_vectors,
             clusters,
             ex_bits,
             ip_func,
@@ -704,12 +794,19 @@ impl IvfRabitqIndex {
 
         let ex_bits = total_bits.saturating_sub(1);
         let ip_func = crate::rabitq::simd::select_excode_ipfunc(ex_bits);
+        let live_vectors = clusters
+            .iter()
+            .map(|cluster| cluster.num_vectors + cluster.pending_ids.len())
+            .sum();
+        let invalid_masks = vec![InvalidMask::None; clusters.len()];
 
         Ok(Self {
             dim,
             padded_dim,
             metric,
             rotator,
+            invalid_masks,
+            live_vectors,
             clusters,
             ex_bits,
             ip_func,
@@ -717,9 +814,56 @@ impl IvfRabitqIndex {
         })
     }
 
-    /// Number of stored vectors.
+    /// Number of stored vectors (physical records, including masked copies).
     pub fn len(&self) -> usize {
         self.clusters.iter().map(|c| c.total_vectors()).sum()
+    }
+
+    /// Number of logically live vectors after applying delete/upsert masks.
+    pub fn live_len(&self) -> usize {
+        self.live_vectors
+    }
+
+    /// Apply last-wins upserts across the unflushed pending vectors.
+    ///
+    /// Only data inserted since this builder was loaded is repacked; already
+    /// persisted copies are invalidated later by the mutation delta.
+    pub(crate) fn dedupe_pending_last_wins(&mut self) {
+        for cluster in &mut self.clusters {
+            cluster.dedupe_last_by_id();
+        }
+        self.live_vectors = self.len();
+        self.invalid_masks = vec![InvalidMask::None; self.clusters.len()];
+    }
+
+    /// Logically delete every physical copy of the given keys.
+    ///
+    /// This is an in-memory operation; the durable path writes a mutation
+    /// sidecar and reloads the index with the resulting mask. Pending vectors
+    /// are flushed first so every record has a stable position. Returns the
+    /// number of records that became invalid.
+    pub fn remove_keys(&mut self, keys: &[IndexKey]) -> usize {
+        if keys.is_empty() {
+            return 0;
+        }
+        self.flush_all_pending();
+        let key_set: HashSet<&IndexKey> = keys.iter().collect();
+        let mut newly_invalid = 0usize;
+        for (cid, cluster) in self.clusters.iter_mut().enumerate() {
+            let old_mask = &self.invalid_masks[cid];
+            let mut valid = Vec::with_capacity(cluster.num_vectors);
+            for (index, key) in cluster.ids.iter().enumerate() {
+                let was_valid = old_mask.position_is_valid(index);
+                let now_valid = !key_set.contains(key);
+                if was_valid && !now_valid {
+                    newly_invalid += 1;
+                }
+                valid.push(now_valid);
+            }
+            self.invalid_masks[cid] = build_invalid_mask(&valid);
+        }
+        self.live_vectors = self.live_vectors.saturating_sub(newly_invalid);
+        newly_invalid
     }
 
     /// Check whether the index is empty.
@@ -760,7 +904,12 @@ impl IvfRabitqIndex {
                         .sum::<usize>()
             })
             .sum();
-        std::mem::size_of::<Self>() + clusters_mem + pending_mem
+        let mask_mem: usize = self
+            .invalid_masks
+            .iter()
+            .map(InvalidMask::memory_usage)
+            .sum();
+        std::mem::size_of::<Self>() + clusters_mem + pending_mem + mask_mem
     }
 
     /// Estimate total memory usage in MB
@@ -785,8 +934,15 @@ impl IvfRabitqIndex {
     /// The accuracy depends on the `total_bits` parameter used during training.
     pub fn fetch_embedding(&self, vector_id: &IndexKey) -> Option<Vec<f32>> {
         // Find which cluster contains this vector ID
-        for cluster in &self.clusters {
+        for (cid, cluster) in self.clusters.iter().enumerate() {
             if let Some(local_idx) = cluster.ids.iter().position(|id| id == vector_id) {
+                if !self
+                    .invalid_masks
+                    .get(cid)
+                    .is_none_or(|mask| mask.position_is_valid(local_idx))
+                {
+                    continue;
+                }
                 // Found the vector, now reconstruct it
 
                 // Step 1: Extract quantized codes
@@ -1220,6 +1376,7 @@ impl IvfRabitqIndex {
             clusters.push(ClusterData {
                 centroid,
                 ids_version: vec![0; ids.len()],
+                ids_birth: vec![0; ids.len()],
                 ids,
                 batch_data,
                 ex_codes_packed,
@@ -1253,12 +1410,19 @@ impl IvfRabitqIndex {
         println!("Loaded index with unified memory layout (V3)");
 
         let ip_func = crate::rabitq::simd::select_excode_ipfunc(ex_bits);
+        let live_vectors = clusters
+            .iter()
+            .map(|cluster| cluster.num_vectors + cluster.pending_ids.len())
+            .sum();
+        let invalid_masks = vec![InvalidMask::None; clusters.len()];
 
         Ok(Self {
             dim,
             padded_dim,
             metric,
             rotator,
+            invalid_masks,
+            live_vectors,
             clusters,
             ex_bits,
             ip_func,
@@ -1309,26 +1473,97 @@ impl IvfRabitqIndex {
         Ok((results, diagnostics))
     }
 
-    /// Batch search for multiple queries in parallel using rayon
+    /// Build an index from already-loaded cluster payloads.
     ///
-    /// # Performance
-    /// Expected speedup: 2-8x on typical CPUs (depends on core count and batch size)
+    /// The lazy shard path loads only the clusters selected by a query and
+    /// assembles a small index over them; the resulting index probes every
+    /// supplied cluster when `nprobe == clusters.len()`.
+    pub fn from_loaded_clusters(
+        header: &IndexHeader,
+        clusters: Vec<ClusterData>,
+        mutation: Option<&MutationState>,
+    ) -> Result<Self, RabitqError> {
+        Self::assemble(header, clusters, mutation)
+    }
+
+    /// Build a centroid-only index used to select which clusters a lazy
+    /// shard has to load. Empty clusters still expose their centroids to
+    /// `select_clusters`, but never produce search hits.
+    pub fn from_centroids(
+        header: &IndexHeader,
+        centroids: Vec<Vec<f32>>,
+    ) -> Result<Self, RabitqError> {
+        let clusters = centroids
+            .into_iter()
+            .map(|centroid| ClusterData::new(centroid, header.padded_dim, header.ex_bits))
+            .collect();
+        Self::assemble(header, clusters, None)
+    }
+
+    /// Select the `nprobe` nearest clusters for a query without touching any
+    /// cluster payload. Used by the lazy-cluster shard to decide which
+    /// segments to load from the object store.
+    pub fn select_clusters(
+        &self,
+        query: &[f32],
+        nprobe: usize,
+    ) -> Result<Vec<usize>, RabitqError> {
+        if query.len() != self.dim {
+            return Err(RabitqError::DimensionMismatch {
+                expected: self.dim,
+                got: query.len(),
+            });
+        }
+        let rotated_query = self.rotator.rotate(query);
+        let mut cluster_scores: Vec<ClusterScore> =
+            Vec::with_capacity(self.clusters.len());
+        for (cid, cluster) in self.clusters.iter().enumerate() {
+            let score = match self.metric {
+                Metric::L2 => l2_distance_sqr(&rotated_query, &cluster.centroid),
+                Metric::InnerProduct => dot(&rotated_query, &cluster.centroid),
+            };
+            cluster_scores.push(ClusterScore { id: cid, score });
+        }
+        let nprobe = nprobe.max(1).min(cluster_scores.len());
+        if nprobe < cluster_scores.len() {
+            match self.metric {
+                Metric::L2 => {
+                    cluster_scores.select_nth_unstable_by(nprobe, ClusterScore::l2_order);
+                    cluster_scores[..nprobe].sort_unstable_by(ClusterScore::l2_order);
+                }
+                Metric::InnerProduct => {
+                    cluster_scores.select_nth_unstable_by(nprobe, ClusterScore::ip_order);
+                    cluster_scores[..nprobe].sort_unstable_by(ClusterScore::ip_order);
+                }
+            }
+        } else {
+            match self.metric {
+                Metric::L2 => cluster_scores.sort_unstable_by(ClusterScore::l2_order),
+                Metric::InnerProduct => {
+                    cluster_scores.sort_unstable_by(ClusterScore::ip_order)
+                }
+            }
+        }
+        Ok(cluster_scores
+            .into_iter()
+            .take(nprobe)
+            .map(|score| score.id())
+            .collect())
+    }
+
+    /// Search a batch using bounded query tiles and shared FastScan blocks.
     ///
-    /// # Arguments
-    /// * `queries` - Slice of query vectors
-    /// * `params` - Search parameters (top_k, nprobe)
-    ///
-    /// # Returns
-    /// A vector of search results for each query, in the same order as the input queries
+    /// The legacy API keeps query-level parallel execution even when
+    /// `params.parallelism == 1` (historically a per-query cluster setting).
+    /// Use `batch_search_controlled` or `batch_search_with_options` to set an
+    /// explicit request-wide CPU budget and cancellation flag.
     pub fn batch_search(
         &self,
         queries: &[&[f32]],
         params: SearchParams,
     ) -> Vec<Result<Vec<SearchResult>, RabitqError>> {
-        queries
-            .par_iter()
-            .map(|query| self.search(query, params))
-            .collect()
+        self.batch_search_with_options(queries, params, &BatchSearchOptions::default())
+            .results
     }
 
     fn search_fastscan(
@@ -1456,6 +1691,7 @@ impl IvfRabitqIndex {
             .map(|candidate| SearchResult {
                 id: candidate.id,
                 version: candidate.version,
+                birth_version: candidate.birth_version,
                 score: match self.metric {
                     Metric::L2 => candidate.distance,
                     Metric::InnerProduct => candidate.score,
@@ -1574,7 +1810,7 @@ impl IvfRabitqIndex {
     #[allow(clippy::too_many_arguments)]
     fn search_cluster_v2_batched(
         &self,
-        _cluster_id: usize,
+        cluster_id: usize,
         cluster: &ClusterData,
         query_precomp: &QueryPrecomputed,
         g_add: f32,
@@ -1625,6 +1861,19 @@ impl IvfRabitqIndex {
             let batch_end =
                 (batch_start + simd::FASTSCAN_BATCH_SIZE).min(cluster.num_vectors);
             let actual_batch_size = batch_end - batch_start;
+            let invalid_lane_mask = self
+                .invalid_masks
+                .get(cluster_id)
+                .map(|mask| mask.lane_mask(batch_idx))
+                .unwrap_or(0);
+            let live_lane_mask = if actual_batch_size == simd::FASTSCAN_BATCH_SIZE {
+                u32::MAX
+            } else {
+                (1u32 << actual_batch_size) - 1
+            };
+            if invalid_lane_mask & live_lane_mask == live_lane_mask {
+                continue;
+            }
 
             if let Some(diag) = diagnostics.as_deref_mut() {
                 diag.batches_scanned += 1;
@@ -1689,6 +1938,7 @@ impl IvfRabitqIndex {
                 fallback,
                 self.padded_dim,
             );
+            mask &= !invalid_lane_mask;
             if actual_batch_size < simd::FASTSCAN_BATCH_SIZE {
                 mask &= (1u32 << actual_batch_size) - 1;
             }
@@ -1761,6 +2011,7 @@ impl IvfRabitqIndex {
                     top_k,
                     HeapCandidate {
                         version: cluster.ids_version[global_idx],
+                        birth_version: cluster.ids_birth[global_idx],
                         id: vector_id,
                         distance,
                         score,
@@ -1870,6 +2121,7 @@ impl IvfRabitqIndex {
                 top_k,
                 HeapCandidate {
                     version: u32::MAX,
+                    birth_version: u64::MAX,
                     id: vec_id.clone(),
                     distance,
                     score,
@@ -1926,6 +2178,9 @@ impl IvfRabitqIndex {
                 Metric::InnerProduct => -dot_query_centroid,
             };
             for vec_idx in 0..cluster.num_vectors {
+                if !self.invalid_masks[cid].position_is_valid(vec_idx) {
+                    continue;
+                }
                 // Extract data for this vector using ClusterData API
                 let f_add = cluster.get_vector_f_add(vec_idx);
                 let f_rescale = cluster.get_vector_f_rescale(vec_idx);
@@ -1973,6 +2228,7 @@ impl IvfRabitqIndex {
                 candidates.push(SearchResult {
                     id: cluster.ids[vec_idx].clone(),
                     version: cluster.ids_version[vec_idx],
+                    birth_version: cluster.ids_birth[vec_idx],
                     score,
                 });
             }
@@ -2054,9 +2310,46 @@ impl IvfRabitqIndex {
                 segment_filename: fname,
                 num_vectors: cluster.num_vectors as u32,
                 file_size,
+                birth_version: 0,
             });
         }
         Ok((header, entries))
+    }
+
+    /// Load only the requested clusters from the index segments.
+    ///
+    /// This is the data-plane half of the lazy-cluster shard: cluster
+    /// payloads are immutable and self-contained, so a query can read just
+    /// the `nprobe` clusters it selected instead of every cluster in the
+    /// shard.
+    pub async fn load_selected_clusters(
+        istore: &IndexStore,
+        _header: &IndexHeader,
+        segments: &[SegmentEntry],
+        selected: &[u32],
+    ) -> Result<Vec<ClusterData>, RabitqError> {
+        let cluster_map = crate::rabitq::segment::group_by_cluster(segments);
+        let mut out = Vec::with_capacity(selected.len());
+        for cid in selected {
+            let Some(entries) = cluster_map.get(cid) else {
+                continue;
+            };
+            let mut datas = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let mut data = crate::rabitq::segment::read_segment_full(
+                    istore,
+                    &entry.segment_filename,
+                )
+                .await?;
+                data.birth_version = entry.birth_version;
+                datas.push(data);
+            }
+            if datas.is_empty() {
+                continue;
+            }
+            out.push(ClusterData::merge_segments(datas)?);
+        }
+        Ok(out)
     }
 
     /// Load the index for an explicit segment list.
@@ -2068,10 +2361,20 @@ impl IvfRabitqIndex {
         header: &IndexHeader,
         segments: &[SegmentEntry],
     ) -> Result<Self, RabitqError> {
+        Self::load_from_segments_with_mutations(istore, header, segments, None).await
+    }
+
+    /// Load an index and rebuild logical-delete masks from a mutation state.
+    pub async fn load_from_segments_with_mutations(
+        istore: &IndexStore,
+        header: &IndexHeader,
+        segments: &[SegmentEntry],
+        mutation: Option<&MutationState>,
+    ) -> Result<Self, RabitqError> {
         let cluster_map = crate::rabitq::segment::group_by_cluster(segments);
         let (clusters, _segments) =
             Self::load_clusters(istore, header, &cluster_map).await?;
-        Self::assemble(header, clusters)
+        Self::assemble(header, clusters, mutation)
     }
 
     /// Read and merge every cluster's segments (base + deltas) concurrently.
@@ -2087,13 +2390,13 @@ impl IvfRabitqIndex {
             .map(|segments| async move {
                 let mut datas = Vec::with_capacity(segments.len());
                 for entry in segments {
-                    datas.push(
-                        crate::rabitq::segment::read_segment_full(
-                            istore,
-                            &entry.segment_filename,
-                        )
-                        .await?,
-                    );
+                    let mut data = crate::rabitq::segment::read_segment_full(
+                        istore,
+                        &entry.segment_filename,
+                    )
+                    .await?;
+                    data.birth_version = entry.birth_version;
+                    datas.push(data);
                 }
                 let cd = if datas.is_empty() {
                     ClusterData::new(
@@ -2115,6 +2418,7 @@ impl IvfRabitqIndex {
     fn assemble(
         header: &IndexHeader,
         clusters: Vec<ClusterData>,
+        mutation: Option<&MutationState>,
     ) -> Result<Self, RabitqError> {
         let rotator = DynamicRotator::deserialize(
             header.dim,
@@ -2123,15 +2427,34 @@ impl IvfRabitqIndex {
             &header.rotator_data,
         )?;
         let ip_func = crate::rabitq::simd::select_excode_ipfunc(header.ex_bits);
+        let mut invalid_masks = Vec::with_capacity(clusters.len());
+        let mut live_vectors = 0usize;
+        for cluster in &clusters {
+            let valid: Vec<bool> = (0..cluster.num_vectors)
+                .map(|index| {
+                    mutation.is_none_or(|state| {
+                        state.is_valid(
+                            &cluster.ids[index],
+                            cluster.ids_birth.get(index).copied().unwrap_or(0),
+                        )
+                    })
+                })
+                .collect();
+            live_vectors += valid.iter().filter(|valid| **valid).count();
+            live_vectors += cluster.pending_ids.len();
+            invalid_masks.push(build_invalid_mask(&valid));
+        }
         Ok(Self {
             dim: header.dim,
             padded_dim: header.padded_dim,
             metric: header.metric,
             rotator,
+            invalid_masks,
             clusters,
             ex_bits: header.ex_bits,
             ip_func,
             key_kind: header.key_kind,
+            live_vectors,
         })
     }
 
@@ -2172,6 +2495,7 @@ impl IvfRabitqIndex {
         );
         self.clusters[cid]
             .append_vector(IndexKey::new(vector_id.to_le_bytes()), quantized);
+        self.live_vectors += 1;
         Ok(cid as u32)
     }
 
@@ -2278,6 +2602,7 @@ impl IvfRabitqIndex {
         for (i, (cid, q)) in results.into_iter().enumerate() {
             self.clusters[cid].append_vector(batch.ids[i].clone(), q);
         }
+        self.live_vectors += n;
 
         Ok(())
     }
@@ -2320,6 +2645,7 @@ impl crate::rabitq::segment::ClusterSegmentData {
         Self {
             cluster_id,
             version,
+            birth_version: 0,
             centroid,
             padded_dim,
             ex_bits,
@@ -2371,6 +2697,35 @@ impl ClusterData {
             6 => self.padded_dim / 16 * 12,
             bits => (self.padded_dim * bits).div_ceil(8),
         }
+    }
+
+    /// Keep only the last physical occurrence of each key, then repack the
+    /// cluster. Used for same-builder upserts before anything is persisted.
+    fn dedupe_last_by_id(&mut self) {
+        self.flush_pending();
+        if self.ids.is_empty() {
+            return;
+        }
+        let mut last = HashMap::with_capacity(self.ids.len());
+        for (index, id) in self.ids.iter().enumerate() {
+            last.insert(id.clone(), index);
+        }
+        if last.len() == self.ids.len() {
+            return;
+        }
+        let vectors = self._collect_quantized_vectors(self.padded_dim);
+        let mut ids = Vec::with_capacity(last.len());
+        let mut kept = Vec::with_capacity(last.len());
+        for (index, (id, vector)) in self.ids.iter().zip(vectors).enumerate() {
+            if last.get(id) == Some(&index) {
+                ids.push(id.clone());
+                kept.push(vector);
+            }
+        }
+        let centroid = self.centroid.clone();
+        let padded_dim = self.padded_dim;
+        let ex_bits = self.ex_bits;
+        *self = Self::from_quantized_vectors(centroid, ids, kept, padded_dim, ex_bits);
     }
 
     /// Append one already-quantised row to the streaming-build staging buffer.
@@ -2445,6 +2800,8 @@ impl ClusterData {
         self.ids.extend_from_slice(&self.build_pending.ids);
         self.ids_version
             .resize(self.ids_version.len() + count, u32::MAX);
+        self.ids_birth
+            .resize(self.ids_birth.len() + count, u64::MAX);
         let ex_stride = self.ex_code_stride();
         if ex_stride > 0 {
             debug_assert_eq!(self.build_pending.ex_codes.len(), count * ex_stride);
@@ -2532,7 +2889,9 @@ impl ClusterData {
         let new_ids = std::mem::take(&mut self.pending_ids);
         self.ids.extend_from_slice(&new_ids);
         let new_versions = std::mem::take(&mut self.pending_ids_version);
+        let added = new_versions.len();
         self.ids_version.extend_from_slice(&new_versions);
+        self.ids_birth.extend(std::iter::repeat_n(u64::MAX, added));
 
         self.batch_data
             .truncate(base_vectors / simd::FASTSCAN_BATCH_SIZE * stride);
@@ -2658,8 +3017,10 @@ impl ClusterData {
             let _batch_idx = self.num_vectors / simd::FASTSCAN_BATCH_SIZE;
 
             // Extend main ID list
+            let added = batch_versions.len();
             self.ids.extend(batch_ids);
             self.ids_version.extend(batch_versions);
+            self.ids_birth.extend(std::iter::repeat_n(u64::MAX, added));
 
             // Extend batch_data by one batch stride
             let stride = Self::batch_stride(padded_dim);
@@ -2759,8 +3120,10 @@ impl ClusterData {
             batch_qvecs.resize(simd::FASTSCAN_BATCH_SIZE, zero_qvec);
 
             // Extend ID list (only actual ids, not pads).
+            let added = batch_versions.len();
             self.ids.extend(batch_ids);
             self.ids_version.extend(batch_versions);
+            self.ids_birth.extend(std::iter::repeat_n(u64::MAX, added));
 
             // Extend batch_data by one batch stride.
             let stride = Self::batch_stride(padded_dim);
@@ -3164,6 +3527,8 @@ mod batch_search_tests {
             padded_dim,
             metric,
             rotator: rotator.clone(),
+            invalid_masks: vec![InvalidMask::None],
+            live_vectors: cluster.num_vectors + cluster.pending_ids.len(),
             clusters: vec![cluster.clone()],
             ex_bits,
             ip_func,
@@ -3281,6 +3646,8 @@ mod batch_search_tests {
             padded_dim,
             metric,
             rotator: rotator.clone(),
+            invalid_masks: vec![InvalidMask::None],
+            live_vectors: cluster.num_vectors + cluster.pending_ids.len(),
             clusters: vec![cluster.clone()],
             ex_bits,
             ip_func,
@@ -3482,11 +3849,18 @@ mod parallel_probe_tests {
                 centroid, ids, quantized, padded_dim, 0,
             ));
         }
+        let live_vectors = clusters
+            .iter()
+            .map(|cluster| cluster.num_vectors + cluster.pending_ids.len())
+            .sum();
+        let invalid_masks = vec![InvalidMask::None; clusters.len()];
         IvfRabitqIndex {
             dim,
             padded_dim,
             metric: Metric::L2,
             rotator,
+            invalid_masks,
+            live_vectors,
             clusters,
             ex_bits: 0,
             ip_func: crate::rabitq::simd::select_excode_ipfunc(0),

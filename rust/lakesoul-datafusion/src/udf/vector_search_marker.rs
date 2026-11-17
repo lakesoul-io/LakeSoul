@@ -65,16 +65,23 @@ pub struct VectorSearchRequest {
     /// The scan can then read the payload columns for those rows only
     /// (deferred payload read).
     pub narrow: bool,
+    /// Predicate of the `Filter` node between the scan and the sort, when the
+    /// pushdown rule matched one.  The scan evaluates it on its candidates so
+    /// it can widen the probe until enough *matching* rows were found; the
+    /// plan's own `FilterExec` above then passes them through unchanged.
+    pub filter: Option<Expr>,
 }
 
 impl VectorSearchRequest {
     /// The number of candidates requested per bucket.
+    ///
+    /// The pushdown rule chooses the multiplier: `2` for index-only ordering
+    /// (each bucket's top-k is all a global top-k needs) and
+    /// [`exact_overfetch`](crate::udf::vector_search_marker::LakeSoulVectorSearchConfig::exact_overfetch)
+    /// for the exact re-rank, which reads the stored vectors of every
+    /// candidate.
     pub fn candidates_per_bucket(&self) -> usize {
-        if self.order_by {
-            self.top_k.saturating_mul(self.overfetch.max(1))
-        } else {
-            self.top_k.saturating_mul(10).max(100)
-        }
+        self.top_k.saturating_mul(self.overfetch.max(1)).max(1)
     }
 
     /// True when the request searches a single column.
@@ -84,6 +91,7 @@ impl VectorSearchRequest {
 }
 
 /// Build the marker expression appended to a `TableScan.filters` list.
+#[allow(clippy::too_many_arguments)]
 pub fn marker_expr(
     vec_column: &str,
     query: &[f32],
@@ -92,6 +100,7 @@ pub fn marker_expr(
     order_by: bool,
     overfetch: usize,
     narrow: bool,
+    filter: Option<&Expr>,
 ) -> Expr {
     let query_csv = query
         .iter()
@@ -122,7 +131,10 @@ pub fn marker_expr(
                 None,
             ),
             Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(narrow)), None),
-        ],
+        ]
+        .into_iter()
+        .chain(filter.cloned())
+        .collect(),
     ))
 }
 
@@ -134,6 +146,7 @@ pub fn multi_marker_expr(
     order_by: bool,
     overfetch: usize,
     narrow: bool,
+    filter: Option<&Expr>,
 ) -> Expr {
     let payload = serde_json::to_string(columns).unwrap_or_else(|_| "[]".to_string());
     Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -153,7 +166,10 @@ pub fn multi_marker_expr(
                 None,
             ),
             Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(narrow)), None),
-        ],
+        ]
+        .into_iter()
+        .chain(filter.cloned())
+        .collect(),
     ))
 }
 
@@ -180,7 +196,7 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
             if call.func.name() == VECTOR_SEARCH_MULTI_MARKER {
                 return parse_multi_marker(call);
             }
-            if call.args.len() != 7 {
+            if call.args.len() != 7 && call.args.len() != 8 {
                 return None;
             }
             let vec_column = match &call.args[0] {
@@ -236,13 +252,14 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
                 order_by,
                 overfetch,
                 narrow,
+                filter: call.args.get(7).cloned(),
             })
         })
 }
 
 /// Parse the JSON payload of the multi-column marker.
 fn parse_multi_marker(call: &ScalarFunction) -> Option<VectorSearchRequest> {
-    if call.args.len() != 5 {
+    if call.args.len() != 5 && call.args.len() != 6 {
         return None;
     }
     let payload = match &call.args[0] {
@@ -279,6 +296,7 @@ fn parse_multi_marker(call: &ScalarFunction) -> Option<VectorSearchRequest> {
         order_by,
         overfetch,
         narrow,
+        filter: call.args.get(5).cloned(),
     })
 }
 
@@ -429,11 +447,11 @@ pub fn multi_marker_udf() -> Arc<ScalarUDF> {
 /// How the vector search orders its candidates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RerankMode {
-    /// Exact re-rank over the stored vector column (default).
-    #[default]
+    /// Exact re-rank over the stored vector column.
     Exact,
     /// Order by the quantized distance computed inside the index; the vector
     /// column is not read at all.
+    #[default]
     Index,
 }
 
@@ -447,9 +465,10 @@ datafusion::common::extensions_options! {
     pub struct LakeSoulVectorSearchConfig {
         /// Number of IVF clusters to probe in each bucket index.
         pub nprobe: usize, default = 64
-        /// Candidate ordering: `"exact"` re-ranks against the stored vector
-        /// column; `"index"` orders by the index distance and never reads it.
-        pub rerank: String, default = String::new()
+        /// Candidate ordering: `"index"` (default) orders by the index
+        /// distance and never reads the stored vector column; `"exact"`
+        /// re-ranks against it.
+        pub rerank: String, default = String::from("index")
         /// Clusters probed concurrently per search (1 = sequential).  The
         /// probed clusters are partitioned into that many groups and merged,
         /// so the result set is unchanged; it trades per-query latency for
@@ -460,6 +479,15 @@ datafusion::common::extensions_options! {
         /// keeps the top ones and fetches their payload in a second pass.
         /// Disable to trade IO for a single read.
         pub deferred_payload: bool, default = true
+        /// Candidates fetched per bucket in `exact` mode (`top_k * this`).
+        ///
+        /// The exact re-rank reads the stored vectors of every candidate, and
+        /// on a cold (not column-cached) table that read dominates: each
+        /// candidate row is a random access into the vector column, so the
+        /// candidates are effectively spread over every compression chunk.
+        /// A smaller factor is proportionally faster with lower recall;
+        /// `LAKESOUL_VECTOR_EXACT_OVERFETCH` overrides it per process.
+        pub exact_overfetch: usize, default = 10
     }
 }
 
@@ -468,12 +496,12 @@ impl datafusion::common::config::ConfigExtension for LakeSoulVectorSearchConfig 
 }
 
 impl LakeSoulVectorSearchConfig {
-    /// The parsed candidate ordering mode (`"exact"` unless `"index"`).
+    /// The parsed candidate ordering mode (`"exact"` only when explicitly set).
     pub fn rerank_mode(&self) -> RerankMode {
-        if self.rerank.eq_ignore_ascii_case("index") {
-            RerankMode::Index
-        } else {
+        if self.rerank.eq_ignore_ascii_case("exact") {
             RerankMode::Exact
+        } else {
+            RerankMode::Index
         }
     }
 }

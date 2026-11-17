@@ -16,6 +16,7 @@ publish = false
 lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-common = { path = "../lakesoul-common" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
+lakesoul-vector = { path = "../lakesoul-vector" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-datafusion = { path = "../lakesoul-datafusion", features = ["ivm"] }
 lakesoul-io = { path = "../lakesoul-io" }

@@ -8,6 +8,7 @@ pub mod ivf;
 pub mod key;
 pub mod math;
 mod memory;
+pub mod mutation;
 pub mod quantizer;
 pub mod rotation;
 pub mod segment;
@@ -29,6 +30,7 @@ pub use ivf::builder::IvfRabitqBuilder;
 pub fn is_supported_total_bits(total_bits: usize) -> bool {
     matches!(total_bits, 1 | 3 | 7)
 }
+pub use ivf::lazy::LazyIvfIndex;
 pub use ivf::{
     IdAndVecBatch, IvfRabitqIndex, SearchDiagnostics, SearchParams, SearchResult,
 };

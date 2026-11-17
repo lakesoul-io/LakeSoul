@@ -1,3 +1,39 @@
+# 原生批量查询（当前实现）
+
+本文保留了早期设计与后续变更记录，下文部分“当前限制”描述的是对应历史阶段。原生批量 SQL 的现行接口与边界以本节和 [Native SQL Batch](../../python/examples/vector-search/native-batch-sql.md) 为准。
+
+DataFusion 与 LakeSoul pgwire 已注册同一组表函数，一次 SQL 可检索多个 query，使用共享快照、cluster/FastScan block 和有界并行内核：
+
+```sql
+-- 目标表和query表由已有写入入口创建，pgwire保持只读。
+SELECT query_id, rank, id, distance
+FROM lakesoul_vector_search_batch_from_table(
+  'public.items', 'embedding',
+  'public.query_vectors', 'qid', 'qvec',
+  100, 64, 'L2', 'exact', 1
+)
+ORDER BY query_id, rank;
+
+-- 少量query使用inline JSON，query_id为从0开始的数组位置。
+SELECT query_id, rank, id, distance
+FROM lakesoul_vector_search_batch(
+  'public.items', 'embedding', '[[0.1,0.2,0.3],[0.4,0.5,0.6]]',
+  10, 64, 'L2', 'index'
+)
+ORDER BY query_id, rank;
+```
+
+- 返回 `query_id BIGINT, rank INTEGER, id BIGINT, distance FLOAT8`；rank从1开始。L2返回欧氏距离，IP返回负内积，均为越小越好。
+- `exact` 对 ANN 候选读取原始向量重排，不承诺全库精确kNN；新原生batch同时支持L2与IP。
+- 目标目前要求Int64单列主键 `id`、完整索引覆盖、无CDC/mutation chain和时间旅行。query表须有唯一非空Int64 qid及Float32列表向量。不同range partition的相同id仍是不同的目标行，不做全表ID误去重。
+- 参数须为常量；这两个表函数不接受动态 `$1` 向量参数。大量向量使用query表传入。此边界不改变原有单向量查询的prepared参数支持，也不改变其缺索引时的普通扫描路径。
+- `SET lakesoul_vector_batch.query_window='256'` 控制最多256个query的窗口，自动跨小Arrow输入batch填充；还可设置 `parallelism`、`io_concurrency`、`memory_bytes`。输入/工作/输出临时预算上限128MiB，单请求最多65536个query、有效输入64MiB。
+- 一个请求固定目标快照和可续租的 `index_read_lease`；逻辑drop阻止新batch使用该索引，物理清理等待已有读者。客户端取消或租约失效传递到实际工作，停止前保留保护。
+
+`EXPLAIN` 显示 `VectorBatchSearchExec`，`EXPLAIN ANALYZE` 提供window/query、cluster/block复用等指标。PG最终会话测试已验证1,000个query按 `[256,256,256,232]` 执行4个窗口；真实pgwire普通/扩展协议批查与小数据集基线一致。使用示例见 [Notebook](../../python/examples/vector-search/tutorial/native_batch_sql.ipynb)，验证范围见 [Vector SQL 与批量 API](../../website/docs/engine/vector-search/api.md)。这是LakeSoul pgwire扩展，不是上游pgvector扩展的批查询功能，也不是逐query串行SQL循环。
+
+---
+
 ## 结论
 
 建议把目标拆成两层：
@@ -155,6 +191,25 @@ pgvector 的 `<->` 返回欧氏距离，即需要开平方。排序顺序相同�
 当前索引 `Metric::InnerProduct` 返回正的 inner product；pgvector `<#>` 返回**负 inner product**，因为 PostgreSQL 索引扫描主要按 ASC 工作。
 
 因此索引只应用来选候选集。最终 SQL 仍应在候选行上精确计算 pgvector distance、排序并执行 LIMIT。
+
+> **已实现（R68）**：`<#>` 现在可以完整走索引，包括 index-only 排序。
+> - `datafusion-postgres` 把 `<#>` 重写成 `-inner_product(vec, q)` ASC；下推规则
+>   （`vector_search_rule.rs`）识别 `Expr::Negative`，把它归一化为"正权重 + IP 降序"的规范形式，
+>   于是"删掉 Sort、扫描按索引顺序直出"的融合物理计划对 IP 同样成立；
+> - 单列 IP 允许 index-only（多列融合排序仍只支持 L2，因为多列融合距离目前只对 L2 定义）；
+> - `exact` 模式按 `-dot` 精确重排（`accumulate_exact_row` 的 IP 分支），结果与 `inner_product` 一致。
+>
+> 实测（GloVe-1.18M×200d、4 bucket、bits=1、top_k=100、200 条真实 query、TTL=200ms，IP 索引）：
+>
+> | 查询写法 | 模式 | QPS | Recall@100 |
+> |---|---|---:|---:|
+> | `ORDER BY vec <#> '[...]'` | exact | **590.8** | 0.7006 |
+> | 同上 | index-only（np16） | **779.1** | 0.4395 |
+> | `ORDER BY inner_product(vec, ARRAY[...]) DESC` | exact / index-only | 341.4 / 398.2 | 0.7006 / 0.4395 |
+>
+> 两种写法的结果**逐条一致**（200/200 查询 id 列表相同）；`<#>` 走字符串字面量，比 `ARRAY[...]`
+> 少 200 个 SQL token，所以吞吐更高。剩余限制：批量入口（`vector_batch.rs`）的 exact 仍只支持 L2；
+> 多列融合的 index-only 仍只支持 L2。
 
 ---
 
@@ -755,3 +810,64 @@ VectorTopKOptimizerRule
 推荐下一步直接做 **PR 1。它能先确定 parser、类型、UDF、prepared parameter 和 PG wire 的边界，再接 ANN；反过来先接索引，会把语法问题和 snapshot 正确性问题混在一起。
 
 参考：[pgvector 官方语法与操作符](https://github.com/pgvector/pgvector#querying)。
+---
+
+# 九、缓存与性能（整文件 payload 已移除）
+
+整文件 payload 已完全移除。`postgres-lakesoul` 的 `<->` exact 重排现在依赖
+`LAKESOUL_CACHE` 提供的按需 decoded-block 缓存：
+
+```bash
+export LAKESOUL_CACHE=1
+export LAKESOUL_CACHE_PATH=/data/lakesoul/cache
+export LAKESOUL_CACHE_SIZE=8GiB
+export LAKESOUL_VECTOR_BLOCK_ROWS=256
+export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456
+```
+
+服务启动时如果没有 `LAKESOUL_CACHE`，会打印 WARN：exact 查询仍正确，但会回退到
+reader 路径（明显更慢）。exact 的单查询/批量实测见
+[Configuration](../../website/docs/engine/vector-search/configuration.md) 和
+[Benchmark](../../website/docs/engine/vector-search/benchmarks.md)。
+
+历史 R58 的 pgvector QPS 表（exact 261–598 QPS）是在已删除的整文件 payload 模式下
+测得的，不再代表当前版本；不要按那张表做容量规划。index-only（`rerank='index'`）
+不读向量列，不受该移除影响，仍是最高的 PG wire 吞吐路径。
+
+---
+
+# 三、实现状态补充（driver 类型探测 / pgvector 零改造）
+
+`postgres-lakesoul` 已经支持 pgvector 客户端"零改造"所需的类型探测：
+
+- **`to_regtype(text)`**（`src/pg_compat.rs`）：把类型名解析为 OID，返回
+  `Int32`（与 `pg_type.oid` 同类型），未知名字返回 `NULL`（PostgreSQL 语义）。
+  覆盖 `vector`（16385，即 `PG_VECTOR_TYPE_OID`）、`bit`（1560，pgvector 的
+  `register_vector` 也会探测它）以及常见内置类型。
+  这样 `pgvector.psycopg.register_vector()` 里 psycopg 的
+  `TypeInfo.fetch('vector')`（其内部 SQL 是
+  `... WHERE t.oid = to_regtype($1)`）可以正常返回 type info。
+- **RowDescription / pg_type 的 vector 类型**：LakeSoul 会话通过
+  `LakeSoulVectorFieldMetadata` 给声明了向量索引的列打 `pg.vector` 标记，
+  `datafusion-postgres` 据此在 `pg_catalog.pg_type` 中暴露 `vector` 行，
+  并在查询结果的 RowDescription 中返回 vector OID（16385）；text/binary
+  编解码由 `arrow-pg` 的 pgvector 特性完成。
+- **参数化**：extended protocol 的 `$n::vector(n)` / 裸 `$n` 参数按 vector
+  类型绑定并解码；numpy 数组、`pgvector.Vector` 均可直接作为查询参数，
+  查询结果向量列也会被 pgvector 的 loader 解码为 `Vector` 对象。
+
+验证（2026-11，本机实测）：
+
+```text
+psycopg + pgvector.psycopg.register_vector() → PASS
+SELECT id FROM docs ORDER BY embedding <-> %s LIMIT 3   (numpy 参数) → [(1,), (2,), (6,)]
+SELECT embedding FROM docs WHERE id = 1 → pgvector.Vector([1.0, 0.0, ...])
+SELECT %s::vector(8) <-> %s::vector(8) → 0.0
+```
+
+Rust 测试：`to_regtype_resolves_pgvector_type_for_drivers`（simple + extended
+protocol）、`pgvector_prepared_parameter_binds_a_vector`、
+`pgvector_results_report_the_vector_type` 等，共 7 个 pgvector 相关用例通过。
+
+仍未覆盖（保持只读设计）：SQL 级 `PREPARE/EXECUTE`、`hnsw.ef_search` 的实际
+语义、多语句事务快照（`BEGIN` pin LakeSoul snapshot）、生产级认证/TLS。

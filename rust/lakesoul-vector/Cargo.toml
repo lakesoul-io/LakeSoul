@@ -44,6 +44,11 @@ parking_lot.workspace = true
 libc = "0.2"
 smallvec = "1.10"
 
+# Optional catalog publication (durable deletes/upserts).  The default build
+# stays independent of the metadata layer.
+lakesoul-metadata = { path = "../lakesoul-metadata", optional = true }
+uuid = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 async-trait = { workspace = true }
@@ -54,6 +59,8 @@ workspace = true
 
 [features]
 huge_pages = []
+# Catalog publication for vector commits (mutation sidecars, CAS commits).
+catalog = ["dep:lakesoul-metadata"]
 
 [[bench]]
 name = "fastscan_kernel"

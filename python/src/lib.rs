@@ -11,6 +11,8 @@ use rootcause::Report;
 mod index;
 mod metadata;
 mod reader;
+#[cfg(feature = "ci-unify")]
+mod session;
 mod text;
 mod utils;
 mod vector;
@@ -38,6 +40,8 @@ fn _lib(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     utils::init(py, m)?;
     vector::init(py, m)?;
     text::init(py, m)?;
+    #[cfg(feature = "ci-unify")]
+    session::init(py, m)?;
     Ok(())
 }
 

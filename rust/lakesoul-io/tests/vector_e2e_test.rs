@@ -382,6 +382,8 @@ async fn test_reader_with_vector_search() {
         version: 1,
         header: outcome.header.clone(),
         segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+        mutation_head: None,
+        mutation_records: 0,
     };
     println!("Index built");
 
@@ -541,6 +543,8 @@ async fn test_reader_exposes_index_distance_column() {
         version: 1,
         header: outcome.header.clone(),
         segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+        mutation_head: None,
+        mutation_records: 0,
     };
 
     let query_vec = &test_vecs[0];
@@ -745,6 +749,8 @@ async fn test_reader_fuses_multiple_vector_columns() {
             version: 1,
             header: outcome.header.clone(),
             segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+            mutation_head: None,
+            mutation_records: 0,
         };
 
     let query = &test_vecs[0];
@@ -953,6 +959,8 @@ async fn test_reader_searches_files_the_index_does_not_cover() {
         version: 1,
         header: outcome.header.clone(),
         segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+        mutation_head: None,
+        mutation_records: 0,
     };
 
     let query = [0.0f32, 1.0, 0.0, 0.0];
@@ -1113,6 +1121,8 @@ async fn test_tail_skips_uncovered_files_without_the_vector_column() {
         version: 1,
         header: outcome.header.clone(),
         segments: serde_json::to_value(&outcome.new_segments).unwrap(),
+        mutation_head: None,
+        mutation_records: 0,
     };
 
     let query = [0.0f32, 1.0, 0.0, 0.0];
@@ -1172,4 +1182,274 @@ async fn test_tail_skips_uncovered_files_without_the_vector_column() {
     // The uncovered sparse file is skipped without an error; the candidates
     // are the index's own (the sparse rows carry no vector at all).
     assert_eq!(ids, vec![0, 1], "the sparse file must be skipped: {ids:?}");
+}
+
+/// Encode `id: UInt64` primary keys exactly like the index builder does.
+fn encode_u64_ids(ids: &[u64], pk_col: &str) -> Vec<lakesoul_vector::IndexKey> {
+    use arrow_array::{RecordBatch, UInt64Array};
+    use lakesoul_io::index::key::{KeyCodec, KeyLayout};
+
+    let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+        pk_col,
+        arrow_schema::DataType::UInt64,
+        false,
+    )]));
+    let batch =
+        RecordBatch::try_new(schema, vec![Arc::new(UInt64Array::from(ids.to_vec()))])
+            .unwrap();
+    let codec = KeyCodec::new(KeyLayout::new(
+        vec![pk_col.to_string()],
+        vec![arrow_schema::DataType::UInt64],
+    ))
+    .unwrap();
+    codec.encode_batch(&batch).unwrap()
+}
+
+/// Run a vector search through `LakeSoulReader` and return the primary keys
+/// it read back.
+async fn reader_vector_ids(
+    tmp_path: &str,
+    files: Vec<String>,
+    resolved: ResolvedIndex,
+    query: [f32; 4],
+    pk_col: &str,
+    vec_col: &str,
+    dim: usize,
+) -> Vec<u64> {
+    use lakesoul_io::config::{
+        LakeSoulIOConfigBuilder, OPTION_KEY_VECTOR_SEARCH_COLUMN,
+        OPTION_KEY_VECTOR_SEARCH_NPROBE, OPTION_KEY_VECTOR_SEARCH_QUERY,
+        OPTION_KEY_VECTOR_SEARCH_TOP_K,
+    };
+    use lakesoul_io::reader::LakeSoulReader;
+
+    let query_str: String = query
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let read_schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new(pk_col, arrow_schema::DataType::UInt64, false),
+        arrow_schema::Field::new(
+            vec_col,
+            arrow_schema::DataType::FixedSizeList(
+                Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
+                dim as i32,
+            ),
+            false,
+        ),
+    ]));
+    let config = LakeSoulIOConfigBuilder::new()
+        .with_files(files)
+        .with_prefix(format!("file://{tmp_path}"))
+        .with_schema(read_schema)
+        .with_primary_keys(vec![pk_col.to_string()])
+        .with_batch_size(8192)
+        .with_thread_num(2)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_COLUMN, vec_col)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_QUERY, query_str)
+        .with_option(OPTION_KEY_VECTOR_SEARCH_TOP_K, "10")
+        .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, "8")
+        .with_option("skip_merge_on_read", "true")
+        .with_option("file_filter_pushdown", "false")
+        .with_resolved_index_shards(vec![resolved])
+        .build();
+    let mut reader = LakeSoulReader::new(config).unwrap();
+    reader.start().await.unwrap();
+    let mut ids: Vec<u64> = Vec::new();
+    while let Some(batch_result) = reader.next_rb().await {
+        let batch = batch_result.unwrap();
+        let column = batch
+            .column_by_name(pk_col)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        ids.extend(column.values());
+    }
+    ids.sort_unstable();
+    ids
+}
+
+/// A durable delete hides every physical copy of a key, and an upsert
+/// insert published at a later revision replaces the old copy through the
+/// same mask instead of version deduplication.
+#[tokio::test]
+async fn test_reader_applies_delete_and_upsert_mutations() {
+    use lakesoul_vector::rabitq::mutation::{MutationBatch, delta_filename, write_delta};
+    use lakesoul_vector::rabitq::segment::IndexHeader;
+    use lakesoul_vector::{IdAndVecBatch, IndexStore, IvfRabitqBuilder};
+
+    let tmp = TempDir::new().unwrap();
+    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let pk_col = "id";
+    let vec_col = "vec";
+    let dim = 4usize;
+    let parquet_path = format!("{tmp_path}/part-abc_0000.parquet");
+    write_vectors_parquet(
+        &parquet_path,
+        0..20,
+        |id| vec![1.0, 0.0, 0.0, id as f32 * 0.01],
+        dim,
+        pk_col,
+        vec_col,
+    );
+
+    let store = Arc::new(LocalFileSystem::new());
+    let config = VectorIndexConfig {
+        column_name: vec_col.to_string(),
+        dim,
+        nlist: 4,
+        total_bits: 7,
+        metric: Metric::L2,
+        rotator_type: lakesoul_vector::RotatorType::FhtKacRotator,
+        seed: 42,
+        use_faster_config: true,
+        rebuild_mode: "auto".to_string(),
+        max_delta_ratio: 1.0,
+    };
+    let files = vec![format!("file://{parquet_path}")];
+    let outcome = VectorShardIndexBuilder::new(
+        store.clone(),
+        config,
+        files.clone(),
+        vec![pk_col.to_string()],
+        SecretMap::new(),
+        Some(format!("file://{tmp_path}")),
+    )
+    .build()
+    .await
+    .unwrap();
+    let prefix = outcome.index_prefix.trim_end_matches('/').to_string();
+    let istore = IndexStore::new(store.clone(), prefix.clone());
+    let header = IndexHeader::deserialize(&outcome.header).unwrap();
+
+    // Base generation published at revision 1.
+    let mut base = outcome.new_segments.clone();
+    for segment in &mut base {
+        segment.birth_version = 1;
+    }
+    let key5 = encode_u64_ids(&[5], pk_col);
+
+    // Revision 2: durable delete of id 5 (no segment rewritten).
+    let delete_batch = MutationBatch::new(2, None, key5.clone());
+    let delete_key = delta_filename(1, "e2e-delete");
+    write_delta(&istore, &delete_key, &delete_batch)
+        .await
+        .unwrap();
+    let resolved = ResolvedIndex {
+        kind: IndexKind::Vector,
+        index_prefix: prefix.clone(),
+        commit_id: 2,
+        generation: 1,
+        version: 2,
+        header: outcome.header.clone(),
+        segments: serde_json::to_value(&base).unwrap(),
+        mutation_head: Some(delete_key.clone()),
+        mutation_records: 1,
+    };
+    let ids = reader_vector_ids(
+        &tmp_path,
+        files.clone(),
+        resolved,
+        [1.0, 0.0, 0.0, 0.05],
+        pk_col,
+        vec_col,
+        dim,
+    )
+    .await;
+    assert!(
+        !ids.contains(&5),
+        "deleted key must not be returned: {ids:?}"
+    );
+    assert!(ids.contains(&6), "unrelated keys stay visible: {ids:?}");
+
+    // Revision 3: upsert id 5 with a new vector, published as a delta
+    // segment whose birth version is stamped with the commit revision.
+    let mut builder = IvfRabitqBuilder::load(&istore, &header, &base)
+        .await
+        .unwrap();
+    builder
+        .insert_batch(IdAndVecBatch {
+            ids: key5.clone(),
+            vectors: vec![0.0, 1.0, 0.0, 0.0],
+        })
+        .unwrap();
+    let (header2, mut delta_segments, upserted) =
+        builder.flush_with_mutations(&istore).await.unwrap();
+    assert!(
+        upserted.contains(&key5[0]),
+        "flush must report the upserted key: {upserted:?}"
+    );
+    for segment in &mut delta_segments {
+        segment.birth_version = 3;
+    }
+    let upsert_batch = MutationBatch::new(3, Some(delete_key), upserted);
+    let upsert_key = delta_filename(1, "e2e-upsert");
+    write_delta(&istore, &upsert_key, &upsert_batch)
+        .await
+        .unwrap();
+    let mut segments = base.clone();
+    segments.extend(delta_segments);
+    let resolved = ResolvedIndex {
+        kind: IndexKind::Vector,
+        index_prefix: prefix.clone(),
+        commit_id: 3,
+        generation: 1,
+        version: 3,
+        header: header2.serialize(),
+        segments: serde_json::to_value(&segments).unwrap(),
+        mutation_head: Some(upsert_key.clone()),
+        mutation_records: 2,
+    };
+    let ids = reader_vector_ids(
+        &tmp_path,
+        files.clone(),
+        resolved,
+        [0.0, 1.0, 0.0, 0.0],
+        pk_col,
+        vec_col,
+        dim,
+    )
+    .await;
+    assert!(
+        ids.contains(&5),
+        "the upserted copy must be visible again: {ids:?}"
+    );
+
+    // Revision 4: delete the upserted key once more.
+    let delete_again = MutationBatch::new(4, Some(upsert_key), key5.clone());
+    let delete_again_key = delta_filename(1, "e2e-delete-2");
+    write_delta(&istore, &delete_again_key, &delete_again)
+        .await
+        .unwrap();
+    let resolved = ResolvedIndex {
+        kind: IndexKind::Vector,
+        index_prefix: prefix,
+        commit_id: 4,
+        generation: 1,
+        version: 4,
+        header: header2.serialize(),
+        segments: serde_json::to_value(&segments).unwrap(),
+        mutation_head: Some(delete_again_key),
+        mutation_records: 3,
+    };
+    let ids = reader_vector_ids(
+        &tmp_path,
+        files,
+        resolved,
+        [0.0, 1.0, 0.0, 0.0],
+        pk_col,
+        vec_col,
+        dim,
+    )
+    .await;
+    assert!(
+        !ids.contains(&5),
+        "the upserted copy must be hidden after the second delete: {ids:?}"
+    );
 }

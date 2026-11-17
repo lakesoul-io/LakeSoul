@@ -81,12 +81,24 @@ pub struct IndexGcReport {
     pub orphan_shards_deleted: u64,
 }
 
+/// Generation encoded in a mutation sidecar path
+/// (`.../_mutations/g00000007/<txid>.delta`).
+fn mutation_generation(path: &str) -> Option<u64> {
+    let (_, rest) = path
+        .split_once("/_mutations/g")
+        .or_else(|| path.strip_prefix("_mutations/g").map(|rest| ("", rest)))?;
+    let (generation, _) = rest.split_once('/')?;
+    generation.parse().ok()
+}
+
 /// List the objects of a shard that may be removed: files of this index kind
-/// that are unreferenced and last modified before the grace cutoff.
+/// that are unreferenced and last modified before the grace cutoff, plus
+/// mutation sidecars of generations this pass dropped.
 async fn sweep_shard_objects<F: Fn(&str) -> bool>(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
     retained: &HashSet<String>,
+    removed_generations: &HashSet<u64>,
     grace: Duration,
     keep_file: &F,
 ) -> Result<(u64, u64)> {
@@ -100,7 +112,14 @@ async fn sweep_shard_objects<F: Fn(&str) -> bool>(
         let meta = meta?;
         let name = meta.location.filename().unwrap_or_default().to_string();
         // Only ever delete our own index files.
-        if !keep_file(&name) {
+        if let Some(generation) = mutation_generation(meta.location.as_ref()) {
+            // A mutation sidecar is collectable only with its generation;
+            // the live generation keeps its chain until a rebuild clears
+            // it.
+            if !removed_generations.contains(&generation) {
+                continue;
+            }
+        } else if !keep_file(&name) {
             continue;
         }
         if retained.contains(&name) {
@@ -136,18 +155,40 @@ pub async fn gc_shard_now<S: CatalogSegment, F: Fn(&str) -> bool>(
     keep_generations: usize,
     keep_file: &F,
 ) -> Result<IndexGcReport> {
-    let mut report = IndexGcReport::default();
-    let plan = catalog.gc_shard(prefix, grace, keep_generations).await?;
-    report.commits_deleted = plan.deleted_commit_rows;
-    if plan.deleted_commit_rows == 0 && plan.removed_filenames.is_empty() {
-        return Ok(report);
-    }
-    let retained: HashSet<String> = plan.retained_filenames.into_iter().collect();
-    let (objects, bytes) =
-        sweep_shard_objects(store, prefix, &retained, grace, keep_file).await?;
-    report.objects_deleted = objects;
-    report.bytes_deleted = bytes;
-    Ok(report)
+    Ok(catalog
+        .with_gc_cleanup(prefix, grace, keep_generations, |plan| async move {
+            let mut report = IndexGcReport {
+                commits_deleted: plan.deleted_commit_rows,
+                ..Default::default()
+            };
+            if plan.deleted_commit_rows == 0
+                && plan.removed_filenames.is_empty()
+                && plan.removed_generations.is_empty()
+            {
+                return Ok(report);
+            }
+            let retained: HashSet<String> = plan.retained_filenames.into_iter().collect();
+            let removed_generations: HashSet<u64> =
+                plan.removed_generations.into_iter().collect();
+            let (objects, bytes) = sweep_shard_objects(
+                store,
+                prefix,
+                &retained,
+                &removed_generations,
+                grace,
+                keep_file,
+            )
+            .await
+            .map_err(|error| {
+                lakesoul_metadata::LakeSoulMetaDataError::Internal(format!(
+                    "index object sweep failed: {error}"
+                ))
+            })?;
+            report.objects_deleted = objects;
+            report.bytes_deleted = bytes;
+            Ok(report)
+        })
+        .await?)
 }
 
 /// Garbage collect the index files of a table.
@@ -190,4 +231,76 @@ pub async fn gc_index_shards<S: CatalogSegment, F: Fn(&str) -> bool>(
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod read_lease_tests {
+    use super::*;
+    use lakesoul_metadata::index_catalog::{CommitMode, VectorSegmentEntry};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_lease_gc_keeps_pinned_objects_until_release() {
+        let client = lakesoul_metadata::MetaDataClient::from_env().await.unwrap();
+        let catalog = client.vector_index_catalog();
+        let prefix = format!("read-lease-gc-{}", uuid::Uuid::new_v4());
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let old = object_store::path::Path::from(format!("{prefix}/old.seg"));
+        let new = object_store::path::Path::from(format!("{prefix}/new.seg"));
+        store
+            .put(&old, bytes::Bytes::from_static(b"old").into())
+            .await
+            .unwrap();
+        store
+            .put(&new, bytes::Bytes::from_static(b"new").into())
+            .await
+            .unwrap();
+        let segment = |filename: &str| VectorSegmentEntry {
+            cluster_id: 0,
+            segment_version: 0,
+            filename: filename.into(),
+            num_vectors: 1,
+            file_size: 3,
+            data_files: Vec::new(),
+            birth_version: 0,
+        };
+        let first = catalog
+            .commit(
+                &prefix,
+                b"header",
+                &[segment("old.seg")],
+                CommitMode::Rebuild,
+            )
+            .await
+            .unwrap();
+        let lease = catalog
+            .acquire_pinned_read_views(
+                &[(prefix.clone(), first.commit_id)],
+                "gc-object-test",
+            )
+            .await
+            .unwrap();
+        catalog
+            .commit(
+                &prefix,
+                b"header2",
+                &[segment("new.seg")],
+                CommitMode::Rebuild,
+            )
+            .await
+            .unwrap();
+        let keep_file = |name: &str| name.ends_with(".seg");
+        let plan = gc_shard_now(&store, &catalog, &prefix, Duration::ZERO, 1, &keep_file)
+            .await
+            .unwrap();
+        assert_eq!(plan.objects_deleted, 0);
+        assert!(store.get(&old).await.is_ok());
+        lease.release().await.unwrap();
+        let plan = gc_shard_now(&store, &catalog, &prefix, Duration::ZERO, 1, &keep_file)
+            .await
+            .unwrap();
+        assert_eq!(plan.objects_deleted, 1);
+        assert!(store.get(&old).await.is_err());
+        assert!(store.get(&new).await.is_ok());
+        catalog.delete_shard(&prefix).await.unwrap();
+    }
 }

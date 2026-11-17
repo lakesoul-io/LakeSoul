@@ -20,6 +20,7 @@ from .exceptions import (
     PermissionDeniedError,
     TableNotFoundError,
 )
+from .session import LakeSoulQueryError, LakeSoulSession
 
 __all__ = [
     "AlreadyExistsError",
@@ -27,7 +28,9 @@ __all__ = [
     "InvalidMetadataError",
     "LakeSoulCatalog",
     "LakeSoulError",
+    "LakeSoulQueryError",
     "LakeSoulScan",
+    "LakeSoulSession",
     "LakeSoulTable",
     "MetadataError",
     "MetadataUnavailableError",

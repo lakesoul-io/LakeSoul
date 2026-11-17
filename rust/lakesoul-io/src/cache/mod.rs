@@ -11,6 +11,7 @@ pub mod disk_cache;
 pub mod paging;
 pub mod read_through;
 pub mod stats;
+pub mod store_namespace;
 pub use read_through::ReadThroughCache;
 
 /// The page size of the process-wide disk cache.

@@ -88,6 +88,16 @@ enum Scenario {
     /// `ORDER BY array_distance(...) LIMIT k` (index candidates + exact
     /// re-rank).  Requires PostgreSQL metadata.
     Sql,
+    /// Hand-written Rust reference for the snapshot batch path: load the
+    /// table's vector shards straight from the catalog and run the same
+    /// "one thread per shard, rayon over queries, merge per query" pipeline
+    /// without DataFusion, to measure how close the SQL path gets.
+    RustShardBatch,
+    /// Planning-only probe: splits `ctx.sql` (parse+analysis), the logical
+    /// optimizer and the physical planner for the index-only vector statement
+    /// and for a trivial statement on the same table, so the per-statement
+    /// overheads can be attributed.
+    PlanProbe,
 }
 
 /// Rebuild policy exercised by the `stream`/`trigger` scenarios.
@@ -169,6 +179,15 @@ struct Args {
     search_stats: bool,
     /// Cluster-probe parallelism for the search scenario (1 = sequential).
     search_parallelism: usize,
+    /// SQL scenario: queries kept in flight at the same time (default 1).
+    concurrency: usize,
+    /// Repetitions of the planning-only probe (`--scenario plan-probe`).
+    probe_rounds: usize,
+    /// SQL scenario: queries per snapshot-batch search (0 = use per-query SQL).
+    batch_size: usize,
+    /// SQL scenario: only create the table, write the data and build the
+    /// index, then stop (search runs use `--reuse`).
+    build_only: bool,
     // ---- stream / trigger ----
     policy: Policy,
     max_delta_ratio: f32,
@@ -226,6 +245,10 @@ impl Default for Args {
             reuse: false,
             search_stats: false,
             search_parallelism: 1,
+            concurrency: 1,
+            probe_rounds: 30,
+            batch_size: 0,
+            build_only: false,
             policy: Policy::Auto,
             max_delta_ratio: 1.0,
             period: 3,
@@ -254,7 +277,8 @@ USAGE:
   cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench -- [OPTIONS]
 
 OPTIONS:
-  --scenario <build|search|stream|trigger|sql>  Scenario to run (default: build)
+  --scenario <build|search|stream|trigger|sql|rust-shard-batch|plan-probe>
+                                            Scenario to run (default: build)
   --base <path.fvecs>                       Base vectors (required)
   --query <path.fvecs>                      Query vectors (required)
   --gt <path.ivecs>                         Ground truth (optional; brute-forced if absent)
@@ -276,6 +300,14 @@ OPTIONS:
                                             (search scenario)
   --search-parallelism <n>                  Probe n clusters concurrently in the search scenario
                                             (default: 1 = sequential)
+  --concurrency <n>                         SQL scenario: queries kept in flight at the same time
+  --probe-rounds <n>                        plan-probe scenario: measured repetitions (default: 30)
+                                            (default: 1 = one query at a time)
+  --batch-size <n|auto>                     SQL scenario: run the queries through the snapshot-batch
+                                            vector search in groups of n, or `auto` for the default
+                                            (default: 0 = per-query SQL)
+  --build-only                              SQL scenario: build the table + index and stop, so the
+                                            search can run in its own process (with --reuse)
 
 STREAM / TRIGGER:
   --policy <none|auto|periodic|always>      Rebuild policy (default: auto)
@@ -324,6 +356,8 @@ fn parse_args() -> Result<Args, String> {
                     "stream" => Scenario::Stream,
                     "trigger" => Scenario::Trigger,
                     "sql" => Scenario::Sql,
+                    "rust-shard-batch" => Scenario::RustShardBatch,
+                    "plan-probe" => Scenario::PlanProbe,
                     other => return Err(format!("unknown scenario: {other}")),
                 };
             }
@@ -399,6 +433,27 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("bad --search-parallelism: {e}"))?
             }
+            "--probe-rounds" => {
+                args.probe_rounds = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --probe-rounds: {e}"))?;
+            }
+            "--concurrency" => {
+                args.concurrency = value(flag)?
+                    .parse::<usize>()
+                    .map_err(|e| format!("bad --concurrency: {e}"))?
+                    .max(1)
+            }
+            "--batch-size" => {
+                let raw = value(flag)?;
+                args.batch_size = if raw.eq_ignore_ascii_case("auto") {
+                    usize::MAX
+                } else {
+                    raw.parse::<usize>()
+                        .map_err(|e| format!("bad --batch-size: {e}"))?
+                }
+            }
+            "--build-only" => args.build_only = true,
             "--table" => args.table = value(flag)?,
             "--sql-format" => args.sql_format = value(flag)?,
             "--sql-hash-buckets" => {
@@ -499,8 +554,12 @@ fn parse_args() -> Result<Args, String> {
     if args.vector_type != VectorType::F32 && args.scenario != Scenario::Sql {
         return Err("--vector-type is only supported by --scenario sql".to_string());
     }
-    if args.rerank != "exact" && args.scenario != Scenario::Sql {
-        return Err("--rerank is only supported by --scenario sql".to_string());
+    if args.rerank != "exact"
+        && !matches!(args.scenario, Scenario::Sql | Scenario::PlanProbe)
+    {
+        return Err(
+            "--rerank is only supported by --scenario sql / plan-probe".to_string()
+        );
     }
     if args.table_root.is_some() && args.scenario != Scenario::Sql {
         return Err("--table-root is only supported by --scenario sql".to_string());
@@ -1105,6 +1164,7 @@ fn catalog_segments(
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
             data_files: segment.data_files.clone(),
+            birth_version: segment.birth_version,
         })
         .collect()
 }
@@ -1122,6 +1182,7 @@ fn vector_segments(
                 num_vectors: segment.num_vectors,
                 file_size: segment.file_size,
                 data_files: Vec::new(),
+                birth_version: segment.birth_version,
             },
         )
         .collect()
@@ -1566,6 +1627,364 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "index_size_bytes": index_size_bytes(&work_dir),
         "sweep": sweep,
         "diagnostics": diagnostics,
+    });
+    print_summary(&summary);
+    Ok(summary)
+}
+
+/// Planning-only probe for the single-query path.
+///
+/// The single-query statement pays three per-statement costs that are not the
+/// index search itself: parsing and analysing the SQL (which resolves the table
+/// through the catalog), the logical optimizer, and the physical planner.  This
+/// scenario times those three stages for the index-only vector statement and
+/// for a trivial statement on the same table, so a change can be attributed to
+/// the stage it actually affects.
+async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String> {
+    let client = Arc::new(
+        lakesoul_datafusion::MetaDataClient::from_env()
+            .await
+            .map_err(|e| format!("plan-probe requires PostgreSQL metadata: {e}"))?,
+    );
+    let table_name = args.table.clone();
+    let core = core_args();
+    let mut session_config = lakesoul_datafusion::create_lakesoul_session_config()
+        .map_err(|e| format!("session config: {e}"))?;
+    let mut vector_options = LakeSoulVectorSearchConfig::default();
+    vector_options.nprobe = args.nprobe;
+    vector_options.rerank = args.rerank.clone();
+    vector_options.parallelism = args.search_parallelism;
+    session_config
+        .options_mut()
+        .extensions
+        .insert(vector_options);
+    let ctx = lakesoul_datafusion::create_lakesoul_session_ctx_with_config(
+        client.clone(),
+        &core,
+        session_config,
+    )
+    .map_err(|e| format!("probe session: {e}"))?;
+    let state = ctx.state();
+    if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
+        let names = state
+            .optimizer()
+            .rules
+            .iter()
+            .map(|rule| rule.name())
+            .collect::<Vec<_>>();
+        println!("optimizer rules: {names:?}");
+    }
+    let vector_sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         {}limit {}",
+        metric_order_by(args.metric, &query_literal(dataset, 0)),
+        args.top_k
+    );
+    let trivial_sql = format!(
+        "select id from \"lakesoul\".default.{table_name} limit {}",
+        args.top_k
+    );
+    // The same statement with a two-element query vector: planning does not
+    // check dimensions, so this isolates how much of the planning cost comes
+    // from the per-dimension literal instead of the query shape.
+    let short_vector_sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         {}limit {}",
+        metric_order_by(args.metric, "0.1,0.2"),
+        args.top_k
+    );
+
+    let rounds = args.probe_rounds.max(1);
+    for _ in 0..3 {
+        let _ = ctx.sql(&vector_sql).await.map_err(|e| format!("{e}"))?;
+        let _ = ctx.sql(&trivial_sql).await.map_err(|e| format!("{e}"))?;
+        let _ = ctx
+            .sql(&short_vector_sql)
+            .await
+            .map_err(|e| format!("{e}"))?;
+    }
+    let probe_logs = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+    let mut stages: Vec<(&str, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> = vec![
+        (
+            "vector_index_only",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        (
+            "vector_two_element",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        (
+            "trivial_limit",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+    ];
+    for _ in 0..rounds {
+        for (name, sql) in [
+            ("vector_index_only", &vector_sql),
+            ("vector_two_element", &short_vector_sql),
+            ("trivial_limit", &trivial_sql),
+        ] {
+            let t = Instant::now();
+            let _ = datafusion::sql::parser::DFParser::parse_sql(sql)
+                .map_err(|e| format!("parse: {e}"))?;
+            let parse_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let t = Instant::now();
+            let dataframe = ctx.sql(sql).await.map_err(|e| format!("{e}"))?;
+            let plan_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let logical = dataframe.logical_plan().clone();
+            let t = Instant::now();
+            let optimized = state
+                .optimize(&logical)
+                .map_err(|e| format!("optimize: {e}"))?;
+            let optimize_ms = t.elapsed().as_secs_f64() * 1000.0;
+            // Second optimization of the already-optimized plan: separates the
+            // per-call setup/checks from the first pass over the raw plan.
+            let t = Instant::now();
+            let _again = state
+                .optimize(&optimized)
+                .map_err(|e| format!("optimize: {e}"))?;
+            let optimize_again_ms = t.elapsed().as_secs_f64() * 1000.0;
+            if name == "vector_index_only" && probe_logs {
+                println!("optimized plan:\n{}", optimized.display_indent());
+            }
+            let t = Instant::now();
+            let physical = state
+                .create_physical_plan(&optimized)
+                .await
+                .map_err(|e| format!("physical plan: {e}"))?;
+            let physical_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let stages_entry = stages
+                .iter_mut()
+                .find(|(entry, _, _, _, _, _)| *entry == name)
+                .expect("stage entry");
+            stages_entry.1.push(parse_ms);
+            stages_entry.2.push(plan_ms);
+            stages_entry.3.push(optimize_ms);
+            stages_entry.4.push(optimize_again_ms);
+            stages_entry.5.push(physical_ms);
+            std::hint::black_box(&physical);
+        }
+    }
+
+    fn summary(values: &[f64]) -> Value {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(|left, right| left.total_cmp(right));
+        let mean = sorted.iter().sum::<f64>() / sorted.len().max(1) as f64;
+        let p50 = sorted[sorted.len() / 2];
+        json!({"mean_ms": mean, "p50_ms": p50, "min_ms": sorted.first().copied().unwrap_or(0.0)})
+    }
+    let mut result = serde_json::Map::new();
+    for (name, parse, plan, optimize, optimize_again, physical) in &stages {
+        result.insert(
+            name.to_string(),
+            json!({
+                "parse_only": summary(parse),
+                "parse_analyze": summary(plan),
+                "analyze_only": summary(
+                    &plan.iter()
+                        .zip(parse.iter())
+                        .map(|(a, b)| a - b)
+                        .collect::<Vec<_>>()
+                ),
+                "logical_optimizer": summary(optimize),
+                "logical_optimizer_again": summary(optimize_again),
+                "physical_planner": summary(physical),
+                "total_ms": summary(
+                    &plan.iter()
+                        .zip(optimize.iter())
+                        .zip(physical.iter())
+                        .map(|((a, b), c)| a + b + c)
+                        .collect::<Vec<_>>()
+                ),
+            }),
+        );
+    }
+    let out = json!({
+        "scenario": "plan-probe",
+        "table": table_name,
+        "rounds": rounds,
+        "top_k": args.top_k,
+        "nprobe": args.nprobe,
+        "stages": result,
+    });
+    print_summary(&out);
+    Ok(out)
+}
+
+/// Hand-written Rust reference for the snapshot batch path.
+///
+/// Loads every vector shard of the table's data directory straight from the
+/// catalog and runs the same pipeline the batch entry uses — one thread per
+/// shard calling `IvfRabitqIndex::batch_search` (rayon over the queries
+/// inside), then a per-query merge across the shards — without DataFusion, the
+/// native reader or the SQL planner.  The reported QPS is the ceiling the SQL
+/// batch entry is compared against.
+async fn run_rust_shard_batch(args: &Args, dataset: &Dataset) -> Result<Value, String> {
+    use lakesoul_io::index::key::{KeyCodec, KeyLayout};
+
+    let work_dir = prepare_work_dir(&args.work_dir)?;
+    let files = find_data_files(&work_dir);
+    if files.is_empty() {
+        return Err(format!(
+            "no vortex data files under {} — run the sql scenario first",
+            work_dir.display()
+        ));
+    }
+    let catalog = bench_catalog().await?;
+    let prefixes = all_shard_prefixes(&files, VEC_COLUMN);
+    if prefixes.is_empty() {
+        return Err("no vector index shards for the data files".to_string());
+    }
+    let t_load = Instant::now();
+    let mut indexes = Vec::with_capacity(prefixes.len());
+    for prefix in &prefixes {
+        indexes.push(load_index(&catalog, prefix).await?);
+    }
+    let load_ms = t_load.elapsed().as_secs_f64() * 1000.0;
+    // The table's primary key is an Int64 column; decode it the way the scan
+    // does, one bulk call per shard.
+    let codec = KeyCodec::new(KeyLayout::new(
+        vec![PK_COLUMN.to_string()],
+        vec![DataType::Int64],
+    ))
+    .map_err(|e| format!("key codec: {e}"))?;
+
+    let nq = dataset.queries.n;
+    let top_k = args.top_k;
+    let params =
+        SearchParams::new(top_k, args.nprobe).with_parallelism(args.search_parallelism);
+    let query_refs: Vec<&[f32]> = (0..nq).map(|i| dataset.queries.query(i)).collect();
+
+    // Batched throughput: one thread per shard, rayon over the queries inside —
+    // exactly the structure of the snapshot batch entry.
+    let t = Instant::now();
+    let mut per_shard = Vec::with_capacity(indexes.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = indexes
+            .iter()
+            .map(|index| {
+                let query_refs = &query_refs;
+                scope.spawn(move || index.batch_search(query_refs, params))
+            })
+            .collect();
+        for handle in handles {
+            per_shard.push(handle.join().expect("rust shard batch thread"));
+        }
+    });
+    let batch_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+    // Decode the ids of every shard in one call, then merge per query.
+    let merge_start = Instant::now();
+    let mut ids_per_shard: Vec<Vec<Vec<i64>>> = Vec::with_capacity(per_shard.len());
+    for results in &per_shard {
+        let keys: Vec<lakesoul_vector::IndexKey> = results
+            .iter()
+            .flat_map(|per_query| match per_query {
+                Ok(hits) => hits.iter().map(|hit| hit.id.clone()).collect::<Vec<_>>(),
+                Err(_) => Vec::new(),
+            })
+            .collect();
+        let decoded = codec
+            .decode(&keys)
+            .map_err(|e| format!("key decode: {e}"))?;
+        let values = decoded[0]
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .ok_or("key decode did not produce an Int64Array")?;
+        let mut ids = values.iter().map(|value| value.unwrap_or_default());
+        let mut per_query = Vec::with_capacity(results.len());
+        for result in results {
+            let count = result.as_ref().map(|hits| hits.len()).unwrap_or(0);
+            per_query.push(ids.by_ref().take(count).collect::<Vec<i64>>());
+        }
+        ids_per_shard.push(per_query);
+    }
+    let gt = if dataset.gt.n == nq {
+        Some(dataset.gt.clone())
+    } else {
+        None
+    };
+    let mut recall_sum = 0.0f64;
+    let mut counted = 0usize;
+    for query_index in 0..nq {
+        let mut ranked: Vec<(f32, i64)> = Vec::with_capacity(indexes.len() * top_k);
+        for (shard_index, results) in per_shard.iter().enumerate() {
+            let Ok(hits) = &results[query_index] else {
+                continue;
+            };
+            let ids = &ids_per_shard[shard_index][query_index];
+            ranked.extend(hits.iter().zip(ids).map(|(hit, id)| (hit.score, *id)));
+        }
+        ranked.sort_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        ranked.truncate(top_k);
+        if let Some(gt) = &gt {
+            let predicted: Vec<u64> = ranked.iter().map(|(_, id)| *id as u64).collect();
+            recall_sum += recall_at_k(&predicted, gt.row(query_index), top_k);
+            counted += 1;
+        }
+    }
+    let merge_ms = merge_start.elapsed().as_secs_f64() * 1000.0;
+    let recall_at_k = if counted > 0 {
+        recall_sum / counted as f64
+    } else {
+        f64::NAN
+    };
+    let pipeline_ms = load_ms + batch_ms + merge_ms;
+
+    // Single-threaded latency of one query across every shard.
+    let mut latencies = Vec::with_capacity(nq);
+    for query in &query_refs {
+        let t = Instant::now();
+        for index in &indexes {
+            let _ = index.search(query, params);
+        }
+        latencies.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    latencies.sort_by(|a, b| a.total_cmp(b));
+    let percentile = |p: f64| -> f64 {
+        if latencies.is_empty() {
+            return 0.0;
+        }
+        latencies[((latencies.len() as f64 - 1.0) * p).round() as usize]
+    };
+    let mean_ms = latencies.iter().sum::<f64>() / latencies.len().max(1) as f64;
+
+    let summary = json!({
+        "scenario": "rust-shard-batch",
+        "shards": prefixes.len(),
+        "shard_sizes": indexes.iter().map(|index| index.len()).collect::<Vec<_>>(),
+        "dim": dataset.dim(),
+        "n_queries": nq,
+        "top_k": top_k,
+        "nprobe": args.nprobe,
+        "search_parallelism": args.search_parallelism,
+        "load_ms": load_ms,
+        "batch_ms": batch_ms,
+        "qps": nq as f64 / (batch_ms / 1000.0),
+        "merge_ms": merge_ms,
+        "pipeline_ms": pipeline_ms,
+        "pipeline_qps": nq as f64 / (pipeline_ms / 1000.0),
+        "single_thread_p50_ms": percentile(0.50),
+        "single_thread_p99_ms": percentile(0.99),
+        "single_thread_mean_ms": mean_ms,
+        "recall_at_k": recall_at_k,
+        "peak_rss_mb": peak_rss_mb(),
     });
     print_summary(&summary);
     Ok(summary)
@@ -2275,6 +2694,21 @@ async fn create_sql_table(
         .map_err(|e| format!("create table: {e}"))
 }
 
+/// `ORDER BY <distance expression>` for the benchmark's metric.
+///
+/// The expression has to match the index metric: a table indexed with IP only
+/// pushes down an `inner_product(..) DESC` sort, and an L2 `array_distance`
+/// over an IP index falls back to a full scan (which would make EXPLAIN
+/// ANALYZE read the whole vector column and dominate the run).
+fn metric_order_by(metric: Metric, query_literal: &str) -> String {
+    match metric {
+        Metric::L2 => format!("order by array_distance(vec, ARRAY[{query_literal}]) "),
+        Metric::InnerProduct => {
+            format!("order by inner_product(vec, ARRAY[{query_literal}]) desc ")
+        }
+    }
+}
+
 fn query_literal(dataset: &Dataset, i: usize) -> String {
     dataset
         .queries
@@ -2317,7 +2751,11 @@ async fn explain_text(
 async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let dim = dataset.dim();
     let work_dir = prepare_work_dir(&args.work_dir)?;
-    clean_work_dir(&work_dir)?;
+    let reuse = args.reuse;
+    // `--reuse` searches a table that a previous `--build-only` run created.
+    if !reuse {
+        clean_work_dir(&work_dir)?;
+    }
     let table_name = args.table.clone();
     // The table (data + index) lives in `--table-root` when given — e.g. an
     // `s3://bucket/prefix` URL — and falls back to the local work directory.
@@ -2331,6 +2769,29 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             .await
             .map_err(|e| format!("sql scenario requires PostgreSQL metadata: {e}"))?,
     );
+    if reuse {
+        if args.rounds > 0 {
+            return Err("--reuse does not support --rounds".to_string());
+        }
+        if dataset.gt.n != dataset.queries.n {
+            return Err(
+                "--reuse needs a ground-truth file matching --n-queries".to_string()
+            );
+        }
+        println!("reusing existing table {table_name}");
+        return run_sql_search(
+            args,
+            dataset,
+            &client,
+            &table_name,
+            &table_root,
+            &work_dir,
+            &dataset.gt,
+            0.0,
+            Vec::new(),
+        )
+        .await;
+    }
     let _ = client.drop_table(&table_name, "default").await;
 
     // 1. Create the table (Arrow schema + vector index property) through the
@@ -2442,9 +2903,72 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         }
     }
 
+    if args.build_only {
+        let index_state = collect_all_shard_stats(&find_data_files(&work_dir))
+            .await
+            .unwrap_or(Value::Null);
+        let index_bytes = index_size_bytes(&work_dir);
+        let data_bytes = dir_size_bytes(&work_dir).saturating_sub(index_bytes);
+        let summary = json!({
+            "scenario": "sql-build",
+            "table": table_name,
+            "table_root": table_root,
+            "dim": dim,
+            "n_base": dataset.base.n,
+            "n_rounds": args.rounds,
+            "base_insert_ms": base_insert_ms,
+            "round_insert_ms": round_insert_ms,
+            "data_size_bytes": data_bytes,
+            "index_size_bytes": index_bytes,
+            "index_state": index_state,
+            "peak_rss_mb": peak_rss_mb(),
+        });
+        print_summary(&summary);
+        return Ok(summary);
+    }
+
     // 4. Ground truth over the current dataset.
     let gt = brute_force_gt(&vectors, dim, &dataset.queries, args.top_k, args.threads);
+    // Drop the build/ground-truth copies so the query phase is measured on the
+    // memory a query actually keeps alive.
+    drop(vectors);
+    drop(base_batch);
+    let _ = src_schema.deregister_table("bench_src");
 
+    run_sql_search(
+        args,
+        dataset,
+        &client,
+        &table_name,
+        &table_root,
+        &work_dir,
+        &gt,
+        base_insert_ms,
+        round_insert_ms,
+    )
+    .await
+}
+
+/// Search phase of the SQL scenario: open a session with the vector-search
+/// options, run the queries (per-query SQL or snapshot-batch) and summarize.
+///
+/// Kept separate from the build phase so a search-only process (with
+/// `--reuse`) measures the query path without the memory and CPU of the
+/// insert and index build.
+#[allow(clippy::too_many_arguments)]
+async fn run_sql_search(
+    args: &Args,
+    dataset: &Dataset,
+    client: &Arc<lakesoul_datafusion::MetaDataClient>,
+    table_name: &str,
+    table_root: &str,
+    work_dir: &Path,
+    gt: &Ivecs,
+    base_insert_ms: f64,
+    round_insert_ms: Vec<f64>,
+) -> Result<Value, String> {
+    let dim = dataset.dim();
+    let core = core_args();
     // 5. Search session with the vector-search options.
     let mut session_config = lakesoul_datafusion::create_lakesoul_session_config()
         .map_err(|e| format!("session config: {e}"))?;
@@ -2466,8 +2990,8 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     // 6. EXPLAIN must show the index-candidate + exact-rerank exec node.
     let explain_sql = format!(
         "EXPLAIN VERBOSE select id from \"lakesoul\".default.{table_name} \
-         order by array_distance(vec, ARRAY[{}]) limit {}",
-        query_literal(dataset, 0),
+         {}limit {}",
+        metric_order_by(args.metric, &query_literal(dataset, 0)),
         args.top_k
     );
     let explain = explain_text(&search_ctx, &explain_sql).await?;
@@ -2475,57 +2999,143 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     // Per-operator timings for the same query (diagnostic).
     let analyze_sql = format!(
         "EXPLAIN ANALYZE select id from \"lakesoul\".default.{table_name} \
-         order by array_distance(vec, ARRAY[{}]) limit {}",
-        query_literal(dataset, 0),
+         {}limit {}",
+        metric_order_by(args.metric, &query_literal(dataset, 0)),
         args.top_k
     );
     let explain_analyze = explain_text(&search_ctx, &analyze_sql).await?;
 
-    // 7. End-to-end SQL latency and recall, one query at a time; split into
-    // logical planning, physical planning (table metadata + file listing) and
-    // execution (index probe + candidate scan + exact re-rank).
+    if args.batch_size > 0 {
+        let mut summary =
+            run_batch_probe(args, dataset, &search_ctx, &gt, &table_name).await?;
+        if let Some(object) = summary.as_object_mut() {
+            object.insert("explain".to_string(), json!(explain));
+            object.insert("explain_analyze".to_string(), json!(explain_analyze));
+        }
+        print_summary(&summary);
+        return Ok(summary);
+    }
+
+    // 7. End-to-end SQL latency and recall, one query at a time (or
+    // `--concurrency` queries in flight), split into logical planning,
+    // physical planning (table metadata + file listing) and execution (index
+    // probe + candidate scan + exact re-rank).
     let nq = dataset.queries.n;
     let mut latencies = Vec::with_capacity(nq);
     let mut plan_ms = Vec::with_capacity(nq);
     let mut phys_ms = Vec::with_capacity(nq);
     let mut exec_ms = Vec::with_capacity(nq);
     let mut recall_sum = 0.0;
-    for qi in 0..nq {
-        let sql = format!(
-            "select id from \"lakesoul\".default.{table_name} \
-             order by array_distance(vec, ARRAY[{}]) limit {}",
-            query_literal(dataset, qi),
-            args.top_k
-        );
-        let t = Instant::now();
-        let df = search_ctx
-            .sql(&sql)
-            .await
-            .map_err(|e| format!("query: {e}"))?;
-        let t_plan = t.elapsed();
-        let t = Instant::now();
-        let plan = df
-            .create_physical_plan()
-            .await
-            .map_err(|e| format!("query: {e}"))?;
-        let t_phys = t.elapsed();
-        let t = Instant::now();
-        let batches = datafusion::physical_plan::collect(plan, search_ctx.task_ctx())
-            .await
-            .map_err(|e| format!("query: {e}"))?;
-        let t_exec = t.elapsed();
-        plan_ms.push(t_plan.as_secs_f64() * 1000.0);
-        phys_ms.push(t_phys.as_secs_f64() * 1000.0);
-        exec_ms.push(t_exec.as_secs_f64() * 1000.0);
-        latencies.push((t_plan + t_phys + t_exec).as_secs_f64() * 1000.0);
-        let mut predicted = Vec::new();
-        for batch in &batches {
-            if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
-                predicted.extend(arr.values().iter().map(|&v| v as u64));
+    let cpu_before = process_cpu_ms();
+    let mut plan_cpu_ms = 0.0f64;
+    let mut phys_cpu_ms = 0.0f64;
+    let mut exec_cpu_ms = 0.0f64;
+    let t_loop = Instant::now();
+    if args.concurrency <= 1 {
+        for qi in 0..nq {
+            let sql = format!(
+                "select id from \"lakesoul\".default.{table_name} \
+                 {}limit {}",
+                metric_order_by(args.metric, &query_literal(dataset, qi)),
+                args.top_k
+            );
+            let cpu0 = process_cpu_ms();
+            let t = Instant::now();
+            let df = search_ctx
+                .sql(&sql)
+                .await
+                .map_err(|e| format!("query: {e}"))?;
+            let t_plan = t.elapsed();
+            let cpu1 = process_cpu_ms();
+            let t = Instant::now();
+            let plan = df
+                .create_physical_plan()
+                .await
+                .map_err(|e| format!("query: {e}"))?;
+            let t_phys = t.elapsed();
+            let cpu2 = process_cpu_ms();
+            let t = Instant::now();
+            let batches = datafusion::physical_plan::collect(plan, search_ctx.task_ctx())
+                .await
+                .map_err(|e| format!("query: {e}"))?;
+            let t_exec = t.elapsed();
+            let cpu3 = process_cpu_ms();
+            if let (Some(a), Some(b), Some(c), Some(d)) = (cpu0, cpu1, cpu2, cpu3) {
+                plan_cpu_ms += b - a;
+                phys_cpu_ms += c - b;
+                exec_cpu_ms += d - c;
             }
+            plan_ms.push(t_plan.as_secs_f64() * 1000.0);
+            phys_ms.push(t_phys.as_secs_f64() * 1000.0);
+            exec_ms.push(t_exec.as_secs_f64() * 1000.0);
+            latencies.push((t_plan + t_phys + t_exec).as_secs_f64() * 1000.0);
+            let mut predicted = Vec::new();
+            for batch in &batches {
+                if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
+                    predicted.extend(arr.values().iter().map(|&v| v as u64));
+                }
+            }
+            recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
         }
-        recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
+    } else {
+        // Keep `--concurrency` queries in flight on the same session: this is
+        // what a serving deployment does, and it shows how much of the
+        // per-query setup cost overlaps instead of adding up.
+        let mut next = 0usize;
+        while next < nq {
+            let end = (next + args.concurrency).min(nq);
+            let mut tasks = tokio::task::JoinSet::new();
+            for qi in next..end {
+                let ctx = search_ctx.clone();
+                let sql = format!(
+                    "select id from \"lakesoul\".default.{table_name} \
+                     {}limit {}",
+                    metric_order_by(args.metric, &query_literal(dataset, qi)),
+                    args.top_k
+                );
+                tasks.spawn(async move {
+                    let t = Instant::now();
+                    let df = ctx.sql(&sql).await?;
+                    let t_plan = t.elapsed();
+                    let t = Instant::now();
+                    let plan = df.create_physical_plan().await?;
+                    let t_phys = t.elapsed();
+                    let t = Instant::now();
+                    let batches =
+                        datafusion::physical_plan::collect(plan, ctx.task_ctx()).await?;
+                    let t_exec = t.elapsed();
+                    Ok::<_, datafusion::error::DataFusionError>((
+                        qi, t_plan, t_phys, t_exec, batches,
+                    ))
+                });
+            }
+            while let Some(joined) = tasks.join_next().await {
+                let (qi, t_plan, t_phys, t_exec, batches) = joined
+                    .map_err(|e| format!("query task failed: {e}"))?
+                    .map_err(|e| format!("query: {e}"))?;
+                plan_ms.push(t_plan.as_secs_f64() * 1000.0);
+                phys_ms.push(t_phys.as_secs_f64() * 1000.0);
+                exec_ms.push(t_exec.as_secs_f64() * 1000.0);
+                latencies.push((t_plan + t_phys + t_exec).as_secs_f64() * 1000.0);
+                let mut predicted = Vec::new();
+                for batch in &batches {
+                    if let Some(arr) =
+                        batch.column(0).as_any().downcast_ref::<Int64Array>()
+                    {
+                        predicted.extend(arr.values().iter().map(|&v| v as u64));
+                    }
+                }
+                recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
+            }
+            next = end;
+        }
     }
+    let query_wall_s = t_loop.elapsed().as_secs_f64();
+    let query_cpu_ms = match (cpu_before, process_cpu_ms()) {
+        (Some(before), Some(after)) => (after - before).max(0.0),
+        _ => 0.0,
+    };
+
     let mean = |v: &[f64]| -> f64 {
         if v.is_empty() {
             0.0
@@ -2543,8 +3153,10 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         latencies[((latencies.len() as f64 - 1.0) * p).round() as usize]
     };
     let total_ms: f64 = latencies.iter().sum();
-    let qps = if total_ms > 0.0 {
-        nq as f64 / (total_ms / 1000.0)
+    // Wall-clock throughput: identical to `nq / sum(latency)` for a serial
+    // run and the meaningful number when several queries are in flight.
+    let qps = if query_wall_s > 0.0 {
+        nq as f64 / query_wall_s
     } else {
         f64::INFINITY
     };
@@ -2569,6 +3181,13 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "top_k": args.top_k,
         "nprobe": args.nprobe,
         "search_parallelism": args.search_parallelism,
+        "concurrency": args.concurrency,
+        "query_wall_ms": query_wall_s * 1000.0,
+        "query_cpu_ms": query_cpu_ms,
+        "query_cpu_ms_per_query": query_cpu_ms / nq.max(1) as f64,
+        "plan_cpu_ms_per_query": plan_cpu_ms / nq.max(1) as f64,
+        "physical_plan_cpu_ms_per_query": phys_cpu_ms / nq.max(1) as f64,
+        "exec_cpu_ms_per_query": exec_cpu_ms / nq.max(1) as f64,
         "base_insert_ms": base_insert_ms,
         "round_insert_ms": round_insert_ms,
         "recall_at_k": recall_sum / nq.max(1) as f64,
@@ -2591,6 +3210,176 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     Ok(summary)
 }
 
+/// Run the queries through the snapshot-batch vector search.
+///
+/// Every group of `--batch-size` queries shares one snapshot: the shard
+/// commits are resolved once, the index probe runs once per shard for the
+/// whole group and the candidate rows are verified with one native-reader
+/// pass per bucket.
+async fn run_batch_probe(
+    args: &Args,
+    dataset: &Dataset,
+    search_ctx: &datafusion::prelude::SessionContext,
+    gt: &Ivecs,
+    table_name: &str,
+) -> Result<Value, String> {
+    // The provider pins the snapshot the batch runs on: it lists the files of
+    // the current snapshot and hands them to the batch search together with
+    // the index shard commits.
+    let state = search_ctx.state();
+    let catalog = search_ctx
+        .catalog("lakesoul")
+        .ok_or_else(|| "lakesoul catalog is not registered".to_string())?;
+    let schema_provider = catalog
+        .schema("default")
+        .ok_or_else(|| "default schema is missing".to_string())?;
+    let table = schema_provider
+        .table(table_name)
+        .await
+        .map_err(|error| format!("table {table_name}: {error}"))?
+        .ok_or_else(|| format!("table {table_name} is not registered"))?;
+    let provider = table
+        .downcast_ref::<lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider>()
+        .ok_or_else(|| format!("table {table_name} is not a LakeSoul table"))?;
+    let table_prefix = args
+        .table_root
+        .clone()
+        .unwrap_or_else(|| args.work_dir.to_string_lossy().to_string());
+    let nq = dataset.queries.n;
+    let queries: Vec<Vec<f32>> = (0..nq)
+        .map(|query| dataset.queries.query(query).to_vec())
+        .collect();
+    // Warm the batch entry's shared caches (index shards, payload views) with
+    // a small batch.  The SQL warm-up above only exercises the SQL path, whose
+    // pushdown depends on the metric (a table whose index uses IP falls back
+    // to a full scan there), so without this the measured batch would pay the
+    // first-load cost that the L2 table already paid during its warm-up.
+    {
+        let metric = match args.metric {
+            Metric::L2 => "L2".to_string(),
+            Metric::InnerProduct => "IP".to_string(),
+        };
+        let warm = lakesoul_datafusion::vector_batch::VectorBatchRequest {
+            column: VEC_COLUMN.to_string(),
+            queries: queries.iter().take(64).cloned().collect(),
+            top_k: args.top_k,
+            nprobe: args.nprobe,
+            parallelism: args.search_parallelism,
+            batch_size: 0,
+            exact: args.rerank == "exact",
+            exact_overfetch: std::env::var("LAKESOUL_VECTOR_EXACT_OVERFETCH")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1),
+            metric,
+        };
+        let _ = provider
+            .vector_batch_search(&state, &warm)
+            .await
+            .map_err(|error| format!("batch warmup: {error}"))?;
+    }
+    let cpu_before = process_cpu_ms();
+    let rss_before = process_rss_mb();
+    let mut query_rss_peak_mb = rss_before.unwrap_or(0.0);
+    let t_all = Instant::now();
+    let mut latencies: Vec<f64> = Vec::with_capacity(nq);
+    let mut batch_ms: Vec<f64> = Vec::new();
+    let mut recall_sum = 0.0;
+    let request = lakesoul_datafusion::vector_batch::VectorBatchRequest {
+        column: VEC_COLUMN.to_string(),
+        queries,
+        top_k: args.top_k,
+        nprobe: args.nprobe,
+        parallelism: args.search_parallelism,
+        // `auto` selects the API default batch size.
+        batch_size: if args.batch_size == usize::MAX {
+            0
+        } else {
+            args.batch_size
+        },
+        // `--rerank exact` also applies to the snapshot batch entry.
+        exact: args.rerank == "exact",
+        exact_overfetch: std::env::var("LAKESOUL_VECTOR_EXACT_OVERFETCH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
+        metric: match args.metric {
+            Metric::L2 => "L2".to_string(),
+            Metric::InnerProduct => "IP".to_string(),
+        },
+    };
+    let batch_size = request.batch_size();
+    let t = Instant::now();
+    let results = provider
+        .vector_batch_search(&state, &request)
+        .await
+        .map_err(|error| format!("batch vector search: {error}"))?;
+    let elapsed_ms = t.elapsed().as_secs_f64() * 1000.0;
+    if let Some(rss) = process_rss_mb() {
+        query_rss_peak_mb = query_rss_peak_mb.max(rss);
+    }
+    batch_ms.push(elapsed_ms);
+    let per_query_ms = elapsed_ms / results.len().max(1) as f64;
+    for (query, ids) in results.iter().enumerate() {
+        let predicted: Vec<u64> = ids.iter().map(|&id| id as u64).collect();
+        recall_sum += recall_at_k(&predicted, gt.row(query), args.top_k);
+        latencies.push(per_query_ms);
+    }
+    let wall_ms = t_all.elapsed().as_secs_f64() * 1000.0;
+    let cpu_ms = match (cpu_before, process_cpu_ms()) {
+        (Some(before), Some(after)) => (after - before).max(0.0),
+        _ => 0.0,
+    };
+    batch_ms.sort_by(|left, right| left.total_cmp(right));
+    latencies.sort_by(|left, right| left.total_cmp(right));
+    let percentile = |values: &[f64], p: f64| -> f64 {
+        if values.is_empty() {
+            return 0.0;
+        }
+        values[((values.len() as f64 - 1.0) * p).round() as usize]
+    };
+    let qps = if wall_ms > 0.0 {
+        nq as f64 / (wall_ms / 1000.0)
+    } else {
+        f64::INFINITY
+    };
+    Ok(json!({
+        "scenario": "sql-batch",
+        "table": table_name,
+        "table_root": table_prefix,
+        "vector_type": args.vector_type.name(),
+        "rerank": "index",
+        "gt_source": "original-f32",
+        "dim": dataset.dim(),
+        "n_base": dataset.base.n,
+        "n_rounds": args.rounds,
+        "n_queries": nq,
+        "top_k": args.top_k,
+        "nprobe": args.nprobe,
+        "search_parallelism": args.search_parallelism,
+        "batch_size": batch_size,
+        "concurrency": 1,
+        "query_wall_ms": wall_ms,
+        "query_cpu_ms": cpu_ms,
+        "query_cpu_ms_per_query": cpu_ms / nq.max(1) as f64,
+        "recall_at_k": recall_sum / nq.max(1) as f64,
+        "qps": qps,
+        "mean_ms": wall_ms / nq.max(1) as f64,
+        "p50_ms": percentile(&latencies, 0.50),
+        "p99_ms": percentile(&latencies, 0.99),
+        "batch_ms_p50": percentile(&batch_ms, 0.50),
+        "batch_ms_p99": percentile(&batch_ms, 0.99),
+        "plan_mean_ms": 0.0,
+        "physical_plan_mean_ms": 0.0,
+        "exec_mean_ms": wall_ms / nq.max(1) as f64,
+        "uses_vector_index_exec": true,
+        "query_rss_before_mb": rss_before.unwrap_or(0.0),
+        "query_rss_after_mb": process_rss_mb().unwrap_or(0.0),
+        "query_rss_peak_mb": query_rss_peak_mb,
+        "peak_rss_mb": peak_rss_mb(),
+    }))
+}
+
 async fn run_trigger(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     run_stream_inner(args, dataset, true).await
 }
@@ -2598,6 +3387,34 @@ async fn run_trigger(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
+
+/// Resident set size of this process in MiB.
+///
+/// The query-phase RSS is the number that matters for a serving deployment:
+/// `peak_rss_mb` also covers the build/insert phases, which hold the source
+/// vectors in the benchmark process.
+fn process_rss_mb() -> Option<f64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    let page_size = 4096.0;
+    Some(pages as f64 * page_size / (1024.0 * 1024.0))
+}
+
+/// CPU time this process has used so far (user + system), in milliseconds.
+///
+/// Reading `/proc/self/stat` keeps this std-only and lets the SQL scenario
+/// report how much CPU one query actually costs — a serial latency number
+/// hides the parallel reader/index work behind it.
+fn process_cpu_ms() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let close = stat.rfind(')')?;
+    let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+    // Fields after the comm: state(3) ppid(4) ... utime(14) stime(15).
+    let utime: f64 = rest.get(11)?.parse().ok()?;
+    let stime: f64 = rest.get(12)?.parse().ok()?;
+    // USER_HZ is 100 on Linux.
+    Some((utime + stime) / 100.0 * 1000.0)
+}
 
 fn print_summary(summary: &Value) {
     println!("\n── summary ──");
@@ -2636,10 +3453,25 @@ fn main() {
         // SAFETY: single-threaded at this point, before any rayon pool exists.
         unsafe { std::env::set_var("RAYON_NUM_THREADS", args.threads.to_string()) };
     }
+    // Opt-in tracing so a profiling run can read the per-bucket
+    // create/start/scan lines (`LAKESOUL_VECTOR_SEARCH_PROFILE=1`) and the
+    // native reader's own spans.  Default runs install no subscriber, so the
+    // timings are unaffected.
+    if std::env::var_os("RUST_LOG").is_some() {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .try_init();
+    }
 
+    // One worker per requested thread: a service runtime is sized to its cores,
+    // and capping it at eight hid how the single-query path scales past eight
+    // concurrent statements (each statement plans on one worker).
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(args.threads.min(8))
+        .worker_threads(args.threads)
         .build()
         .expect("tokio runtime");
 
@@ -2651,6 +3483,8 @@ fn main() {
             Scenario::Stream => run_stream(&args, &dataset).await,
             Scenario::Trigger => run_trigger(&args, &dataset).await,
             Scenario::Sql => run_sql(&args, &dataset).await,
+            Scenario::RustShardBatch => run_rust_shard_batch(&args, &dataset).await,
+            Scenario::PlanProbe => run_plan_probe(&args, &dataset).await,
         }
     });
 

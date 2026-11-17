@@ -132,7 +132,6 @@ impl LakeSoulTextSearchExec {
     /// Build the native reader configuration for one file group.
     async fn reader_config(
         &self,
-        store: &Arc<dyn object_store::ObjectStore>,
         files: &[PartitionedFile],
         partition_values: &[ScalarValue],
     ) -> DFResult<LakeSoulIOConfig> {
@@ -172,7 +171,6 @@ impl LakeSoulTextSearchExec {
                 continue;
             };
             if !lakesoul_io::index::cache::is_loaded(
-                store,
                 IndexKind::Text,
                 index_prefix.trim_end_matches('/'),
                 view.commit_id,
@@ -214,6 +212,8 @@ impl LakeSoulTextSearchExec {
                 version: view.version,
                 header: view.header,
                 segments,
+                mutation_head: view.mutation_head,
+                mutation_records: view.mutation_records,
             });
         }
 
@@ -402,7 +402,7 @@ impl ExecutionPlan for LakeSoulTextSearchExec {
     fn execute(
         &self,
         partition: usize,
-        context: Arc<TaskContext>,
+        _context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(DataFusionError::Internal(format!(
@@ -424,20 +424,11 @@ impl ExecutionPlan for LakeSoulTextSearchExec {
         );
         let entered = span.enter();
 
-        let store = context
-            .runtime_env()
-            .object_store(self.object_store_url.clone())
-            .map_err(|error| {
-                DataFusionError::External(
-                    rootcause::report!("failed to get object store: {}", error)
-                        .into_boxed_error(),
-                )
-            })?;
         let mut configs = Vec::with_capacity(self.file_groups.len());
         for (group, values) in self.file_groups.iter().zip(&self.partition_values) {
             let config = tokio::task::block_in_place(|| {
                 lakesoul_io::session::GLOBAL_RUNTIME
-                    .block_on(self.reader_config(&store, group, values))
+                    .block_on(self.reader_config(group, values))
             })?;
             configs.push(config);
         }

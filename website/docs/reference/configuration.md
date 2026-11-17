@@ -36,7 +36,8 @@ The endpoint and the Python SDK read the same variables.
 | `AWS_S3_VIRTUAL_HOST_STYLE` / `--s3-virtual-host-style` | Virtual-hosted requests |
 
 The Python SDK reads `LAKESOUL_OBJECT_STORE_*` for index builds; see
-[Vector index management](../engine/vector-search/index-management.md).
+[Vector search API](../engine/vector-search/api.md) and
+[vector search configuration](../engine/vector-search/configuration.md).
 
 ## Endpoint
 

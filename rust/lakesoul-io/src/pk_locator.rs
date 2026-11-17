@@ -58,13 +58,17 @@ use crate::physical_plan::merge::merge_input_scan;
 use crate::stream::merge_memory::MergeMemory;
 use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::compute::{SortColumn, cast, lexsort_to_indices, take};
-use arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
+use arrow::datatypes::{
+    DataType, FieldRef, Float32Type, Float64Type, Schema, SchemaRef, TimeUnit,
+};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use async_stream::try_stream;
 use datafusion::catalog::Session;
 use datafusion::execution::TaskContext;
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
+use datafusion::execution::memory_pool::{
+    MemoryConsumer, MemoryPool, MemoryReservation, UnboundedMemoryPool,
+};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -80,6 +84,7 @@ use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_expr::{Expr, Operator};
 use futures::StreamExt;
 use lakesoul_vector::IndexKey;
+use lakesoul_vector::cache_config::config as vector_cache_config;
 use memmap2::Mmap;
 use moka::future::Cache;
 use object_store::ObjectStore;
@@ -105,15 +110,32 @@ use vortex::scan::strict_sorted_buffer::StrictSortedBuffer;
 use vortex::session::VortexSession;
 
 use crate::cache::get_lakesoul_cache;
+use crate::cache::paging::PageCache;
+use crate::cache::store_namespace::{StoreCacheNamespace, store_cache_namespace};
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::{
     PhysicalFormat, acquire_metadata_fetch_permit, vortex_scan_session,
 };
 use crate::helpers::transform::make_default_array;
+use crate::session::GLOBAL_RUNTIME;
+use bytes::Bytes;
+
+/// Format-free helpers for the exact re-rank decoded-block cache.  Candidate
+/// rows are served from on-demand blocks; no whole-column payload file exists.
+mod block;
 
 /// Above this many candidate keys the locator is not worth it: the caller
 /// is better off scanning.
 pub const MAX_PK_CANDIDATES: usize = 10_000;
+
+pub enum PrefixMatch {
+    /// The key is not present in this file.
+    Missing,
+    /// The key occurs exactly once; value is the data-file row id.
+    Unique(u32),
+    /// The key occurs more than once; the visible row cannot be chosen here.
+    Multiple,
+}
 
 /// The candidate count above which the sorted index merge replaces the
 /// per-key binary search.  Below it the binary search is cheaper (the merge
@@ -183,10 +205,23 @@ pub fn cache_stats() -> (u64, u64) {
     )
 }
 
-/// Opened vortex files, keyed by location: opening reads the footer and layout
-/// over the object store, so it is worth amortizing across queries.  The index
-/// itself lives in the shared disk cache; this only keeps handles.
-static VORTEX_FILES: LazyLock<Cache<String, Arc<VortexFile>>> =
+/// An opened vortex file together with the store identity it was opened from.
+///
+/// The namespace retains the `ObjectStore` while the handle is cached, so a
+/// new store allocated at the same address can never inherit the old one's
+/// entry, and the entry itself keeps the store alive.
+struct CachedVortexFile {
+    file: Arc<VortexFile>,
+    _namespace: Arc<StoreCacheNamespace>,
+}
+
+/// Opened vortex files, keyed by store identity and location: opening reads the
+/// footer and layout over the object store, so it is worth amortizing across
+/// queries.  The index itself lives in the shared disk cache; this only keeps
+/// handles.  The store namespace is part of the key because two object stores
+/// (different endpoints, or two in-memory stores) commonly serve the same
+/// relative path.
+static VORTEX_FILES: LazyLock<Cache<String, Arc<CachedVortexFile>>> =
     LazyLock::new(|| Cache::builder().max_capacity(1024).build());
 
 /// Files whose index was rejected (unsorted, oversized, ...).  Remembering the
@@ -481,6 +516,71 @@ impl MmapIndex {
         }
         Ok(rows)
     }
+
+    fn one_row_per_prefix(&self, prefixes: &[&[u8]]) -> Option<Vec<u32>> {
+        self.rows_per_prefix_lenient(prefixes).into_iter().collect()
+    }
+
+    /// Like [`Self::one_row_per_prefix`], but a prefix that matches zero or
+    /// several rows yields `None` for that prefix instead of failing the whole
+    /// batch.
+    ///
+    /// The multi-file resolver asks every file of a hash bucket the same
+    /// candidate keys and needs to know which keys are unique to which file;
+    /// a key repeated inside one file (several versions in one commit) is
+    /// reported as ambiguous, exactly like a missing one.
+    fn rows_per_prefix_lenient(&self, prefixes: &[&[u8]]) -> Vec<Option<u32>> {
+        self.prefix_matches(prefixes)
+            .into_iter()
+            .map(|matched| match matched {
+                PrefixMatch::Unique(row) => Some(row),
+                PrefixMatch::Missing | PrefixMatch::Multiple => None,
+            })
+            .collect()
+    }
+
+    /// Like [`Self::rows_per_prefix_lenient`], but keeps the distinction
+    /// between a missing key and a key repeated inside this file.
+    fn prefix_matches(&self, prefixes: &[&[u8]]) -> Vec<PrefixMatch> {
+        let mut rows = Vec::with_capacity(prefixes.len());
+        let mut cursor = 0usize;
+        for prefix in prefixes {
+            let mut low = cursor;
+            let mut high = self.rows;
+            let mut step = 1usize;
+            loop {
+                let probe = low.saturating_add(step);
+                if probe >= self.rows {
+                    break;
+                }
+                if self.row(probe) >= *prefix {
+                    high = probe;
+                    break;
+                }
+                low = probe;
+                step = step.saturating_mul(2).min(self.rows);
+            }
+            while low < high {
+                let mid = low + (high - low) / 2;
+                if self.row(mid) < *prefix {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            let start = low;
+            let matched = if start >= self.rows || !self.row(start).starts_with(prefix) {
+                PrefixMatch::Missing
+            } else if start + 1 < self.rows && self.row(start + 1).starts_with(prefix) {
+                PrefixMatch::Multiple
+            } else {
+                PrefixMatch::Unique(self.row_id(start))
+            };
+            rows.push(matched);
+            cursor = start;
+        }
+        rows
+    }
 }
 
 /// Scan position of a sorted index lookup across key batches.
@@ -640,9 +740,14 @@ impl IndexWriter {
 }
 
 /// Cached per-file state: the mmapped index plus the opened vortex handle.
+///
+/// The entry keeps the store namespace alive, both to pin the `ObjectStore`
+/// while the index is usable and to derive store-scoped identities for the
+/// decoded-block cache (see [`BlockSource`]).
 struct CachedFile {
     index: Arc<MmapIndex>,
     source: FileSource,
+    namespace: Arc<StoreCacheNamespace>,
 }
 
 /// The handle a take path needs, per physical format.
@@ -741,6 +846,7 @@ impl LookupSource {
             };
             let Some(entry) = get_or_load_file(
                 store,
+                None,
                 location.clone(),
                 format,
                 columns,
@@ -1488,8 +1594,9 @@ async fn get_vortex_file(
     location: &StorePath,
     session: &VortexSession,
 ) -> crate::Result<Arc<VortexFile>> {
+    let namespace = store_cache_namespace(&store);
     let path = location.clone();
-    let key = path.as_ref().to_string();
+    let key = format!("{}:{}", namespace.token(), path.as_ref());
     let session = session.clone();
     VORTEX_FILES
         .try_get_with(key, async move {
@@ -1497,7 +1604,7 @@ async fn get_vortex_file(
                 .await
                 .map_err(|error| error.to_string())?;
             let read_at = Arc::new(ObjectStoreReadAt::new_with_allocator(
-                store,
+                namespace.store(),
                 path.clone(),
                 session.handle(),
                 session.allocator(),
@@ -1506,10 +1613,16 @@ async fn get_vortex_file(
                 .open_options()
                 .open_read(read_at)
                 .await
-                .map(Arc::new)
+                .map(|file| {
+                    Arc::new(CachedVortexFile {
+                        file: Arc::new(file),
+                        _namespace: namespace,
+                    })
+                })
                 .map_err(|error| error.to_string())
         })
         .await
+        .map(|cached| Arc::clone(&cached.file))
         .map_err(|error| {
             rootcause::report!("failed to open vortex data file {location}: {error}")
         })
@@ -1563,10 +1676,36 @@ fn index_kind_hash(kind: &str) -> u64 {
 
 /// Fingerprint of the data file the index belongs to, stored in the header so
 /// a name-hash collision can never serve one file's index for another.
+///
+/// Only unit tests that build an index by hand still use the plain variant;
+/// the production paths include the object store's namespace (see
+/// [`namespaced_index_source_hash`]) in the fingerprint.
+#[cfg(test)]
 fn index_source_hash(location: &StorePath) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    location.as_ref().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Fingerprint of the data file the index belongs to, plus the object store
+/// that holds it, stored in the index header.
+///
+/// Two object stores commonly serve the same relative path (different buckets
+/// or endpoints, or two in-memory stores); a fingerprint that only hashed the
+/// path would let one store's mmapped key index or decoded-block cache answer
+/// a read for the other.  The store namespace is allocated from the store's
+/// `Arc` identity and dies with it, so the fingerprint cannot go stale while
+/// the entry is alive.
+fn namespaced_index_source_hash(
+    namespace: &StoreCacheNamespace,
+    location: &StorePath,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    namespace.token().hash(&mut hasher);
     location.as_ref().hash(&mut hasher);
     hasher.finish()
 }
@@ -1591,8 +1730,14 @@ type BuildResult<T> = std::result::Result<T, BuildError>;
 /// `Ok(None)` means the file cannot be indexed (unsorted keys, unsupported
 /// types, over the cache budget, ...) and the caller scans it normally.  `Err`
 /// means the data file itself could not be read.
+/// `store` owns the cache identity of the entry.  `io_store`, when given, is
+/// the handle used for the data-file reads themselves (the raw inner store of a
+/// read-through cache); the key index build, the opened file handle and every
+/// later block read go through it, while the namespace, index fingerprint and
+/// on-disk cache keys stay derived from `store`.
 async fn get_or_load_file(
     store: Arc<dyn ObjectStore>,
+    io_store: Option<Arc<dyn ObjectStore>>,
     location: StorePath,
     format: PhysicalFormat,
     columns: &[String],
@@ -1603,19 +1748,22 @@ async fn get_or_load_file(
     let Some(cache) = index_disk_cache() else {
         return Ok(None);
     };
+    let io_store = io_store.unwrap_or_else(|| Arc::clone(&store));
+    let namespace = store_cache_namespace(&store);
     // The handle the take path needs.  Vortex has to open the file; parquet
     // only needs its size for the reader's metadata fetch.
     let source = match format {
         PhysicalFormat::Vortex => {
             let session = vortex_session(session);
-            let file = get_vortex_file(Arc::clone(&store), &location, &session).await?;
+            let file =
+                get_vortex_file(Arc::clone(&io_store), &location, &session).await?;
             FileSource::Vortex { file, session }
         }
         PhysicalFormat::Parquet => {
             let _permit = acquire_metadata_fetch_permit()
                 .await
                 .map_err(|error| rootcause::report!(error))?;
-            let size = store
+            let size = io_store
                 .head(&location)
                 .await
                 .map_err(|error| {
@@ -1625,27 +1773,33 @@ async fn get_or_load_file(
                 })?
                 .size;
             FileSource::Parquet {
-                store: Arc::clone(&store),
+                store: Arc::clone(&io_store),
                 location: location.clone(),
                 size,
             }
         }
         _ => return Ok(None),
     };
-    let kind = lookup_index_kind(columns, types, defaults);
+    let base_kind = lookup_index_kind(columns, types, defaults);
+    // The store namespace is part of the cache kind, the index fingerprint and
+    // the on-disk location: two stores serving the same relative path must not
+    // read each other's key index or decoded blocks.
+    let kind = format!("{base_kind}#store:{}", namespace.token());
     let kind_hash = index_kind_hash(&kind);
-    let source_hash = index_source_hash(&location);
-    let rejected_key = format!("{location}#{kind}");
+    let source_hash = namespaced_index_source_hash(&namespace, &location);
+    let disk_location = namespace.path(&location);
+    let rejected_key = format!("{disk_location}#{kind}");
     if REJECTED.get(&rejected_key).await.is_some() {
         return Ok(None);
     }
 
-    if let Some((entry, size)) = cache.get_file_entry(&location, &kind).await {
+    if let Some((entry, size)) = cache.get_file_entry(&disk_location, &kind).await {
         if let Some(index) = MmapIndex::open(entry, size, kind_hash, source_hash) {
             HITS.fetch_add(1, AtomicOrdering::Relaxed);
             return Ok(Some(Arc::new(CachedFile {
                 index: Arc::new(index),
                 source,
+                namespace: Arc::clone(&namespace),
             })));
         }
         warn!("corrupt pk index for {location}; rebuilding");
@@ -1702,7 +1856,7 @@ async fn get_or_load_file(
         }
     };
     let (entry, size, built) = match cache
-        .insert_file_entry(&location, &kind, temp.clone(), size)
+        .insert_file_entry(&disk_location, &kind, temp.clone(), size)
         .await
     {
         Ok(entry) => entry,
@@ -1728,6 +1882,7 @@ async fn get_or_load_file(
     Ok(Some(Arc::new(CachedFile {
         index: Arc::new(index),
         source,
+        namespace,
     })))
 }
 
@@ -2743,6 +2898,7 @@ impl ExecutionPlan for PkLookupExec {
             let mut vortex_session = None;
             let entry = get_or_load_file(
                 Arc::clone(&store),
+                Some(crate::object_store::raw_store_alias(&store)),
                 location.clone(),
                 format,
                 &columns,
@@ -3129,6 +3285,983 @@ async fn take_rows(
     Ok(batches)
 }
 
+/// Load a data file's key index without the shared L2 cache.
+///
+/// The exact re-rank block source must also work when no L2 cache is
+/// configured (`LAKESOUL_CACHE` unset): the index only has to map candidate
+/// keys to rows, and the decoded blocks are then read straight from the data
+/// file.  The index is built into a one-shot temporary file and removed once
+/// the mmap is established.
+///
+/// `store` defines the cache identity (namespace and the store-scoped index
+/// fingerprints); `io_store` is the handle that actually reads the data file.
+/// They are the same store unless `store` is a read-through cache, in which
+/// case `io_store` is the raw inner store (see [`crate::object_store::raw_store_alias`]).
+async fn open_block_file_without_cache(
+    store: Arc<dyn ObjectStore>,
+    io_store: Arc<dyn ObjectStore>,
+    location: StorePath,
+    format: PhysicalFormat,
+    key_columns: &[String],
+    key_types: &[DataType],
+) -> Option<Arc<CachedFile>> {
+    let namespace = store_cache_namespace(&store);
+    let mut session: Option<VortexSession> = None;
+    let source = match format {
+        PhysicalFormat::Vortex => {
+            let session = vortex_session(&mut session);
+            let file = get_vortex_file(Arc::clone(&io_store), &location, &session)
+                .await
+                .ok()?;
+            FileSource::Vortex { file, session }
+        }
+        PhysicalFormat::Parquet => {
+            let _permit = acquire_metadata_fetch_permit().await.ok()?;
+            let size = io_store.head(&location).await.ok()?.size;
+            FileSource::Parquet {
+                store: Arc::clone(&io_store),
+                location: location.clone(),
+                size,
+            }
+        }
+        _ => return None,
+    };
+    let defaults: HashMap<String, String> = HashMap::new();
+    // Same store-scoped identity as the disk-cache path, so block identities
+    // derived from this entry match the cached one and cannot collide across
+    // object stores.
+    let base_kind = lookup_index_kind(key_columns, key_types, &defaults);
+    let kind = format!("{base_kind}#store:{}", namespace.token());
+    let kind_hash = index_kind_hash(&kind);
+    let source_hash = namespaced_index_source_hash(&namespace, &location);
+    static UNCACHED_SEQ: AtomicU64 = AtomicU64::new(0);
+    let temp = std::env::temp_dir().join(format!(
+        "lakesoul-vector-block-index-{}-{}.idx",
+        std::process::id(),
+        UNCACHED_SEQ.fetch_add(1, AtomicOrdering::Relaxed)
+    ));
+    let max_bytes = 512 * 1024 * 1024;
+    let built = match &source {
+        FileSource::Vortex { file, session } => {
+            build_index_file(
+                file,
+                &location,
+                key_columns,
+                key_types,
+                &defaults,
+                session,
+                &temp,
+                kind_hash,
+                source_hash,
+                max_bytes,
+            )
+            .await
+        }
+        FileSource::Parquet {
+            store,
+            location: parquet_location,
+            ..
+        } => {
+            build_parquet_index_file(
+                store,
+                parquet_location,
+                key_columns,
+                key_types,
+                &defaults,
+                &temp,
+                kind_hash,
+                source_hash,
+                max_bytes,
+            )
+            .await
+        }
+    };
+    let size = match built {
+        Ok(size) => size,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            debug!("failed to build uncached block index for {location}: {error:?}");
+            return None;
+        }
+    };
+    let file = match std::fs::File::open(&temp) {
+        Ok(file) => Arc::new(file),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            debug!("failed to open uncached block index for {location}: {error}");
+            return None;
+        }
+    };
+    let index = MmapIndex::open(file, size, kind_hash, source_hash);
+    let _ = std::fs::remove_file(&temp);
+    Some(Arc::new(CachedFile {
+        index: Arc::new(index?),
+        source,
+        namespace,
+    }))
+}
+
+async fn take_rows_block(
+    file: &VortexFile,
+    location: &StorePath,
+    session: &VortexSession,
+    indices: &[u64],
+    projected_schema: &SchemaRef,
+    projection_names: &[String],
+) -> crate::Result<Vec<RecordBatch>> {
+    // Project only the columns the caller asked for.  A dense projection of
+    // the whole file (`root()`) decodes every column of every chunk the row
+    // indices touch, so a candidate fetch of a few hundred rows would pay for
+    // the whole projected set — including a 200-dimensional vector column — instead
+    // of the handful of projected columns it actually returns.
+    let projection = select(
+        FieldNames::from_iter(projection_names.iter().map(|name| name.as_str())),
+        root(),
+    )
+    .bind(file.dtype())
+    .map_err(|e| open_error(location, e))?;
+    let row_indices =
+        StrictSortedBuffer::try_new(Buffer::from_iter(indices.iter().copied()))
+            .map_err(|e| open_error(location, e))?;
+    let mut stream = file
+        .scan()
+        .map_err(|e| open_error(location, e))?
+        .with_projection(projection)
+        .with_row_indices(row_indices)
+        .into_array_stream()
+        .map_err(|e| open_error(location, e))?;
+    let mut ctx = session.create_execution_ctx();
+    let mut batches = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| open_error(location, e))?;
+        let arrow = session
+            .arrow()
+            .execute_arrow(chunk, None, &mut ctx)
+            .map_err(|e| open_error(location, e))?;
+        let batch = RecordBatch::from(arrow.as_struct().clone());
+        let mut columns = Vec::with_capacity(projection_names.len());
+        for name in projection_names {
+            let index = batch.schema().index_of(name).map_err(|_| {
+                rootcause::report!("column {name} missing from file {location}")
+            })?;
+            let mut array = Arc::clone(batch.column(index));
+            let expected = projected_schema.field_with_name(name).map_err(|error| {
+                rootcause::report!("candidate column schema: {error}")
+            })?;
+            if array.data_type() != expected.data_type() {
+                array = cast(array.as_ref(), expected.data_type()).map_err(|error| {
+                    rootcause::report!("cast candidate column {name}: {error}")
+                })?;
+            }
+            columns.push(array);
+        }
+        batches.push(
+            RecordBatch::try_new(Arc::clone(projected_schema), columns)
+                .map_err(|e| rootcause::report!("project candidate rows: {e}"))?,
+        );
+    }
+    Ok(batches)
+}
+
+async fn take_rows_parquet_block(
+    store: &Arc<dyn ObjectStore>,
+    location: &StorePath,
+    size: u64,
+    indices: &[u64],
+    projected_schema: &SchemaRef,
+    projection_names: &[String],
+) -> crate::Result<Vec<RecordBatch>> {
+    let reader = ParquetObjectReader::new(Arc::clone(store), location.clone())
+        .with_file_size(size);
+    // The row selection only needs the offset index to skip pages; the column
+    // index (page statistics) would add bytes to every candidate read and is
+    // never consulted here.
+    let builder = ParquetRecordBatchStreamBuilder::new_with_options(
+        reader,
+        ArrowReaderOptions::new()
+            .with_offset_index_policy(PageIndexPolicy::Optional)
+            .with_column_index_policy(PageIndexPolicy::Skip),
+    )
+    .await
+    .map_err(|error| open_error(location, error))?;
+    let rows = builder.metadata().file_metadata().num_rows() as usize;
+    let mask = ProjectionMask::columns(
+        builder.parquet_schema(),
+        projection_names.iter().map(String::as_str),
+    );
+    // The row-selection builder only needs a reservation for its internal
+    // bookkeeping; decoded blocks are not retained here, so the scratch pool is
+    // unbounded and released when the take returns.
+    let scratch_pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+    let scratch = MemoryConsumer::new("LakeSoulVectorBlockRowSelection")
+        .with_can_spill(false)
+        .register(&scratch_pool);
+    let mut stream = builder
+        .with_projection(mask)
+        .with_row_selection(
+            row_selection(indices, rows, &scratch)
+                .map_err(|error| rootcause::report!("row selection: {error}"))?,
+        )
+        .build()
+        .map_err(|error| open_error(location, error))?;
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let batch = batch.map_err(|error| open_error(location, error))?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let mut columns = Vec::with_capacity(projection_names.len());
+        for name in projection_names {
+            let index = batch.schema().index_of(name).map_err(|_| {
+                rootcause::report!("column {name} missing from file {location}")
+            })?;
+            let mut array = Arc::clone(batch.column(index));
+            let expected = projected_schema.field_with_name(name).map_err(|error| {
+                rootcause::report!("candidate column schema: {error}")
+            })?;
+            if array.data_type() != expected.data_type() {
+                array = cast(array.as_ref(), expected.data_type()).map_err(|error| {
+                    rootcause::report!("cast candidate column {name}: {error}")
+                })?;
+            }
+            columns.push(array);
+        }
+        batches.push(
+            RecordBatch::try_new(Arc::clone(projected_schema), columns)
+                .map_err(|e| rootcause::report!("project candidate rows: {e}"))?,
+        );
+    }
+    Ok(batches)
+}
+
+/// Whether exact re-rank can read stored vectors from the block cache.
+pub fn vector_exact_block_cache_enabled() -> bool {
+    block_source_enabled()
+}
+
+/// One data file's on-demand decoded blocks, opened once for a candidate batch.
+///
+/// This is the direct exact-re-rank entry: [`Self::open`] resolves the key
+/// index and the block cache of one data file, and [`Self::take`] serves the
+/// stored vectors of encoded keys without decoding any primary-key value and
+/// without touching the merge path.  Both steps refuse what they cannot
+/// reproduce exactly (no `LAKESOUL_CACHE` block cache, a file with explicit row
+/// ids, or a key that does not resolve to exactly one row), so callers can
+/// fall back to the reader path on `None`.
+/// On-demand decoded vector blocks for exact re-ranking.
+///
+/// This path builds only the row blocks an exact query actually touches:
+/// each block is decoded from the source data file once, cached in the shared
+/// `DiskCache` (the same S3->SSD cache used by `LAKESOUL_CACHE`) and in a small
+/// in-memory LRU, then reused by later candidate reads.  It never materializes
+/// a full vector column.
+type BlockMemoryCache = moka::sync::Cache<(u64, u64, u32), Arc<[u8]>>;
+
+static BLOCK_MEMORY: LazyLock<Option<BlockMemoryCache>> = LazyLock::new(|| {
+    let config = vector_cache_config();
+    if !config.enabled() {
+        return None;
+    }
+    let capacity = config.block_bytes() as u64;
+    if capacity == 0 {
+        return None;
+    }
+    Some(
+        moka::sync::Cache::builder()
+            .max_capacity(capacity.div_ceil(1024))
+            .weigher(|_key: &(u64, u64, u32), value: &Arc<[u8]>| {
+                (value.len().div_ceil(1024)).min(u32::MAX as usize) as u32
+            })
+            .build(),
+    )
+});
+
+fn block_rows_for(row_bytes: usize) -> usize {
+    vector_cache_config().block_rows(row_bytes)
+}
+
+fn block_source_enabled() -> bool {
+    // The decoded-block source has a direct object-store fallback: when the
+    // disk/memory cache is disabled, `BlockSource::get_block` decodes the
+    // requested block straight from the data file instead of promoting it
+    // through the L2 cache.  Keeping the source available in uncached mode is
+    // what lets exact batch re-rank fall back to the normal reader path
+    // instead of failing with "could not open data file".
+    vector_cache_config().block_source_cache()
+}
+
+/// Decode a contiguous row range of one vector column into raw little-endian
+/// row-major bytes.
+async fn read_vector_block(
+    entry: &CachedFile,
+    location: &StorePath,
+    field: &FieldRef,
+    dim: usize,
+    elem: block::VectorElem,
+    indices: &[u64],
+) -> Option<Vec<u8>> {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![field.as_ref().clone()]));
+    let names = vec![field.name().clone()];
+    let batches = match &entry.source {
+        FileSource::Vortex { file, session } => {
+            take_rows_block(file, location, session, indices, &schema, &names)
+                .await
+                .ok()?
+        }
+        FileSource::Parquet {
+            store,
+            location,
+            size,
+        } => take_rows_parquet_block(store, location, *size, indices, &schema, &names)
+            .await
+            .ok()?,
+    };
+    let row_bytes = dim * elem.size();
+    let mut out = Vec::with_capacity(indices.len() * row_bytes);
+    for batch in batches {
+        let rows = batch.num_rows();
+        if rows == 0 {
+            continue;
+        }
+        let array = batch.column(0);
+        let flat = block::chunk_values(array, rows, dim)?;
+        match elem {
+            block::VectorElem::F32 => {
+                for value in flat.as_primitive::<Float32Type>().values() {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            block::VectorElem::F64 => {
+                for value in flat.as_primitive::<Float64Type>().values() {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        if out.len() > indices.len() * row_bytes {
+            return None;
+        }
+    }
+    (out.len() == indices.len() * row_bytes).then_some(out)
+}
+
+struct BlockSource {
+    entry: Arc<CachedFile>,
+    location: StorePath,
+    field: FieldRef,
+    elem: block::VectorElem,
+    dim: usize,
+    row_bytes: usize,
+    rows: usize,
+    block_rows: usize,
+    source_hash: u64,
+    field_hash: u64,
+    block_location: StorePath,
+}
+
+impl BlockSource {
+    fn new(
+        entry: Arc<CachedFile>,
+        location: StorePath,
+        field: &FieldRef,
+    ) -> Option<Self> {
+        let elem = block::vector_elem(field.data_type())?;
+        let dim = match field.data_type() {
+            DataType::FixedSizeList(_, dim) if *dim > 0 => *dim as usize,
+            _ => return None,
+        };
+        let source_hash = namespaced_index_source_hash(&entry.namespace, &location);
+        let field_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            field.name().hash(&mut hasher);
+            field.data_type().hash(&mut hasher);
+            hasher.finish()
+        };
+        // The disk block cache is keyed by location only, so its location has
+        // to carry the store namespace as well: the same relative data path in
+        // two stores must not serve the same decoded vector block bytes.
+        let block_location = entry.namespace.path(&StorePath::from(format!(
+            "vector-blocks/{source_hash:016x}/{field_hash:016x}"
+        )));
+        let rows = entry.index.rows;
+        Some(Self {
+            entry,
+            location,
+            field: Arc::clone(field),
+            elem,
+            dim,
+            row_bytes: dim * elem.size(),
+            rows,
+            block_rows: block_rows_for(dim * elem.size()),
+            source_hash,
+            field_hash,
+            block_location,
+        })
+    }
+
+    fn block_id(&self, row: u64) -> Option<u32> {
+        let id = row / self.block_rows as u64;
+        (id <= u32::MAX as u64).then_some(id as u32)
+    }
+
+    fn memory_get(&self, block: u32) -> Option<Arc<[u8]>> {
+        BLOCK_MEMORY
+            .as_ref()?
+            .get(&(self.source_hash, self.field_hash, block))
+    }
+
+    fn memory_put(&self, block: u32, value: Arc<[u8]>) {
+        if let Some(cache) = BLOCK_MEMORY.as_ref() {
+            cache.insert((self.source_hash, self.field_hash, block), value);
+        }
+    }
+
+    fn get_block(&self, block: u32) -> Option<Arc<[u8]>> {
+        if let Some(value) = self.memory_get(block) {
+            return Some(value);
+        }
+        if let Some(cache) = index_disk_cache()
+            && let Ok(Some(bytes)) =
+                GLOBAL_RUNTIME.block_on(cache.get(&self.block_location, block))
+        {
+            let value: Arc<[u8]> = Arc::from(bytes.as_ref());
+            self.memory_put(block, Arc::clone(&value));
+            return Some(value);
+        }
+        let start = block as usize * self.block_rows;
+        if start >= self.rows {
+            return None;
+        }
+        let end = (start + self.block_rows).min(self.rows);
+        let indices: Vec<u64> = (start..end).map(|row| row as u64).collect();
+        let bytes = GLOBAL_RUNTIME.block_on(read_vector_block(
+            &self.entry,
+            &self.location,
+            &self.field,
+            self.dim,
+            self.elem,
+            &indices,
+        ))?;
+        let value: Arc<[u8]> = Arc::from(bytes);
+        if let Some(cache) = index_disk_cache() {
+            let _ = GLOBAL_RUNTIME.block_on(cache.put(
+                &self.block_location,
+                block,
+                Bytes::from(value.to_vec()),
+            ));
+        }
+        self.memory_put(block, Arc::clone(&value));
+        Some(value)
+    }
+
+    fn row_bytes(&self, row: u64) -> Option<Arc<[u8]>> {
+        let block = self.block_id(row)?;
+        let block_bytes = self.get_block(block)?;
+        let offset = (row % self.block_rows as u64) as usize * self.row_bytes;
+        let end = offset.checked_add(self.row_bytes)?;
+        let row = block_bytes.get(offset..end)?;
+        Some(Arc::from(row))
+    }
+
+    fn take(&self, indices: &[u64], field: &FieldRef) -> Option<ArrayRef> {
+        if field.data_type() != self.field.data_type() {
+            return None;
+        }
+        let rows: Vec<Arc<[u8]>> = indices
+            .iter()
+            .map(|row| self.row_bytes(*row))
+            .collect::<Option<_>>()?;
+        block::take_rows_from_bytes(field, self.dim, self.elem, &rows)
+    }
+
+    fn score_rows(
+        &self,
+        indices: &[u64],
+        query: &[f32],
+        ascending: bool,
+    ) -> Option<Vec<f32>> {
+        let rows: Vec<Arc<[u8]>> = indices
+            .iter()
+            .map(|row| self.row_bytes(*row))
+            .collect::<Option<_>>()?;
+        block::score_rows_from_bytes(self.dim, self.elem, &rows, query, ascending)
+    }
+}
+
+#[derive(Clone)]
+pub struct VectorBlockSource {
+    entry: Arc<CachedFile>,
+    blocks: Arc<BlockSource>,
+    vector_field: FieldRef,
+}
+
+/// Opened decoded-block sources, by data file and column layout.
+///
+/// Every query of a table opens the same few sources (one per hash bucket);
+/// the entry and block cache themselves are already cached, so this only
+/// saves the per-query cache lookups (~0.08 ms for four buckets).  Data files
+/// are immutable and the key includes the location, the key columns/types and
+/// the vector field, so a compaction (new file names) simply misses.
+/// `LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE=0` disables it.
+/// Cached [`VectorBlockSource`]s plus their insertion order.  The cap keeps
+/// the pinned key-index mappings of very wide tables bounded: a source is
+/// only useful while its table is being queried, so evicting the oldest entry
+/// costs one re-open.
+static BLOCK_SOURCES: LazyLock<std::sync::Mutex<SourceCache>> =
+    LazyLock::new(|| std::sync::Mutex::new(SourceCache::default()));
+
+/// Maximum number of cached sources (one per data file and column layout).
+const BLOCK_SOURCE_CACHE_ENTRIES: usize = 16;
+
+#[derive(Default)]
+struct SourceCache {
+    entries: std::collections::HashMap<String, Arc<VectorBlockSource>>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl SourceCache {
+    fn get(&self, key: &str) -> Option<Arc<VectorBlockSource>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: String, source: Arc<VectorBlockSource>) {
+        while self.entries.len() >= BLOCK_SOURCE_CACHE_ENTRIES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        if self.entries.insert(key.clone(), source).is_none() {
+            self.order.push_back(key);
+        }
+    }
+}
+
+fn block_source_cache_enabled() -> bool {
+    !std::env::var("LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE").is_ok_and(|value| value == "0")
+}
+
+impl VectorBlockSource {
+    /// Cached variant of [`Self::open`]: the same data file and column layout
+    /// resolves to the same source for the life of the process.
+    pub async fn open_cached(
+        store: Arc<dyn ObjectStore>,
+        location: &StorePath,
+        format: PhysicalFormat,
+        key_columns: &[String],
+        key_types: &[DataType],
+        vector_field: &FieldRef,
+    ) -> Option<Arc<Self>> {
+        if !block_source_cache_enabled() {
+            return Self::open(
+                store,
+                location,
+                format,
+                key_columns,
+                key_types,
+                vector_field,
+            )
+            .await
+            .map(Arc::new);
+        }
+        let namespace = store_cache_namespace(&store);
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            // Two object stores commonly serve the same relative path, so the
+            // cache key has to include the store identity: without it the
+            // second store would be answered with the first store's source,
+            // including its mmapped key index and decoded blocks.
+            namespace.token().hash(&mut hasher);
+            location.as_ref().hash(&mut hasher);
+            key_columns.hash(&mut hasher);
+            for data_type in key_types {
+                data_type.hash(&mut hasher);
+            }
+            vector_field.name().hash(&mut hasher);
+            vector_field.data_type().hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
+        if let Ok(cache) = BLOCK_SOURCES.lock()
+            && let Some(source) = cache.get(&key)
+        {
+            return Some(source);
+        }
+        let source = Arc::new(
+            Self::open(
+                store,
+                location,
+                format,
+                key_columns,
+                key_types,
+                vector_field,
+            )
+            .await?,
+        );
+        if let Ok(mut cache) = BLOCK_SOURCES.lock() {
+            cache.insert(key, Arc::clone(&source));
+        }
+        Some(source)
+    }
+
+    /// Open the key index and the decoded-block cache of one data file.
+    pub async fn open(
+        store: Arc<dyn ObjectStore>,
+        location: &StorePath,
+        format: PhysicalFormat,
+        key_columns: &[String],
+        key_types: &[DataType],
+        vector_field: &FieldRef,
+    ) -> Option<Self> {
+        if !block_source_enabled() {
+            return None;
+        }
+        // Exact re-ranking reads candidate blocks, the key index and the data
+        // file footer through thousands of small one-shot requests.  The page
+        // cache's per-request bookkeeping costs more than those reads, and the
+        // pages it keeps would evict the decoded blocks from the same budget.
+        // The cache identity (namespace, index fingerprint, decoded-block
+        // locations) stays on `store`; the IO handle is the raw store behind it.
+        let io_store = crate::object_store::raw_store_alias(&store);
+        let mut session: Option<VortexSession> = None;
+        let entry = match get_or_load_file(
+            Arc::clone(&store),
+            Some(Arc::clone(&io_store)),
+            location.clone(),
+            format,
+            key_columns,
+            key_types,
+            &HashMap::new(),
+            &mut session,
+        )
+        .await
+        {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                open_block_file_without_cache(
+                    store,
+                    io_store,
+                    location.clone(),
+                    format,
+                    key_columns,
+                    key_types,
+                )
+                .await?
+            }
+            Err(_) => return None,
+        };
+        if entry.index.has_row_ids() {
+            return None;
+        }
+        let blocks = Arc::new(BlockSource::new(
+            Arc::clone(&entry),
+            location.clone(),
+            vector_field,
+        )?);
+        Some(Self {
+            entry,
+            blocks,
+            vector_field: Arc::clone(vector_field),
+        })
+    }
+
+    /// The stored vector of every key, in input order.
+    ///
+    /// `None` when any key does not resolve to exactly one row of the file:
+    /// more than one row means several versions the merge path has to decide,
+    /// none means the index and the data file disagree.
+    pub fn take(&self, keys: &[IndexKey]) -> Option<arrow::array::ArrayRef> {
+        if keys.is_empty() {
+            return None;
+        }
+        // The candidate keys are not sorted (they arrive in index-distance
+        // order); the locator's monotonic search needs them sorted, and the
+        // block read has to answer in the original order.
+        let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+        order.sort_unstable_by(|left, right| {
+            keys[*left as usize]
+                .as_bytes()
+                .cmp(keys[*right as usize].as_bytes())
+        });
+        let sorted: Vec<&[u8]> = order
+            .iter()
+            .map(|position| keys[*position as usize].as_bytes())
+            .collect();
+        let rows = self.entry.index.one_row_per_prefix(&sorted)?;
+        let mut indices = vec![0u64; keys.len()];
+        for (slot, position) in order.iter().enumerate() {
+            indices[*position as usize] = u64::from(rows[slot]);
+        }
+        self.blocks.take(&indices, &self.vector_field)
+    }
+
+    /// Which of the given candidate keys resolve to exactly one row of this
+    /// file.
+    ///
+    /// `sorted_keys` must be sorted ascending (the locator walks the index
+    /// monotonically).  `None` per key means zero rows or several rows: the
+    /// merge-on-read path has to decide those.
+    pub fn lookup_rows(&self, sorted_keys: &[&[u8]]) -> Vec<Option<u32>> {
+        self.entry.index.rows_per_prefix_lenient(sorted_keys)
+    }
+
+    /// Like [`Self::lookup_rows`], but reports whether a key is missing from
+    /// this file or occurs several times in it.
+    pub fn lookup_matches(&self, sorted_keys: &[&[u8]]) -> Vec<PrefixMatch> {
+        self.entry.index.prefix_matches(sorted_keys)
+    }
+
+    /// The stored vector of every given row, in input order.
+    pub fn take_rows(&self, rows: &[u32]) -> Option<arrow::array::ArrayRef> {
+        if rows.is_empty() {
+            return None;
+        }
+        let indices: Vec<u64> = rows.iter().map(|row| u64::from(*row)).collect();
+        self.blocks.take(&indices, &self.vector_field)
+    }
+
+    /// Exact L2/IP scores of the given keys' stored vectors.
+    ///
+    /// Same lookup as [`Self::take`] but without building an Arrow array per
+    /// query: the batch re-rank only needs the scores, so the rows are read and
+    /// reduced in place.  `None` when a key does not resolve to exactly one row
+    /// (the merge path has to decide versions) or the block cache cannot serve it.
+    pub fn score_keys(
+        &self,
+        keys: &[IndexKey],
+        query: &[f32],
+        ascending: bool,
+    ) -> Option<Vec<f32>> {
+        if keys.is_empty() {
+            return Some(Vec::new());
+        }
+        let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+        order.sort_unstable_by(|left, right| {
+            keys[*left as usize]
+                .as_bytes()
+                .cmp(keys[*right as usize].as_bytes())
+        });
+        let sorted: Vec<&[u8]> = order
+            .iter()
+            .map(|position| keys[*position as usize].as_bytes())
+            .collect();
+        let rows = self.entry.index.one_row_per_prefix(&sorted)?;
+        let mut indices = vec![0u64; keys.len()];
+        for (slot, position) in order.iter().enumerate() {
+            indices[*position as usize] = u64::from(rows[slot]);
+        }
+        self.blocks.score_rows(&indices, query, ascending)
+    }
+    /// Score many queries' candidates, grouped by physical block and row.
+    /// Each requested block is decoded once for this file/window and each
+    /// stored vector is converted once, even when many queries reference it.
+    /// Returned scores retain `requests` order; query/candidate slots are
+    /// caller-owned identifiers. This method must run on a blocking worker.
+    pub fn score_batch_rows(
+        &self,
+        requests: &[(usize, usize, u32)],
+        queries: &[Vec<f32>],
+        ascending: bool,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<f32>, u64)> {
+        let mut order: Vec<usize> = (0..requests.len()).collect();
+        order.sort_unstable_by_key(|&i| requests[i].2);
+        let mut scores = vec![0.0f32; requests.len()];
+        let mut active_block = None;
+        let mut bytes: Arc<[u8]> = Arc::from([]);
+        let mut blocks = 0;
+        let mut position = 0;
+        let mut stored = Vec::with_capacity(self.blocks.dim);
+        while position < order.len() {
+            if cancel.load(AtomicOrdering::Acquire) {
+                return None;
+            }
+            let row = requests[order[position]].2 as u64;
+            if row as usize >= self.blocks.rows {
+                return None;
+            }
+            let block_id = self.blocks.block_id(row)?;
+            if active_block != Some(block_id) {
+                bytes = self.blocks.get_block(block_id)?;
+                active_block = Some(block_id);
+                blocks += 1;
+            }
+            let offset =
+                (row % self.blocks.block_rows as u64) as usize * self.blocks.row_bytes;
+            let row_bytes =
+                bytes.get(offset..offset.checked_add(self.blocks.row_bytes)?)?;
+            stored.clear();
+            match self.blocks.elem {
+                block::VectorElem::F32 => {
+                    stored.extend(
+                        row_bytes
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
+                    );
+                }
+                block::VectorElem::F64 => {
+                    stored.extend(row_bytes.as_chunks::<8>().0.iter().map(|v| {
+                        f64::from_le_bytes([
+                            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+                        ]) as f32
+                    }));
+                }
+            }
+            if stored.len() != self.blocks.dim {
+                return None;
+            }
+            while position < order.len() && requests[order[position]].2 as u64 == row {
+                let request = order[position];
+                let query = queries.get(requests[request].0)?;
+                if query.len() != stored.len() {
+                    return None;
+                }
+                scores[request] = if ascending {
+                    block::squared_distance_f32(&stored, query)
+                } else {
+                    block::negated_dot_f32(&stored, query)
+                };
+                position += 1;
+            }
+        }
+        Some((scores, blocks))
+    }
+
+    /// Exact L2/IP scores of already-resolved rows of this file.
+    ///
+    /// The multi-file exact batch resolves a key to `(file, row)` once and
+    /// then scores both single- and multi-file buckets through the same block
+    /// cache path.
+    pub fn score_rows(
+        &self,
+        rows: &[u32],
+        query: &[f32],
+        ascending: bool,
+    ) -> Option<Vec<f32>> {
+        let indices: Vec<u64> = rows.iter().map(|row| u64::from(*row)).collect();
+        self.blocks.score_rows(&indices, query, ascending)
+    }
+}
+
+/// Read the stored vectors of candidate keys that live in exactly one file of
+/// their bucket.
+///
+/// `sources` are the bucket's data files.  A candidate key that resolves in
+/// none of them, or in more than one — the key has several versions and the
+/// merge-on-read path has to pick the visible one — makes the whole call return
+/// `None`, so the caller falls back to the reader path.  Buckets that hold
+/// several append-only files therefore use the direct block read instead of
+/// requiring compaction down to one file per bucket.
+///
+/// A key unique to one file is read from that file's decoded blocks; the
+/// caller's key order is preserved so the distances stay aligned with the
+/// candidate order.
+pub fn take_multi_file(
+    sources: &[std::sync::Arc<VectorBlockSource>],
+    keys: &[IndexKey],
+) -> Option<arrow::array::ArrayRef> {
+    take_multi_file_ranked(sources, &[], keys)
+}
+
+/// Like [`take_multi_file`], but a key that several files hold is read from
+/// the file with the strictly greatest rank.
+///
+/// `ranks` (one per source, e.g. the catalog revision of the newest index
+/// segment covering that file) order the bucket's files by commit age: the
+/// newest version of a key shadows the older ones in the merge-on-read view,
+/// so reading the greatest rank reproduces the visible row without touching
+/// the reader path.  A tie for the greatest rank means the age order is
+/// unknown and the call returns `None` (the caller falls back).  An empty
+/// `ranks` keeps the conservative behaviour: only keys unique to one file
+/// resolve.
+pub fn take_multi_file_ranked(
+    sources: &[std::sync::Arc<VectorBlockSource>],
+    ranks: &[u64],
+    keys: &[IndexKey],
+) -> Option<arrow::array::ArrayRef> {
+    if keys.is_empty() || sources.is_empty() {
+        return None;
+    }
+    if !ranks.is_empty() && ranks.len() != sources.len() {
+        return None;
+    }
+    if sources.len() == 1 {
+        return sources[0].take(keys);
+    }
+    // The locator wants sorted keys; the answer must come back in the caller's
+    // order (the candidates arrive in index-distance order).
+    let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+    order.sort_unstable_by(|left, right| {
+        keys[*left as usize]
+            .as_bytes()
+            .cmp(keys[*right as usize].as_bytes())
+    });
+    let sorted: Vec<&[u8]> = order
+        .iter()
+        .map(|position| keys[*position as usize].as_bytes())
+        .collect();
+    // Which file owns each candidate.  Several owners mean several versions:
+    // without ranks only the merge path may resolve them; with ranks the
+    // strictly newest one wins and a tie falls back.
+    let mut owner: Vec<Option<(usize, u32)>> = vec![None; keys.len()];
+    let mut owner_rank: Vec<u64> = vec![0; keys.len()];
+    let mut tied: Vec<bool> = vec![false; keys.len()];
+    for (source_index, source) in sources.iter().enumerate() {
+        let rank = ranks.get(source_index).copied().unwrap_or(0);
+        for (slot, row) in source.lookup_rows(&sorted).into_iter().enumerate() {
+            let Some(row) = row else { continue };
+            let position = order[slot] as usize;
+            match owner[position] {
+                None => {
+                    owner[position] = Some((source_index, row));
+                    owner_rank[position] = rank;
+                }
+                Some(_) if !ranks.is_empty() => {
+                    if rank > owner_rank[position] {
+                        owner[position] = Some((source_index, row));
+                        owner_rank[position] = rank;
+                        tied[position] = false;
+                    } else if rank == owner_rank[position] {
+                        tied[position] = true;
+                    }
+                }
+                Some(_) => return None,
+            }
+        }
+    }
+    if tied.iter().any(|is_tied| *is_tied) {
+        return None;
+    }
+    // One block read per file, in the caller's key order.
+    let mut per_source: Vec<Vec<u32>> = vec![Vec::new(); sources.len()];
+    for resolved in &owner {
+        let (source_index, row) = (*resolved)?;
+        per_source[source_index].push(row);
+    }
+    let mut arrays: Vec<arrow::array::ArrayRef> = Vec::new();
+    let mut array_of_source = vec![usize::MAX; sources.len()];
+    for (source_index, rows) in per_source.iter().enumerate() {
+        if rows.is_empty() {
+            continue;
+        }
+        array_of_source[source_index] = arrays.len();
+        arrays.push(sources[source_index].take_rows(rows)?);
+    }
+    let mut cursors = vec![0usize; sources.len()];
+    let mut interleave_indices: Vec<(usize, usize)> = Vec::with_capacity(keys.len());
+    for resolved in &owner {
+        let (source_index, _row) = (*resolved)?;
+        let local = cursors[source_index];
+        cursors[source_index] += 1;
+        interleave_indices.push((array_of_source[source_index], local));
+    }
+    let refs: Vec<&dyn arrow::array::Array> =
+        arrays.iter().map(|array| array.as_ref()).collect();
+    arrow::compute::interleave(&refs, &interleave_indices).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
@@ -3165,10 +4298,210 @@ mod tests {
 
     use super::{
         IndexCursor, IndexWriter, Key, KeyConstraint, KeyValue, LakeSoulIOConfig,
-        MmapIndex, collect_candidate_rows, extract_key_constraints,
-        extract_key_constraints_with_cap, extract_pk_candidates, key_values_to_arrays,
-        row_selection,
+        MmapIndex, PhysicalFormat, VectorBlockSource, collect_candidate_rows,
+        extract_key_constraints, extract_key_constraints_with_cap, extract_pk_candidates,
+        key_values_to_arrays, row_selection,
     };
+
+    /// Two object stores commonly serve identical relative paths; a key index
+    /// or decoded-block source resolved from one of them must never be reused
+    /// for the other, or a query would read the wrong store's vectors.
+    #[tokio::test]
+    async fn vector_block_source_cache_is_scoped_to_object_store() {
+        use arrow::array::{FixedSizeListBuilder, Float32Builder};
+        use bytes::Bytes;
+        use lakesoul_vector::IndexKey;
+        use object_store::ObjectStore;
+        use object_store::memory::InMemory;
+        use object_store::{ObjectStoreExt, path::Path};
+
+        async fn put_vector_file(store: &InMemory, vector: [f32; 2]) {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new(
+                    "vec",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ]));
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+            vectors.values().append_slice(&vector);
+            vectors.append(true);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                    Arc::new(vectors.finish()) as ArrayRef,
+                ],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            store
+                .put(&Path::from("same/path.parquet"), Bytes::from(bytes).into())
+                .await
+                .unwrap();
+        }
+
+        let first = Arc::new(InMemory::new());
+        let second = Arc::new(InMemory::new());
+        put_vector_file(&first, [1.0, 0.0]).await;
+        put_vector_file(&second, [0.0, 1.0]).await;
+        let first_store: Arc<dyn ObjectStore> = first;
+        let second_store: Arc<dyn ObjectStore> = second;
+        let field = Arc::new(Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                2,
+            ),
+            false,
+        ));
+        let location = Path::from("same/path.parquet");
+        let types = vec![DataType::Int64];
+        let columns = vec!["id".to_string()];
+        let first_source = VectorBlockSource::open_cached(
+            Arc::clone(&first_store),
+            &location,
+            PhysicalFormat::Parquet,
+            &columns,
+            &types,
+            &field,
+        )
+        .await
+        .expect("first store PK and decoded-block source");
+        let second_source = VectorBlockSource::open_cached(
+            Arc::clone(&second_store),
+            &location,
+            PhysicalFormat::Parquet,
+            &columns,
+            &types,
+            &field,
+        )
+        .await
+        .expect("second store PK and decoded-block source");
+        assert!(
+            !Arc::ptr_eq(&first_source, &second_source),
+            "the block-source cache must not reuse one object store's source for another"
+        );
+        let row_converter =
+            RowConverter::new(vec![SortField::new(DataType::Int64)]).unwrap();
+        let id_array: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+        let encoded = row_converter.convert_columns(&[id_array]).unwrap();
+        let key_bytes = encoded.row(0).data().to_vec();
+        let keys = vec![IndexKey::new(&key_bytes)];
+        let first_keys = keys.clone();
+        let first_score = tokio::task::spawn_blocking(move || {
+            first_source
+                .score_keys(&first_keys, &[1.0, 0.0], true)
+                .unwrap()[0]
+        })
+        .await
+        .unwrap();
+        let second_score = tokio::task::spawn_blocking(move || {
+            second_source.score_keys(&keys, &[1.0, 0.0], true).unwrap()[0]
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_score, 0.0);
+        assert_eq!(second_score, 2.0);
+    }
+
+    /// The decoded-block reader reads the data file on the raw store behind a
+    /// read-through cache, not through the cache.  Two stores serve the same
+    /// path with different vectors: the key index is resolved on the "cached"
+    /// store, so a block fetched through it would return `[1, 0]` (score 0);
+    /// the raw store's `[9, 0]` (score 64) proves which handle served the read.
+    #[tokio::test]
+    async fn vector_block_reads_use_the_raw_store_behind_a_cache() {
+        use arrow::array::{FixedSizeListBuilder, Float32Builder};
+        use bytes::Bytes;
+        use lakesoul_vector::IndexKey;
+        use object_store::ObjectStore;
+        use object_store::memory::InMemory;
+        use object_store::{ObjectStoreExt, path::Path};
+
+        async fn put_vector_file(store: &InMemory, vector: [f32; 2]) {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new(
+                    "vec",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ]));
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+            vectors.values().append_slice(&vector);
+            vectors.append(true);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                    Arc::new(vectors.finish()) as ArrayRef,
+                ],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            store
+                .put(&Path::from("same/path.parquet"), Bytes::from(bytes).into())
+                .await
+                .unwrap();
+        }
+
+        let cached_store = Arc::new(InMemory::new());
+        let raw_store = Arc::new(InMemory::new());
+        put_vector_file(&cached_store, [1.0, 0.0]).await;
+        put_vector_file(&raw_store, [9.0, 0.0]).await;
+        let cached: Arc<dyn ObjectStore> = cached_store;
+        let raw: Arc<dyn ObjectStore> = raw_store;
+        crate::object_store::register_raw_store_alias(&cached, &raw);
+
+        let field = Arc::new(Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                2,
+            ),
+            false,
+        ));
+        let location = Path::from("same/path.parquet");
+        let types = vec![DataType::Int64];
+        let columns = vec!["id".to_string()];
+        let source = VectorBlockSource::open_cached(
+            cached,
+            &location,
+            PhysicalFormat::Parquet,
+            &columns,
+            &types,
+            &field,
+        )
+        .await
+        .expect("block source over a cached store");
+
+        let row_converter =
+            RowConverter::new(vec![SortField::new(DataType::Int64)]).unwrap();
+        let id_array: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+        let encoded = row_converter.convert_columns(&[id_array]).unwrap();
+        let key_bytes = encoded.row(0).data().to_vec();
+        let keys = vec![IndexKey::new(&key_bytes)];
+        let score = tokio::task::spawn_blocking(move || {
+            source.score_keys(&keys, &[1.0, 0.0], true).unwrap()[0]
+        })
+        .await
+        .unwrap();
+        assert_eq!(score, 64.0);
+    }
 
     #[test]
     fn row_selection_covers_exactly_the_indices() {

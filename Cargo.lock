@@ -5699,6 +5699,7 @@ dependencies = [
  "arrow-array",
  "arrow-pyarrow",
  "arrow-schema",
+ "base64 0.22.1",
  "datafusion",
  "datafusion-common",
  "datafusion-execution",
@@ -5800,6 +5801,7 @@ dependencies = [
  "faer",
  "futures",
  "half",
+ "lakesoul-metadata",
  "libc",
  "memmap2",
  "object_store",
@@ -5816,6 +5818,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

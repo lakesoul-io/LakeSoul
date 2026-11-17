@@ -182,6 +182,8 @@ where
             version: view.version,
             header: view.header,
             segments,
+            mutation_head: view.mutation_head.clone(),
+            mutation_records: view.mutation_records,
         });
     }
     (shards, leases)

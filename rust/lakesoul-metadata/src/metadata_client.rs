@@ -20,7 +20,7 @@ use url::Url;
 
 use lakesoul_metadata_proto::entity::{
     self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo,
-    TableInfo, TableNameId, TablePathId,
+    SnapshotCommitInfo, SnapshotTagInfo, TableInfo, TableNameId, TablePathId,
 };
 
 use crate::error::{LakeSoulMetaDataError, Result};
@@ -147,6 +147,20 @@ pub(crate) async fn apply_table_definition(
             .await?;
     }
     Ok(())
+}
+
+/// One coherent primary PostgreSQL view used for an entire batch request.
+/// File paths are immutable snapshot inputs; before reading index objects,
+/// acquire `IndexReadLeaseGuard` for the exact `index_views` commit IDs.
+#[derive(Debug, Clone)]
+pub struct VectorBatchMetadata {
+    pub table_info: TableInfo,
+    pub partitions: Vec<PartitionInfo>,
+    pub data_files: Vec<DataFileInfo>,
+    pub index_views: HashMap<
+        String,
+        crate::index_catalog::IndexCommitView<crate::index_catalog::VectorSegmentEntry>,
+    >,
 }
 
 /// Observable result of a metadata commit.
@@ -575,6 +589,17 @@ impl MetaDataClient {
         &self,
         table_info: &TableInfo,
     ) -> Result<()> {
+        // Vector-index control-plane rows have no FK to table_info.  Clean
+        // them here so dropping and recreating a table at the same path does
+        // not inherit old shards or drop tombstones.  Object files are left
+        // to the table-directory cleanup / maintenance path.
+        let catalog = self.vector_index_catalog();
+        for prefix in catalog.list_shards_under(&table_info.table_path).await? {
+            let _ = catalog.delete_shard(&prefix).await?;
+        }
+        for prefix in catalog.list_dropped_under(&table_info.table_path).await? {
+            let _ = catalog.clear_dropped(&prefix).await?;
+        }
         self.delete_table_by_table_id_cascade(
             table_info.table_id.as_str(),
             table_info.table_path.as_str(),
@@ -744,14 +769,23 @@ impl MetaDataClient {
         query_type: i32,
         joined_string: String,
     ) -> Result<Vec<u8>> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         for times in 0..self.max_retry as i64 {
-            match execute_query(
-                self.client.lock().await.deref_mut(),
-                query_type,
-                joined_string.clone(),
-            )
-            .await
-            {
+            let t_lock = std::time::Instant::now();
+            let locked = self.client.lock().await;
+            let lock_ms = t_lock.elapsed().as_secs_f64() * 1000.0;
+            let t_query = std::time::Instant::now();
+            let executed =
+                execute_query(&locked, query_type, joined_string.clone()).await;
+            if profile {
+                tracing::debug!(
+                    lock_ms,
+                    query_ms = t_query.elapsed().as_secs_f64() * 1000.0,
+                    dao_type = query_type,
+                    "metadata client query split"
+                );
+            }
+            match executed {
                 Ok(encoded) => {
                     return Ok(encoded);
                 }
@@ -768,7 +802,17 @@ impl MetaDataClient {
         joined_string: String,
     ) -> Result<JniWrapper> {
         let bytes = self.execute_query_raw(query_type, joined_string).await?;
-        Ok(JniWrapper::decode(prost::bytes::Bytes::from(bytes))?)
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_decode = std::time::Instant::now();
+        let decoded = JniWrapper::decode(prost::bytes::Bytes::from(bytes))?;
+        if profile {
+            tracing::debug!(
+                decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0,
+                dao_type = query_type,
+                "metadata client decode split"
+            );
+        }
+        Ok(decoded)
     }
 
     pub async fn execute_update_raw(
@@ -2397,6 +2441,147 @@ impl MetaDataClient {
         }
     }
 
+    /// Freeze properties/schema, latest partition snapshots, their active
+    /// files, and current non-dropped vector commits in one primary snapshot.
+    /// This does not use metadata TTL caches or a read replica. Index object
+    /// access must subsequently pin these exact commit IDs atomically.
+    pub async fn vector_batch_metadata(
+        &self,
+        table_id: &str,
+    ) -> Result<Option<VectorBatchMetadata>> {
+        self.vector_index_catalog().ensure_tables().await?;
+        let client = self.client.lock().await.primary_only();
+        let mut conn = client.get(QueryType::RW).await?;
+        let tx = conn
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        let Some(row) = tx
+            .query_opt(
+                "select table_id, table_name, table_path, table_schema, \
+                    table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, \
+                    properties, partitions, table_namespace, domain \
+             from table_info where table_id = $1",
+                &[&table_id],
+            )
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let table_info = TableInfo {
+            table_id: row.get(0),
+            table_name: row.get(1),
+            table_path: row.get(2),
+            table_schema: row.get(3),
+            table_schema_arrow_ipc: row.get::<_, Option<Vec<u8>>>(4).unwrap_or_default(),
+            table_schema_arrow_ipc_json_hash: row
+                .get::<_, Option<String>>(5)
+                .unwrap_or_default(),
+            properties: row.get::<_, serde_json::Value>(6).to_string(),
+            partitions: row.get(7),
+            table_namespace: row.get(8),
+            domain: row.get(9),
+        };
+        let rows = tx.query(
+            "select distinct on (partition_desc) table_id, partition_desc, version, \
+                    commit_op, snapshot, timestamp, expression, domain, pinned \
+             from partition_info where table_id = $1 order by partition_desc, version desc",
+            &[&table_id],
+        ).await?;
+        let mut partitions = Vec::with_capacity(rows.len());
+        let mut data_files = Vec::new();
+        for row in rows {
+            let ids: Vec<uuid::Uuid> = row.get(4);
+            let partition = PartitionInfo {
+                table_id: row.get(0),
+                partition_desc: row.get(1),
+                version: row.get(2),
+                commit_op: CommitOp::from_str_name(row.get(3)).ok_or_else(|| {
+                    LakeSoulMetaDataError::Internal("unknown partition commit_op".into())
+                })? as i32,
+                snapshot: ids
+                    .iter()
+                    .map(|id| {
+                        let (high, low) = id.as_u64_pair();
+                        entity::Uuid { high, low }
+                    })
+                    .collect(),
+                timestamp: row.get(5),
+                expression: row.get::<_, Option<String>>(6).unwrap_or_default(),
+                domain: row.get(7),
+                pinned: row.get(8),
+            };
+            let commit_rows = tx.query(
+                "select commit_id, file_ops, commit_op, timestamp, committed, domain, pinned \
+                 from data_commit_info where table_id = $1 and partition_desc = $2 \
+                    and commit_id = any($3) order by array_position($3, commit_id)",
+                &[&table_id, &partition.partition_desc, &ids],
+            ).await?;
+            if commit_rows.len() != ids.len() {
+                return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                    "partition snapshot '{}'/{} references missing data commits",
+                    table_id, partition.partition_desc
+                )));
+            }
+            let mut commits = Vec::with_capacity(commit_rows.len());
+            for row in commit_rows {
+                let (high, low) = row.get::<_, uuid::Uuid>(0).as_u64_pair();
+                commits.push(DataCommitInfo {
+                    table_id: table_id.to_string(),
+                    partition_desc: partition.partition_desc.clone(),
+                    commit_id: Some(entity::Uuid { high, low }),
+                    file_ops: row
+                        .get::<_, Vec<DataFileOp>>(1)
+                        .iter()
+                        .map(DataFileOp::as_proto_data_file_op)
+                        .collect::<Result<Vec<_>>>()?,
+                    commit_op: CommitOp::from_str_name(row.get(2)).ok_or_else(|| {
+                        LakeSoulMetaDataError::Internal("unknown data commit_op".into())
+                    })? as i32,
+                    timestamp: row.get(3),
+                    committed: row.get(4),
+                    domain: row.get(5),
+                    pinned: row.get(6),
+                });
+            }
+            // Match existing MOR file semantics: later deletes suppress
+            // earlier adds, then restore partition snapshot commit order.
+            let mut deleted = HashSet::new();
+            let mut active = Vec::new();
+            for commit in commits.iter().rev() {
+                for operation in commit.file_ops.iter().rev() {
+                    match operation.file_op() {
+                        entity::FileOp::Del => {
+                            deleted.insert(&operation.path);
+                        }
+                        entity::FileOp::Add if !deleted.contains(&operation.path) => {
+                            active.push(DataFileInfo::compose(
+                                commit, operation, &partition,
+                            )?);
+                        }
+                        entity::FileOp::Add => {}
+                    }
+                }
+            }
+            active.reverse();
+            data_files.extend(active);
+            partitions.push(partition);
+        }
+        let index_views =
+            crate::index_catalog::table_views_in_snapshot(&tx, &table_info.table_path)
+                .await?;
+        tx.commit().await?;
+        Ok(Some(VectorBatchMetadata {
+            table_info,
+            partitions,
+            data_files,
+            index_views,
+        }))
+    }
+
     pub async fn get_data_files_by_table_name(
         &self,
         table_name: &str,
@@ -2623,6 +2808,95 @@ impl MetaDataClient {
             Ok(wrapper) => Ok(wrapper.partition_info.into_iter().next()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Read the partition commits frozen into a snapshot.
+    ///
+    /// A snapshot stores `(partition_desc, version, commit_id)` rows; reading
+    /// that version of every partition gives the table as it was when the
+    /// snapshot was created (see [`Self::get_partition_infos_at_snapshot`]).
+    pub async fn get_snapshot_commits(
+        &self,
+        table_id: &str,
+        snapshot_id: i64,
+    ) -> Result<Vec<SnapshotCommitInfo>> {
+        match self
+            .execute_query(
+                DaoType::ListSnapshotCommitsBySnapshot as i32,
+                [table_id, &snapshot_id.to_string()].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.snapshot_commit_info),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Resolve a tag to the snapshot id it pins.
+    pub async fn get_tag_snapshot_id(
+        &self,
+        table_id: &str,
+        tag: &str,
+    ) -> Result<Option<i64>> {
+        match self
+            .execute_query(
+                DaoType::SelectTagByTableIdAndTag as i32,
+                [table_id, tag].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper
+                .snapshot_tag_info
+                .into_iter()
+                .next()
+                .map(|info: SnapshotTagInfo| info.snapshot_id)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Partition versions frozen into a snapshot.
+    ///
+    /// The returned [`PartitionInfo`] rows are the historical rows of that
+    /// exact version, so a reader built from them sees the table as of the
+    /// snapshot instead of the latest commit.
+    pub async fn get_partition_infos_at_snapshot(
+        &self,
+        table_id: &str,
+        snapshot_id: i64,
+    ) -> Result<Vec<PartitionInfo>> {
+        let commits = self.get_snapshot_commits(table_id, snapshot_id).await?;
+        let mut partitions = Vec::with_capacity(commits.len());
+        for commit in commits {
+            if let Some(info) = self
+                .get_partition_info_by_version(
+                    table_id,
+                    &commit.partition_desc,
+                    commit.version,
+                )
+                .await?
+            {
+                partitions.push(info);
+            }
+        }
+        Ok(partitions)
+    }
+
+    /// Partition versions pinned by a tag's snapshot.
+    pub async fn get_partition_infos_by_tag(
+        &self,
+        table_id: &str,
+        tag: &str,
+    ) -> Result<Vec<PartitionInfo>> {
+        let snapshot_id =
+            self.get_tag_snapshot_id(table_id, tag)
+                .await?
+                .ok_or_else(|| {
+                    LakeSoulMetaDataError::NotFound(format!(
+                        "tag '{tag}' does not exist for table '{table_id}'"
+                    ))
+                })?;
+        self.get_partition_infos_at_snapshot(table_id, snapshot_id)
+            .await
     }
 
     async fn get_partition_versions_in_range(
@@ -3232,6 +3506,28 @@ impl MetaDataClient {
                 table_id
             )))
         }
+    }
+
+    /// Update table properties only if the stored value still equals
+    /// `expected`.  Returns `false` when another writer changed the row in
+    /// between, so callers can re-read and retry instead of overwriting
+    /// unrelated properties.
+    pub async fn update_table_properties_if_unchanged(
+        &self,
+        table_id: &str,
+        expected: &str,
+        properties: &str,
+    ) -> Result<bool> {
+        let guard = self.client.lock().await;
+        let updated = guard
+            .execute(
+                "update table_info set properties = ($1::text)::json \
+                 where table_id = $2 and properties::jsonb = ($3::text)::jsonb",
+                QueryType::RW,
+                &[&properties, &table_id, &expected],
+            )
+            .await?;
+        Ok(updated > 0)
     }
 
     pub async fn update_table_short_name(

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
+import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -16,11 +17,13 @@ import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -182,61 +185,200 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
 
     private boolean deleteBatch(List<String> batch) {
         log.info("start delete batch {}", batch.size());
-        List<String> deletable = batch;
+        boolean allSucceeded = true;
+        CleanUtils cleanUtils = new CleanUtils();
         try (Connection conn = dataSource.getConnection()) {
+            // Files referenced by a pinned (tagged read) data commit stay.
             List<String> pinned = pinnedPaths(conn, batch);
+            List<String> candidates = batch;
             if (!pinned.isEmpty()) {
-                deletable = new ArrayList<>(batch);
-                deletable.removeAll(pinned);
+                candidates = new ArrayList<>(batch);
+                candidates.removeAll(pinned);
                 log.info("skip {} pinned discard files", pinned.size());
             }
-            if (deletable.isEmpty()) {
+            if (candidates.isEmpty()) {
                 return true;
             }
-            try (PreparedStatement ps =
-                    conn.prepareStatement(
-                            "DELETE FROM discard_compressed_file_info WHERE file_path ="
-                                    + " ANY(?)")) {
-                ps.setArray(1, conn.createArrayOf("text", deletable.toArray()));
-                int rowsDeleted = ps.executeUpdate();
-                log.info("批量删除数据库记录 {} 条", rowsDeleted);
+            DataFileReadLeaseGuard readers = readersForBatch(conn, candidates);
+            try {
+                // One protection probe and one fence commit for the whole batch.
+                List<String> deletable =
+                        readers == null
+                                ? candidates
+                                : readers.retireBatch(candidates, Collections.emptyList());
+                java.util.Set<String> allowed = new java.util.HashSet<>();
+                for (String path : deletable) {
+                    allowed.add(DataFileReadLeaseGuard.normalizePath(path));
+                }
+                for (String path : candidates) {
+                    if (!allowed.contains(DataFileReadLeaseGuard.normalizePath(path))) {
+                        // Retain both the database row and checkpointed retry
+                        // state until the reader/tag releases this file.
+                        allSucceeded = false;
+                        continue;
+                    }
+                    try {
+                        cleanUtils.deleteFile(path);
+                        try (PreparedStatement ps =
+                                conn.prepareStatement(
+                                        "delete from discard_compressed_file_info where file_path ="
+                                                + " ?")) {
+                            ps.setString(1, path);
+                            ps.executeUpdate();
+                        }
+                        if (readers != null) {
+                            readers.commit();
+                        }
+                    } catch (Exception error) {
+                        log.error(
+                                "discard file cleanup failed [{}], retain for retry", path, error);
+                        allSucceeded = false;
+                    }
+                }
+                return allSucceeded;
+            } finally {
+                if (readers != null) {
+                    try {
+                        readers.close();
+                    } catch (SQLException error) {
+                        log.error("failed to close discard cleanup guard", error);
+                    }
+                }
             }
-        } catch (SQLException e) {
-            log.error("批量删除数据库失败", e);
+        } catch (SQLException error) {
+            log.error("failed to guard discard file cleanup", error);
             return false;
         }
-
-        CleanUtils cleanUtils = new CleanUtils();
-        boolean allSucceeded = true;
-        for (String path : deletable) {
-            try {
-                cleanUtils.deleteFile(path);
-            } catch (Exception e) {
-                log.error("删除文件失败 [{}]", path, e);
-                allSucceeded = false;
-            }
-        }
-        if (allSucceeded) {
-            log.info("finish delete batch {}", batch.size());
-        }
-        return allSucceeded;
     }
 
     private List<String> pinnedPaths(Connection conn, List<String> batch) throws SQLException {
+        if (batch == null || batch.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Array paths = conn.createArrayOf("text", batch.toArray());
+        // A batch belongs to a handful of tables; probing only those tables uses
+        // the (table_id, pinned) index instead of scanning every pinned commit.
+        List<String> tableIds = singleOwnerTableIds(conn, paths);
+        if (tableIds == null) {
+            return pinnedPathsGlobal(conn, paths);
+        }
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "select distinct f.path from data_commit_info dci,"
+                                + " unnest(dci.file_ops) as f"
+                                + " where dci.pinned = true"
+                                + " and dci.table_id = any(?::text[])"
+                                + " and f.path = any(?::text[])")) {
+            ps.setArray(1, conn.createArrayOf("text", tableIds.toArray()));
+            ps.setArray(2, paths);
+            List<String> pinned = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    pinned.add(rs.getString(1));
+                }
+            }
+            return pinned;
+        }
+    }
+
+    /**
+     * Owning tables of the batch, when every batch table path belongs to exactly one table.
+     *
+     * <p>{@code null} means the fast path cannot prove it matches the global pinned probe: a table
+     * path shared by several tables (or missing from {@code table_info}) could be pinned by another
+     * table, so the caller falls back to scanning all pinned commits.
+     */
+    private List<String> singleOwnerTableIds(Connection conn, Array paths) throws SQLException {
+        int distinctPaths;
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "select count(distinct table_path),"
+                                + " count(*) filter (where table_path is null)"
+                                + " from discard_compressed_file_info"
+                                + " where file_path = any(?::text[])")) {
+            ps.setArray(1, paths);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                distinctPaths = rs.getInt(1);
+                if (rs.getInt(2) > 0) {
+                    return null;
+                }
+            }
+        }
+        if (distinctPaths == 0) {
+            return null;
+        }
+        List<String> tableIds = new ArrayList<>();
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "select ti.table_path, count(distinct ti.table_id) as owners,"
+                            + " min(ti.table_id) as table_id from table_info ti where ti.table_path"
+                            + " = any(select distinct table_path   from"
+                            + " discard_compressed_file_info where file_path = any(?::text[]))"
+                            + " group by ti.table_path")) {
+            ps.setArray(1, paths);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    if (rs.getInt("owners") != 1) {
+                        return null;
+                    }
+                    tableIds.add(rs.getString("table_id"));
+                }
+            }
+        }
+        return tableIds.size() == distinctPaths ? tableIds : null;
+    }
+
+    /** Global pinned probe used when the owning tables are not unambiguous. */
+    private List<String> pinnedPathsGlobal(Connection conn, Array paths) throws SQLException {
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "SELECT p.path FROM unnest(?::text[]) AS p(path)"
                                 + " WHERE EXISTS (SELECT 1 FROM data_commit_info dci,"
                                 + " unnest(dci.file_ops) AS f WHERE dci.pinned = true"
                                 + " AND f.path = p.path)")) {
-            ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
-            List<String> paths = new ArrayList<>();
+            ps.setArray(1, paths);
+            List<String> pinned = new ArrayList<>();
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    paths.add(rs.getString(1));
+                    pinned.add(rs.getString(1));
                 }
             }
-            return paths;
+            return pinned;
+        }
+    }
+
+    /**
+     * Retirement fences are only needed when one of the owning tables declares a vector index.
+     * Otherwise {@code null} keeps the original deletion path with no metadata round trips.
+     */
+    private DataFileReadLeaseGuard readersForBatch(Connection conn, List<String> batch)
+            throws SQLException {
+        if (!needsRetirementFences(conn, batch)) {
+            return null;
+        }
+        return DataFileReadLeaseGuard.acquireFenceOnlyOrNull(conn);
+    }
+
+    /** True when at least one table owning these discard files has a vector index. */
+    public static boolean needsRetirementFences(Connection conn, List<String> batch)
+            throws SQLException {
+        if (batch == null || batch.isEmpty()) {
+            return false;
+        }
+        String sql =
+                // Avoid the jsonb `?` operator here: JDBC would parse it as a placeholder.
+                "select exists (select 1 from table_info t"
+                        + " where jsonb_typeof((t.properties::jsonb) -> 'vector_index_columns')"
+                        + " = 'array'"
+                        + " and exists (select 1 from discard_compressed_file_info d"
+                        + "   where d.file_path = any(?::text[]) and d.table_path = t.table_path))";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setArray(1, conn.createArrayOf("text", batch.toArray(new String[0])));
+            try (java.sql.ResultSet rows = ps.executeQuery()) {
+                rows.next();
+                return rows.getBoolean(1);
+            }
         }
     }
 

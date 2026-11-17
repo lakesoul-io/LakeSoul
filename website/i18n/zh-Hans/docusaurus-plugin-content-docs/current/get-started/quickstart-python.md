@@ -133,4 +133,4 @@ catalog.create_table(
 - [Python SDK 概览](../python/overview.md)
 - [核心 API](../python/core-api.md)
 - [PyTorch 与 Hugging Face](../python/pytorch-huggingface.md)
-- [用 Python 做向量检索](../python/vector-search.md)
+- [向量检索快速开始](../engine/vector-search/quickstart.md)

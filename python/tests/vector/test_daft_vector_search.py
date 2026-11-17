@@ -163,7 +163,9 @@ def test_daft_vector_search_global_topk() -> None:
     top_k = 3
     _, table, table_path = _create_and_write(train)
     try:
-        result = vector_search(table, query.tolist(), top_k=top_k, nprobe=8)
+        result = vector_search(
+            table, query.tolist(), top_k=top_k, nprobe=8, rerank="exact"
+        )
         collected = result.collect().to_arrow()
         assert collected.column_names == ["id", "vec"], collected.column_names
         ids = collected.column("id").to_pylist()
@@ -350,7 +352,7 @@ def test_daft_vector_search_index_rerank() -> None:
     _, table, table_path = _create_and_write(train)
     try:
         exact = (
-            vector_search(table, query.tolist(), top_k=top_k, nprobe=8)
+            vector_search(table, query.tolist(), top_k=top_k, nprobe=8, rerank="exact")
             .collect()
             .to_arrow()
         )
@@ -486,6 +488,7 @@ def test_daft_multi_vector_search_fusion() -> None:
                 top_k=top_k,
                 nprobe=8,
                 weights=weights,
+                rerank="exact",
                 with_distance=True,
             )
             .collect()

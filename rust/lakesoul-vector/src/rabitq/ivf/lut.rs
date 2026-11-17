@@ -214,6 +214,9 @@ pub(crate) struct HeapCandidate {
     /// Segment version the entry came from (newest wins on duplicates).
     pub(crate) version: u32,
 
+    /// Global catalog birth revision, comparable across clusters.
+    pub(crate) birth_version: u64,
+
     pub(crate) distance: f32,
 
     pub(crate) score: f32,

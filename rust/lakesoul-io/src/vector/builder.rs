@@ -12,8 +12,9 @@
 //! trains a fresh index, with one it appends a delta.  The returned
 //! [`ShardBuildOutcome`] carries the segment entries to publish.
 
+use futures::StreamExt;
 use lakesoul_common::misc::SecretMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use lakesoul_common::IndexKind;
 use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
@@ -23,7 +24,7 @@ use tracing::{info, warn};
 
 use crate::index::commit::ResolvedIndex;
 use crate::index::key::{KeyCodec, KeyLayout};
-use crate::index::reader::read_shard_batches;
+use crate::index::reader::{read_shard_batches, stream_shard_batches};
 use crate::vector::reader::extract_vector_batch;
 
 /// Header and segment files produced by a build, for the caller to commit.
@@ -35,6 +36,10 @@ pub struct ShardBuildOutcome {
     /// New segments only: the delta segments of an incremental build, or
     /// every base segment of a fresh build / rebuild.
     pub new_segments: Vec<SegmentEntry>,
+    /// Keys an incremental build inserted.  They must be recorded in the
+    /// mutation delta so older copies of the same key are masked.  Empty for
+    /// fresh builds and rebuilds, which start from a clean generation.
+    pub upserted_keys: Vec<lakesoul_vector::IndexKey>,
 }
 
 pub struct VectorShardIndexBuilder {
@@ -45,6 +50,16 @@ pub struct VectorShardIndexBuilder {
     object_store_options: SecretMap,
     default_fs: Option<String>,
     base: Option<ResolvedIndex>,
+}
+
+/// Whether fresh/rebuild builds use the two-pass streaming reader.
+///
+/// Set `LAKESOUL_VECTOR_STREAMING_BUILD=0` to force the legacy materialising
+/// path for A/B or debugging.
+fn streaming_build_enabled() -> bool {
+    std::env::var("LAKESOUL_VECTOR_STREAMING_BUILD")
+        .map(|value| value != "0")
+        .unwrap_or(true)
 }
 
 impl VectorShardIndexBuilder {
@@ -96,6 +111,13 @@ impl VectorShardIndexBuilder {
         use lakesoul_vector::RabitqError;
 
         let index_prefix = self.index_prefix();
+        if self.base.is_none()
+            && streaming_build_enabled()
+            && let Some(outcome) =
+                self.build_fresh_streaming(index_prefix.clone()).await?
+        {
+            return Ok(outcome);
+        }
         let (codec, all_batches) = self
             .read_batches()
             .await
@@ -108,6 +130,7 @@ impl VectorShardIndexBuilder {
                     index_prefix,
                     header: base.header.clone(),
                     new_segments: Vec::new(),
+                    upserted_keys: Vec::new(),
                 }),
                 None => Err(RabitqError::InvalidPersistence(
                     "no vectors found in data files",
@@ -146,6 +169,12 @@ impl VectorShardIndexBuilder {
         use lakesoul_vector::RabitqError;
 
         let index_prefix = self.index_prefix();
+        if streaming_build_enabled()
+            && let Some(outcome) =
+                self.build_fresh_streaming(index_prefix.clone()).await?
+        {
+            return Ok(outcome);
+        }
         let (codec, all_batches) = self
             .read_batches()
             .await
@@ -157,6 +186,161 @@ impl VectorShardIndexBuilder {
         }
         let key_kind = codec.as_ref().map(KeyCodec::kind_hash).unwrap_or(0);
         self.build_fresh(index_prefix, key_kind, all_batches).await
+    }
+
+    /// Two-pass bounded-memory build: pass 1 streams the shard into the
+    /// builder's reservoir, pass 2 streams it again for quantisation.  Raw
+    /// vectors are never materialised as one `Vec`.
+    ///
+    /// Returns `Ok(None)` when the shard is too small to train `nlist`
+    /// clusters; the caller then falls back to the legacy in-memory path.
+    async fn build_fresh_streaming(
+        &self,
+        index_prefix: String,
+    ) -> Result<Option<ShardBuildOutcome>, lakesoul_vector::RabitqError> {
+        use lakesoul_vector::RabitqError;
+
+        let dim = self.config.dim;
+        let column = self.config.column_name.clone();
+        let nlist = self.config.nlist;
+        let mut builder: Option<IvfRabitqBuilder> = None;
+        let mut codec: Option<KeyCodec> = None;
+        let mut total = 0usize;
+        let mut pass1 = Box::pin(stream_shard_batches(
+            self.file_paths.clone(),
+            self.pk_columns.clone(),
+            vec![column.clone()],
+            self.object_store_options
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            self.default_fs.clone(),
+        ));
+        while let Some(batch) = pass1.next().await {
+            let batch =
+                batch.map_err(|e| RabitqError::Io(format!("stream read: {e}")))?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            if builder.is_none() {
+                let layout =
+                    KeyLayout::from_schema(batch.schema().as_ref(), &self.pk_columns)
+                        .map_err(|e| RabitqError::Io(format!("key layout: {e}")))?;
+                let key_codec = KeyCodec::new(layout)
+                    .map_err(|e| RabitqError::Io(format!("key codec: {e}")))?;
+                builder = Some(IvfRabitqBuilder::new(
+                    dim,
+                    nlist,
+                    self.config.total_bits,
+                    self.config.metric,
+                    self.config.rotator_type,
+                    self.config.seed,
+                    self.config.use_faster_config,
+                    key_codec.kind_hash(),
+                ));
+                codec = Some(key_codec);
+            }
+            let extracted = extract_vector_batch(
+                &batch,
+                codec.as_ref().expect("codec initialized with builder"),
+                &column,
+                dim,
+            )
+            .map_err(|e| RabitqError::Io(format!("extract vectors: {e}")))?;
+            total += extracted.ids.len();
+            builder
+                .as_mut()
+                .expect("builder initialized")
+                .insert_batch(extracted)?;
+        }
+        let Some(builder) = builder else {
+            return Err(RabitqError::InvalidPersistence(
+                "no vectors found in data files",
+            ));
+        };
+        let Some(codec) = codec else {
+            return Err(RabitqError::InvalidPersistence(
+                "no vectors found in data files",
+            ));
+        };
+        if total == 0 {
+            return Err(RabitqError::InvalidPersistence(
+                "no vectors found in data files",
+            ));
+        }
+        if total < nlist {
+            info!(
+                "streaming build skipped: {} vectors < nlist={}; falling back",
+                total, nlist
+            );
+            return Ok(None);
+        }
+        let files = self.file_paths.clone();
+        let pks = self.pk_columns.clone();
+        let options = self
+            .object_store_options
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let default_fs = self.default_fs.clone();
+        let col2 = column.clone();
+        let raw = stream_shard_batches(files, pks, vec![column], options, default_fs);
+        let pass2_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let error_slot = Arc::clone(&pass2_error);
+        let pass2 = Box::pin(async_stream::stream! {
+            let mut raw = Box::pin(raw);
+            while let Some(batch) = raw.next().await {
+                match batch {
+                    Ok(batch) => {
+                        if batch.num_rows() == 0 { continue; }
+                        match extract_vector_batch(&batch, &codec, &col2, dim) {
+                            Ok(extracted) if !extracted.ids.is_empty() => yield extracted,
+                            Ok(_) => {}
+                            Err(error) => {
+                                *error_slot.lock().expect("pass2 error lock") =
+                                    Some(format!("extract vectors: {error}"));
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        *error_slot.lock().expect("pass2 error lock") =
+                            Some(format!("stream read: {error}"));
+                        break;
+                    }
+                }
+            }
+        });
+        let mut pass2_slot = Some(pass2);
+        let make_stream =
+            move || pass2_slot.take().expect("pass 2 stream is consumed once");
+        let istore = IndexStore::new(self.store.clone(), index_prefix.clone());
+        let chunk_bytes = std::env::var("LAKESOUL_VECTOR_BUILD_CHUNK_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(64 * 1024 * 1024);
+        let (index, mut new_segments) = builder
+            .build_with_chunk_flush(make_stream, istore, chunk_bytes)
+            .await?;
+        if let Some(error) = pass2_error.lock().expect("pass2 error lock").take() {
+            return Err(RabitqError::Io(error));
+        }
+        let header = index.index_header();
+        for segment in &mut new_segments {
+            segment.data_files = self.file_paths.clone();
+        }
+        info!(
+            "Fresh index built successfully (streaming input, {} segments, chunk={} MiB)",
+            new_segments.len(),
+            chunk_bytes / 1024 / 1024
+        );
+        Ok(Some(ShardBuildOutcome {
+            index_prefix,
+            header: header.serialize(),
+            new_segments,
+            upserted_keys: Vec::new(),
+        }))
     }
 
     async fn build_fresh(
@@ -231,6 +415,7 @@ impl VectorShardIndexBuilder {
             index_prefix,
             header: header.serialize(),
             new_segments,
+            upserted_keys: Vec::new(),
         })
     }
 
@@ -265,17 +450,22 @@ impl VectorShardIndexBuilder {
         }
         info!("Inserted {} vectors", total);
 
-        let (header, mut new_segments) = builder.flush(&istore).await?;
+        let (header, mut new_segments, upserted_keys) =
+            builder.flush_with_mutations(&istore).await?;
         // The delta covers exactly the files this build read; the base
         // segments keep the coverage they were committed with.
         for segment in &mut new_segments {
             segment.data_files = self.file_paths.clone();
         }
-        info!("Incremental index update complete");
+        info!(
+            keys = upserted_keys.len(),
+            "Incremental index update complete"
+        );
         Ok(ShardBuildOutcome {
             index_prefix,
             header: header.serialize(),
             new_segments,
+            upserted_keys,
         })
     }
 

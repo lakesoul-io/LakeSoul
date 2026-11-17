@@ -141,6 +141,77 @@ fn record_index_fallback(index_type: &'static str, reason: &'static str) {
 ///
 /// 3. Projection pushdown for formats that support
 ///
+/// Files of one immutable partition version, used by the vector scan path.
+///
+/// A partition version is published once and its data files never change, so
+/// the metadata query and the per-file HEAD requests that produced the listing
+/// can be reused by the next vector query.  The key contains the version, so a
+/// new commit simply misses.  Only the vector scan paths read this cache: a
+/// regular scan keeps listing exactly as before, so no other reader's
+/// behaviour or freshness guarantee changes.
+type PartitionVersionKey = (String, String, i32);
+
+/// Bounded cache of the listed files of one partition version.
+struct VectorListingCache {
+    entries: HashMap<PartitionVersionKey, Arc<Vec<PartitionedFile>>>,
+    order: std::collections::VecDeque<PartitionVersionKey>,
+}
+
+const VECTOR_LISTING_CACHE_ENTRIES: usize = 512;
+
+static VECTOR_LISTING_CACHE: std::sync::LazyLock<std::sync::Mutex<VectorListingCache>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(VectorListingCache {
+            entries: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        })
+    });
+
+fn cached_partition_listing(
+    key: &PartitionVersionKey,
+) -> Option<Arc<Vec<PartitionedFile>>> {
+    let cache = VECTOR_LISTING_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.entries.get(key).cloned()
+}
+
+fn store_partition_listing(key: PartitionVersionKey, files: Arc<Vec<PartitionedFile>>) {
+    let mut cache = VECTOR_LISTING_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.entries.contains_key(&key) {
+        return;
+    }
+    while cache.order.len() >= VECTOR_LISTING_CACHE_ENTRIES {
+        let Some(evicted) = cache.order.pop_front() else {
+            break;
+        };
+        cache.entries.remove(&evicted);
+    }
+    cache.order.push_back(key.clone());
+    cache.entries.insert(key, files);
+}
+
+/// A pinned read view of a LakeSoul table.
+///
+/// A plain provider always reads the latest committed partition versions.  A
+/// provider built with a `TableReadSnapshot` resolves the partition versions
+/// from that snapshot (or tag, or wall-clock timestamp) instead, so scans see
+/// the table as it was at that point.  Pinned reads intentionally skip the
+/// vector/text index pushdowns: those indexes describe the latest files, not
+/// the pinned ones, so the scan falls back to the regular merge-on-read path.
+#[derive(Clone, Debug)]
+pub enum TableReadSnapshot {
+    /// A snapshot id created by `table_snapshot` / `create_snapshot`.
+    SnapshotId(i64),
+    /// A tag that pins a snapshot id.
+    Tag(String),
+    /// The latest partition versions committed at or before this Unix
+    /// millisecond timestamp.
+    AsOfMs(i64),
+}
+
 #[derive(Debug)]
 pub struct LakeSoulTableProvider {
     pub(crate) listing_options: ListingOptions,
@@ -166,12 +237,80 @@ pub struct LakeSoulTableProvider {
     /// `text_index_columns` property (empty when the table has none).
     pub(crate) text_index_configs: Vec<crate::text_index::TextIndexTableConfig>,
     pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
+    /// `Some` for a pinned read view (snapshot / tag / as-of timestamp).
+    pub(crate) read_snapshot: Option<TableReadSnapshot>,
     /// The connection's deferred-commit handle, when the front end installs
     /// one: a block's staged rows are invisible to the index shards and to any
     /// rewrite that replays the published snapshot.
     pub(crate) deferred_commit: Option<Arc<crate::write_mode::LakeSoulDeferredCommit>>,
 }
 impl LakeSoulTableProvider {
+    /// Build a copy of this provider that reads a pinned snapshot.
+    ///
+    /// The copy shares the table metadata, options and index configuration;
+    /// only the partition-version resolution changes.  Use it for time travel:
+    /// returning a copy keeps the provider in the catalog (latest) untouched.
+    pub fn snapshot_view(&self, snapshot: TableReadSnapshot) -> Self {
+        Self {
+            listing_options: self.listing_options.clone(),
+            listing_table_paths: self.listing_table_paths.clone(),
+            client: Arc::clone(&self.client),
+            table_info: Arc::clone(&self.table_info),
+            logical_schema: Arc::clone(&self.logical_schema),
+            scan_schema: Arc::clone(&self.scan_schema),
+            file_schema: Arc::clone(&self.file_schema),
+            primary_keys: self.primary_keys.clone(),
+            range_partitions: self.range_partitions.clone(),
+            pushdown_filters: self.pushdown_filters,
+            io_config: self.io_config.clone(),
+            vector_index_configs: self.vector_index_configs.clone(),
+            text_index_configs: self.text_index_configs.clone(),
+            format_registry: Arc::clone(&self.format_registry),
+            deferred_commit: self.deferred_commit.clone(),
+            read_snapshot: Some(snapshot),
+        }
+    }
+
+    /// Partition versions this provider reads: pinned snapshot or latest.
+    async fn read_partition_info(
+        &self,
+    ) -> std::result::Result<
+        Arc<Vec<PartitionInfo>>,
+        lakesoul_metadata::LakeSoulMetaDataError,
+    > {
+        let Some(snapshot) = &self.read_snapshot else {
+            return crate::catalog::metadata_cache::partition_info(
+                crate::catalog::metadata_cache::partition_key(
+                    &self.client,
+                    self.table_id(),
+                ),
+                self.client.get_all_partition_info(self.table_id()),
+            )
+            .await;
+        };
+        let infos = match snapshot {
+            TableReadSnapshot::AsOfMs(as_of_ms) => {
+                let as_of_ms = *as_of_ms;
+                self.client
+                    .get_all_partition_info_as_of(self.table_id(), as_of_ms)
+                    .await?
+            }
+            TableReadSnapshot::SnapshotId(snapshot_id) => {
+                let snapshot_id = *snapshot_id;
+                self.client
+                    .get_partition_infos_at_snapshot(self.table_id(), snapshot_id)
+                    .await?
+            }
+            TableReadSnapshot::Tag(tag) => {
+                let tag = tag.clone();
+                self.client
+                    .get_partition_infos_by_tag(self.table_id(), &tag)
+                    .await?
+            }
+        };
+        Ok(Arc::new(infos))
+    }
+
     fn needs_output_projection(
         target_schema: &SchemaRef,
         merged_schema: &SchemaRef,
@@ -283,6 +422,16 @@ impl LakeSoulTableProvider {
         partition_filters: &[Expr],
         snapshot: Option<Arc<Vec<PartitionInfo>>>,
     ) -> Result<Vec<(PartitionInfo, Vec<DataFileInfo>)>> {
+        // A pinned read view resolves its partition versions from the primary
+        // metadata too; the read-only replica may lag behind the snapshot.
+        let snapshot = match &self.read_snapshot {
+            Some(_) => Some(
+                self.read_partition_info()
+                    .await
+                    .map_err(|error| report!(error))?,
+            ),
+            None => snapshot,
+        };
         // A fixed snapshot came from the primary. Its commit descriptors must
         // come from the same authority: a lagging replica could silently omit
         // those commits and turn a real update into UPDATE 0.
@@ -598,6 +747,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        crate::vector_index::set_vector_index_available(
+            &table_info.table_namespace,
+            &table_info.table_name,
+            crate::vector_index::vector_index_available(&table_info.properties),
+        );
         // A frontend may ask for its own marker on the vector columns (the
         // PostgreSQL wire server reports them as its `vector` type); the
         // scan, file and execution schemas are all derived from this one, so
@@ -672,6 +826,7 @@ impl LakeSoulTableProvider {
             text_index_configs,
             format_registry,
             deferred_commit: provider_options.deferred_commit,
+            read_snapshot: None,
         })
     }
 
@@ -962,6 +1117,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        crate::vector_index::set_vector_index_available(
+            &table_info.table_namespace,
+            &table_info.table_name,
+            crate::vector_index::vector_index_available(&table_info.properties),
+        );
         let text_index_configs =
             crate::text_index::parse_text_index_from_table_properties(
                 &table_info.properties,
@@ -998,6 +1158,7 @@ impl LakeSoulTableProvider {
             // Built from an existing provider: the handle is not the one the
             // connection installed, so no block can be tracked through it.
             deferred_commit: None,
+            read_snapshot: None,
         })
     }
 
@@ -1251,9 +1412,14 @@ impl LakeSoulTableProvider {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
-        let snapshot = self.scan_snapshot(ctx).map_err(|error| {
-            report!(error).attach(self.table_info().table_name.clone())
-        })?;
+        let snapshot = match &self.read_snapshot {
+            Some(_) => Some(self.read_partition_info().await.map_err(|error| {
+                report!(error).attach(self.table_info().table_name.clone())
+            })?),
+            None => self.scan_snapshot(ctx).map_err(|error| {
+                report!(error).attach(self.table_info().table_name.clone())
+            })?,
+        };
         let client = if snapshot.is_some() {
             Arc::new(self.client.primary_only().await)
         } else {
@@ -1333,6 +1499,232 @@ impl LakeSoulTableProvider {
     /// key, no `vector_index_columns` table property declaring the searched
     /// column, an unsupported metric, a non-vector column, or an empty
     /// scan — in which case the caller runs the regular full scan instead.
+    /// List the files of the current snapshot for the vector scan path.
+    ///
+    /// Same result as [`Self::list_files_for_scan`], but the file list of each
+    /// partition version is cached: the version is immutable once published,
+    /// so a warm vector query only pays the (cheap) partition-info query
+    /// instead of re-issuing the data-file query and one HEAD per file.
+    async fn list_files_for_vector_scan<'a>(
+        &'a self,
+        ctx: &'a SessionState,
+        partition_filters: &'a [Expr],
+    ) -> Result<Vec<Vec<PartitionedFile>>> {
+        let Some(url) = self.table_paths().first() else {
+            return Ok(Vec::new());
+        };
+        let store = ctx
+            .runtime_env()
+            .object_store(url)
+            .attach(format!("{:?}", ctx.runtime_env().object_store_registry))?;
+        let all_partition_info = self
+            .read_partition_info()
+            .await
+            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let all_partition_info = (*all_partition_info).clone();
+        let prune_partition_info = prune_partitions(
+            all_partition_info,
+            partition_filters,
+            self.table_partition_cols(),
+        )
+        .await
+        .map_err(|report| report.attach(self.table_info().table_name.clone()))?;
+        let mut file_groups = Vec::with_capacity(prune_partition_info.len());
+        for partition in prune_partition_info {
+            let key = (
+                partition.table_id.clone(),
+                partition.partition_desc.clone(),
+                partition.version,
+            );
+            if let Some(files) = cached_partition_listing(&key) {
+                file_groups.push((*files).clone());
+                continue;
+            }
+            let (partition, object_metas) =
+                listing_partition_info(partition, store.as_ref(), self.client())
+                    .await
+                    .map_err(|report| {
+                        report.attach(self.table_info().table_name.clone())
+                    })?;
+            let cols = self.table_partition_cols().iter().map(|x| x.0.as_str());
+            let parsed =
+                parse_partitions_for_partition_desc(&partition.partition_desc, cols);
+            let partition_values = parsed
+                .into_iter()
+                .flatten()
+                .zip(self.table_partition_cols())
+                .map(|(parsed, (_, datatype))| {
+                    ScalarValue::try_from_string(parsed.to_string(), datatype)
+                })
+                .collect::<Result<Vec<_>, DataFusionError>>()?;
+            let files: Vec<PartitionedFile> = object_metas
+                .into_iter()
+                .map(|object_meta| {
+                    PartitionedFile::new_from_meta(object_meta)
+                        .with_partition_values(partition_values.clone())
+                })
+                .collect();
+            let files = Arc::new(files);
+            store_partition_listing(key, Arc::clone(&files));
+            file_groups.push((*files).clone());
+        }
+        Ok(file_groups)
+    }
+
+    /// Search several query vectors against the table's current snapshot.
+    ///
+    /// All queries share the snapshot resolved at call time: its files are
+    /// listed once, every bucket's index is probed once for the whole group,
+    /// and the candidate rows are verified with one native-reader pass per
+    /// bucket — or skipped when the index provably covers the snapshot and
+    /// the table cannot hold delete tombstones.  Returns the primary keys of
+    /// the top-k neighbours per query, ranked by the index distance
+    /// (index-only ordering), exactly like the single-query path.
+    pub async fn vector_batch_search(
+        &self,
+        state: &SessionState,
+        request: &crate::vector_batch::VectorBatchRequest,
+    ) -> DFResult<Vec<Vec<i64>>> {
+        // SQL and the Python native entry share the same snapshot-bound engine
+        // for eligible tables. Preserve the older verification path only for
+        // table capabilities this new SQL contract explicitly cannot serve.
+        match crate::vector_batch::native::NativeBatchSnapshot::prepare(
+            self,
+            state,
+            &request.column,
+            &request.metric,
+        )
+        .await
+        {
+            Ok(snapshot) => {
+                let options = crate::vector_batch::native::NativeBatchOptions {
+                    top_k: request.top_k,
+                    nprobe: request.nprobe,
+                    exact: request.exact,
+                    exact_overfetch: request.exact_overfetch,
+                    parallelism: if request.parallelism <= 1 {
+                        0
+                    } else {
+                        request.parallelism
+                    },
+                    ..Default::default()
+                };
+                options.validate()?;
+                let mut chunk_size = if request.batch_size == 0 {
+                    256
+                } else {
+                    request.batch_size.min(256)
+                };
+                while chunk_size > 1
+                    && snapshot.estimated_work_bytes(chunk_size, &options)?
+                        > options.memory_bytes
+                {
+                    chunk_size /= 2;
+                }
+                let mut results = Vec::with_capacity(request.queries.len());
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                for queries in request.queries.chunks(chunk_size.max(1)) {
+                    let hits = snapshot
+                        .search(queries, &options, Arc::clone(&cancel))
+                        .await?;
+                    results.extend(
+                        hits.into_iter()
+                            .map(|query| query.into_iter().map(|hit| hit.id).collect()),
+                    );
+                }
+                return Ok(results);
+            }
+            Err(DataFusionError::NotImplemented(_)) => {}
+            Err(error) => return Err(error),
+        }
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_batch = std::time::Instant::now();
+        let file_groups = self
+            .list_files_for_vector_scan(state, &[])
+            .await
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let list_ms = t_batch.elapsed().as_secs_f64() * 1000.0;
+        let Some(table_path) = self.table_paths().first() else {
+            return Err(DataFusionError::Execution(
+                "table has no path for a vector batch search".to_string(),
+            ));
+        };
+        let object_store_url = table_path.object_store();
+        let store = state
+            .runtime_env()
+            .object_store(object_store_url.clone())
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to get object store: {}", error)
+                        .into_boxed_error(),
+                )
+            })?;
+        let files: Vec<String> = file_groups
+            .iter()
+            .flatten()
+            .map(|file| {
+                crate::datasource::file_format::vector_search_exec::file_uri(
+                    &object_store_url,
+                    &file.object_meta.location,
+                )
+            })
+            .collect();
+        // The exact batch re-rank reads the stored vectors straight from the
+        // data files, so the object-store location of every file is passed
+        // along with its URI.
+        let locations: Vec<object_store::path::Path> = file_groups
+            .iter()
+            .flatten()
+            .map(|file| file.object_meta.location.clone())
+            .collect();
+        let Some(first) = files.first() else {
+            return Err(DataFusionError::Execution(
+                "no data files for a vector batch search".to_string(),
+            ));
+        };
+        let table_prefix =
+            crate::datasource::file_format::vector_search_exec::derive_prefix(first);
+        // The batch ranking follows the metric the request declares; it has
+        // to agree with the index the table actually built, or the candidates
+        // and the exact scores would disagree.
+        let index_metric = self
+            .vector_index_configs
+            .iter()
+            .find(|config| config.column == request.column)
+            .map(|config| config.params.metric.to_uppercase());
+        let request_metric = request.metric.to_uppercase();
+        if index_metric.as_deref() != Some(request_metric.as_str()) {
+            return Err(DataFusionError::NotImplemented(format!(
+                "batch vector search metric {:?} does not match the index of \
+                 column '{}': {:?}",
+                request.metric, request.column, index_metric
+            )));
+        }
+        let results = crate::vector_batch::search_vector_batch(
+            &self.client.vector_index_catalog(),
+            &store,
+            &table_prefix,
+            &files,
+            &locations,
+            &self.file_schema(),
+            &self.primary_keys,
+            &self.io_config.cdc_column(),
+            request,
+        )
+        .await?;
+        if profile {
+            debug!(
+                list_ms,
+                search_ms = t_batch.elapsed().as_secs_f64() * 1000.0 - list_ms,
+                total_ms = t_batch.elapsed().as_secs_f64() * 1000.0,
+                files = files.len(),
+                queries = request.queries.len(),
+                "profiled vector batch entry"
+            );
+        }
+        Ok(results)
+    }
+
     #[instrument(
         name = "vector_index_plan",
         level = "info",
@@ -1358,6 +1750,7 @@ impl LakeSoulTableProvider {
         ),
         err
     )]
+
     async fn try_build_vector_search_exec(
         &self,
         session_state: &SessionState,
@@ -1394,11 +1787,22 @@ impl LakeSoulTableProvider {
                 record_fallback("unsupported_metric");
                 return Ok(None);
             }
-            if request.order_by && metric != "L2" {
-                // Index-only ordering fuses the index distances; the fusion
-                // is only defined for L2.
-                record_fallback("unsupported_metric");
-                return Ok(None);
+            if request.order_by && request.columns.len() > 1 {
+                // Fusing several columns' index distances into one ordering
+                // needs comparable distances: every column must use the same
+                // metric (the rule already enforces this; a hand-built marker
+                // may not).  Both L2 and IP work: the reader converts each
+                // per-column score into a distance (sqrt for L2, negated dot
+                // for IP) before the weighted sum.
+                let first = request.columns[0].metric.to_uppercase();
+                if request
+                    .columns
+                    .iter()
+                    .any(|candidate| candidate.metric.to_uppercase() != first)
+                {
+                    record_fallback("unsupported_metric");
+                    return Ok(None);
+                }
             }
             let Some(declared) = self
                 .vector_index_configs
@@ -1424,10 +1828,13 @@ impl LakeSoulTableProvider {
                 return Ok(None);
             }
         }
-        let (partitioned_file_lists, _) = self
-            .list_files_for_scan(session_state, partition_filters, limit)
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_scan = std::time::Instant::now();
+        let partitioned_file_lists = self
+            .list_files_for_vector_scan(session_state, partition_filters)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let list_ms = t_scan.elapsed().as_secs_f64() * 1000.0;
         if partitioned_file_lists.is_empty() {
             record_fallback("no_files");
             return Ok(None);
@@ -1454,6 +1861,50 @@ impl LakeSoulTableProvider {
                     .unwrap_or_default();
                 groups.push(bucket_files);
                 partition_values.push(values);
+            }
+        }
+
+        // A table can keep its `vector_index_columns` declaration while the
+        // index has been dropped (keep_declaration=true).  Publishing a
+        // vector-search exec with no control-plane shard would fail later in
+        // the distance-ordering path; fall back to the regular scan instead.
+        let shards = self
+            .client
+            .vector_index_catalog()
+            .list_shards_under(&self.table_info.table_path)
+            .await
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to list vector index shards: {error}")
+                        .into_boxed_error(),
+                )
+            })?;
+        if shards.is_empty() {
+            record_fallback("index_missing");
+            return Ok(None);
+        }
+        // The declaration can also outlive a single partition's index (a
+        // partition-scoped `drop_vector_index`).  An index-only ordering over
+        // a partition whose shards are gone has no distance to sort by, so
+        // that scan falls back to the regular merge-on-read path.
+        for group in &groups {
+            let Some(first) = group.first() else {
+                continue;
+            };
+            let location = first.object_meta.location.as_ref();
+            let Some((parent, _)) = location.rsplit_once('/') else {
+                continue;
+            };
+            let parent = lakesoul_metadata::index_catalog::normalize_index_prefix(parent)
+                .trim_start_matches('/')
+                .to_string();
+            let covered = shards.iter().any(|shard| {
+                let shard = shard.trim_start_matches('/');
+                shard == parent || shard.starts_with(&format!("{parent}/"))
+            });
+            if !covered {
+                record_fallback("index_missing");
+                return Ok(None);
             }
         }
 
@@ -1493,7 +1944,56 @@ impl LakeSoulTableProvider {
             self.file_schema.metadata().clone(),
         ));
 
+        // The pushdown rule matched a `Filter` between this scan and the
+        // distance sort; compile its predicate here so the scan can evaluate
+        // it on its candidates and widen the probe until enough rows match.
+        // A predicate that cannot be compiled over the data columns (for
+        // example one touching a partition column) leaves the reader path in
+        // charge.
+        let filter = match request.filter.as_ref() {
+            Some(predicate) => DFSchema::try_from(Arc::clone(&merged_schema))
+                .ok()
+                .and_then(|schema| {
+                    create_physical_expr(
+                        predicate,
+                        &schema,
+                        session_state.execution_props(),
+                        &PhysicalPlanningContext::default(),
+                    )
+                    .ok()
+                }),
+            None => None,
+        };
+        // On a CDC table a candidate key can be a delete tombstone: give the
+        // scan the `cdc_column != 'delete'` predicate so the candidate path
+        // drops it before ranking, exactly like the merge-on-read filter above.
+        let cdc_filter = {
+            let cdc_column = self.io_config.cdc_column();
+            if cdc_column.is_empty() {
+                None
+            } else {
+                let predicate = Expr::Column(
+                    datafusion::common::Column::new_unqualified(cdc_column.to_string()),
+                )
+                .not_eq(Expr::Literal(
+                    ScalarValue::Utf8(Some("delete".to_string())),
+                    None,
+                ));
+                DFSchema::try_from(Arc::clone(&merged_schema))
+                    .ok()
+                    .and_then(|schema| {
+                        create_physical_expr(
+                            &predicate,
+                            &schema,
+                            session_state.execution_props(),
+                            &PhysicalPlanningContext::default(),
+                        )
+                        .ok()
+                    })
+            }
+        };
         let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
+            merged_schema.clone(),
             merged_schema.clone(),
             projected_file_schema,
             self.table_partition_cols().to_vec(),
@@ -1504,10 +2004,20 @@ impl LakeSoulTableProvider {
             self.io_config.object_store_options().clone(),
             self.io_config.cdc_column(),
             request,
+            filter,
+            cdc_filter,
             limit,
             self.client.vector_index_catalog(),
+            crate::vector_index::vector_index_epoch(&self.table_info.properties),
         )?;
         let exec: Arc<dyn ExecutionPlan> = Arc::new(exec);
+        if profile {
+            debug!(
+                list_ms,
+                build_ms = t_scan.elapsed().as_secs_f64() * 1000.0 - list_ms,
+                "built vector search exec"
+            );
+        }
         if Self::needs_output_projection(&scan_schema, &merged_schema) {
             let mut projection_expr = vec![];
             for field in scan_schema.fields() {
@@ -1850,15 +2360,27 @@ impl TableProvider for LakeSoulTableProvider {
         // partition-pruning half of the filters to enumerate candidate work
         // units, so they receive `classified.partition_pruning` below.
         let classify_started = Instant::now();
-        let vector_search =
-            crate::udf::vector_search_marker::parse_vector_search_request(filters);
+        // The vector/text indexes describe the latest files; a pinned read
+        // view must not use them, or it could return rows that only exist in
+        // a newer version.  The scan then falls back to merge-on-read.
+        let index_pushdown_allowed = self.read_snapshot.is_none()
+            && crate::write_mode::LakeSoulFixedSnapshot::from_session(session_state)
+                .is_none();
+        let vector_search = if index_pushdown_allowed {
+            crate::udf::vector_search_marker::parse_vector_search_request(filters)
+        } else {
+            None
+        };
         let filters: Vec<Expr> = filters
             .iter()
             .filter(|f| !crate::udf::vector_search_marker::is_marker_expr(f))
             .cloned()
             .collect();
-        let text_search =
-            crate::udf::text_search_marker::parse_text_search_request(&filters);
+        let text_search = if index_pushdown_allowed {
+            crate::udf::text_search_marker::parse_text_search_request(&filters)
+        } else {
+            None
+        };
         let filters: Vec<Expr> = filters
             .iter()
             .filter(|f| !crate::udf::text_search_marker::is_marker_expr(f))

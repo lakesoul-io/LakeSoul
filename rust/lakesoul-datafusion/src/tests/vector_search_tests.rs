@@ -185,12 +185,51 @@ fn build_two_column_limit_sort_plan(
     sort_expr: Expr,
     limit: usize,
 ) -> DFResult<LogicalPlan> {
+    build_two_column_limit_sort_plan_with(sort_expr, limit, true)
+}
+
+fn build_two_column_limit_sort_plan_with(
+    sort_expr: Expr,
+    limit: usize,
+    asc: bool,
+) -> DFResult<LogicalPlan> {
     let mem_table = Arc::new(MemTable::try_new(two_vector_schema(), vec![vec![]])?);
     let source = provider_as_source(mem_table);
     LogicalPlanBuilder::scan("t", source, None)?
-        .sort(vec![sort_expr.sort(true, false)])?
+        .sort(vec![sort_expr.sort(asc, false)])?
         .limit(0, Some(limit))?
         .build()
+}
+
+fn two_vector_configs_ip() -> Vec<crate::vector_index::VectorIndexTableConfig> {
+    let mut configs = two_vector_configs();
+    for config in &mut configs {
+        config.params.metric = "IP".to_string();
+    }
+    configs
+}
+
+fn brute_force_topk_fused_ip(
+    vec_a: &[Vec<f32>],
+    vec_b: &[Vec<f32>],
+    query_a: &[f32],
+    query_b: &[f32],
+    weight_a: f32,
+    weight_b: f32,
+    k: usize,
+) -> Vec<u64> {
+    let dot =
+        |v: &Vec<f32>, q: &[f32]| -> f32 { v.iter().zip(q).map(|(a, b)| a * b).sum() };
+    let mut scored: Vec<(f32, u64)> = (0..vec_a.len())
+        .map(|i| {
+            (
+                weight_a * dot(&vec_a[i], query_a) + weight_b * dot(&vec_b[i], query_b),
+                i as u64,
+            )
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    scored.into_iter().take(k).map(|(_, id)| id).collect()
 }
 
 fn has_sort(plan: &LogicalPlan) -> bool {
@@ -391,6 +430,79 @@ fn rule_ignores_inner_product_asc() {
 }
 
 #[test]
+fn rule_rewrites_inner_product_desc() {
+    // IP ranks by descending dot product; index-only ordering now supports it.
+    let mem_table = Arc::new(MemTable::try_new(vector_schema(), vec![vec![]]).unwrap());
+    let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
+        .unwrap()
+        .sort(vec![inner_product_expr().sort(false, false)])
+        .unwrap()
+        .limit(0, Some(10))
+        .unwrap()
+        .build()
+        .unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(
+        request.order_by,
+        "IP index-only ordering must be pushed down"
+    );
+    assert_eq!(request.columns[0].metric, "IP");
+    assert_eq!(request.columns[0].weight, 1.0);
+    assert_eq!(request.overfetch, 2);
+}
+
+#[test]
+fn rule_rewrites_pgvector_negated_inner_product() {
+    // pgvector's `<#>` is planned as `-inner_product(vec, q)` ordered ASC,
+    // which is the same ranking as `inner_product(vec, q) DESC`.
+    let mem_table = Arc::new(MemTable::try_new(vector_schema(), vec![vec![]]).unwrap());
+    let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
+        .unwrap()
+        .sort(vec![
+            Expr::Negative(Box::new(inner_product_expr())).sort(true, false),
+        ])
+        .unwrap()
+        .limit(0, Some(10))
+        .unwrap()
+        .build()
+        .unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(request.order_by, "negated IP must order by the index");
+    assert_eq!(request.columns[0].metric, "IP");
+    // The marker carries the positive weight: the index orders by the dot
+    // product, not by its negation.
+    assert_eq!(request.columns[0].weight, 1.0);
+
+    // Exact re-rank keeps the plan's sort, but still runs over the index.
+    let mem_table = Arc::new(MemTable::try_new(vector_schema(), vec![vec![]]).unwrap());
+    let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
+        .unwrap()
+        .sort(vec![
+            Expr::Negative(Box::new(inner_product_expr())).sort(true, false),
+        ])
+        .unwrap()
+        .limit(0, Some(10))
+        .unwrap()
+        .build()
+        .unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &datafusion::optimizer::OptimizerContext::new())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(!request.order_by, "exact mode keeps the sort");
+    assert_eq!(request.columns[0].metric, "IP");
+}
+
+#[test]
 fn rule_rewrites_multi_column_weighted_sum() {
     // `0.7*d(vec_a) + 0.3*d(vec_b)` fuses two indexed columns; the exact plan
     // keeps its Sort for the re-rank over the candidate intersection.
@@ -438,6 +550,50 @@ fn rule_multi_column_index_only_drops_the_sort() {
         !has_sort(&rewritten),
         "index-only ordering drops the distance sort"
     );
+}
+
+#[test]
+fn rule_multi_column_inner_product_fusion() {
+    let query_a = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    let query_b = [-0.4f32, 0.5, -0.1, 0.2, 0.3, -0.6, 0.8, 0.1];
+
+    // Canonical IP ordering (`ORDER BY sum DESC`): the fused index ordering
+    // must keep the positive weights.
+    let sort_expr = weighted(inner_product_on("vec_a", &query_a), 0.7)
+        + weighted(inner_product_on("vec_b", &query_b), 0.3);
+    let plan = build_two_column_limit_sort_plan_with(sort_expr, 10, false).unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert_eq!(request.columns.len(), 2);
+    assert_eq!(request.columns[0].metric, "IP");
+    assert!((request.columns[0].weight - 0.7).abs() < 1e-6);
+    assert!((request.columns[1].weight - 0.3).abs() < 1e-6);
+    assert!(request.order_by, "index mode orders by the fused IP index");
+    assert!(!has_sort(&rewritten), "index-only ordering drops the sort");
+
+    // pgvector spelling (`ORDER BY -sum ASC`): the sign moves outside and the
+    // magnitudes stay the fusion weights.
+    let sort_expr = weighted(
+        Expr::Negative(Box::new(inner_product_on("vec_a", &query_a))),
+        0.7,
+    ) + weighted(
+        Expr::Negative(Box::new(inner_product_on("vec_b", &query_b))),
+        0.3,
+    );
+    let plan = build_two_column_limit_sort_plan_with(sort_expr, 10, true).unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert_eq!(request.columns.len(), 2);
+    assert_eq!(request.columns[0].metric, "IP");
+    assert!((request.columns[0].weight - 0.7).abs() < 1e-6);
+    assert!((request.columns[1].weight - 0.3).abs() < 1e-6);
+    assert!(request.order_by);
 }
 
 #[test]
@@ -527,6 +683,95 @@ fn make_batch(ids: &[u64], vectors: &[Vec<f32>]) -> RecordBatch {
     .unwrap()
 }
 
+/// The snapshot batch entry decodes the index keys into `Int64` primary
+/// keys, so its tests use a table whose pk column is `Int64`.
+fn int64_vector_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+    ]))
+}
+
+fn make_batch_int64(ids: &[i64], vectors: &[Vec<f32>]) -> RecordBatch {
+    let id_array = arrow::array::Int64Array::from(ids.to_vec());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        int64_vector_schema(),
+        vec![Arc::new(id_array), Arc::new(vec_array)],
+    )
+    .unwrap()
+}
+
+/// `id`, `vec`, `tag` - the projection-generalization tests read `tag`, a
+/// column the ranking never touches.
+fn vector_schema_with_tag() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+        Field::new("tag", DataType::Int64, false),
+    ]))
+}
+
+fn make_batch_with_tag(ids: &[u64], vectors: &[Vec<f32>], tags: &[i64]) -> RecordBatch {
+    let id_array = arrow::array::UInt64Array::from(ids.to_vec());
+    let tag_array = arrow::array::Int64Array::from(tags.to_vec());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        vector_schema_with_tag(),
+        vec![Arc::new(id_array), Arc::new(vec_array), Arc::new(tag_array)],
+    )
+    .unwrap()
+}
+
+/// The direct exact re-rank needs the on-demand decoded-block cache; these
+/// tests enable the shared `LAKESOUL_CACHE` before the first query so the
+/// multi-file resolution is actually exercised (the reader path would also
+/// return correct rows, which would hide a regression).
+fn enable_direct_exact_path() {
+    static ENABLE: std::sync::Once = std::sync::Once::new();
+    ENABLE.call_once(|| {
+        // SAFETY: the test process sets these before any vector query runs.
+        unsafe {
+            std::env::set_var("LAKESOUL_CACHE", "1");
+            std::env::set_var("LAKESOUL_VECTOR_BLOCK_ROWS", "256");
+        }
+    });
+}
+
 fn clean_table_dir(table_name: &str) {
     // The native index/files are not removed by drop_table; remove the
     // on-disk state so each run starts from a clean table.
@@ -538,6 +783,17 @@ fn clean_table_dir(table_name: &str) {
             .join("default")
             .join(table_name),
     );
+}
+
+/// Existing exact-path tests use the old default ordering; make it explicit
+/// now that the session default is index-only.
+async fn use_exact_rerank(ctx: &datafusion::prelude::SessionContext) {
+    ctx.sql("SET lakesoul_vector_search.rerank = 'exact'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
 }
 
 fn default_args() -> CoreArgs {
@@ -987,6 +1243,7 @@ async fn sql_vector_search_falls_back_without_index() {
     // No vector index is built.
 
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let q = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8]
         .iter()
         .map(|v| v.to_string())
@@ -1950,6 +2207,7 @@ async fn sql_vector_search_non_integer_primary_keys() {
     assert_vector_index_built(table_name);
 
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
     let q = query
         .iter()
@@ -2033,6 +2291,7 @@ async fn sql_vector_search_non_integer_primary_keys() {
     assert_vector_index_built(table_name);
 
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
     let q = query
         .iter()
@@ -2206,6 +2465,1023 @@ async fn sql_vector_search_index_only_ordering() {
     assert!(explain.contains("order_by=true"), "{explain}");
 }
 
+fn brute_force_topk_ip(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<u64> {
+    let mut scored: Vec<(f32, u64)> = vectors
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let dot: f32 = v.iter().zip(query).map(|(a, b)| a * b).sum();
+            (-dot, i as u64)
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    scored.into_iter().take(k).map(|(_, id)| id).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_ip_index_only_ordering() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_ip_index_only";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    let mut configs = vector_configs();
+    configs[0].params.metric = "IP".to_string();
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let n = 400u64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<u64> = (0..n).collect();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+
+    let mut session_config = crate::create_lakesoul_session_config().unwrap();
+    let mut options = LakeSoulVectorSearchConfig::default();
+    options.nprobe = 4;
+    options.rerank = "index".to_string();
+    session_config.options_mut().extensions.insert(options);
+    let ctx = crate::create_lakesoul_session_ctx_with_config(
+        client,
+        &default_args(),
+        session_config,
+    )
+    .unwrap();
+
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by inner_product(vec, ARRAY[{q}]) desc limit 10"
+    );
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
+    assert!(explain.contains("order_by=true"), "{explain}");
+    assert!(!explain.contains("SortExec"), "{explain}");
+
+    let returned = collect_ids(&ctx, &sql).await;
+    let expected = brute_force_topk_ip(&vectors, &query, 10);
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    let recall = hits as f64 / 10.0;
+    assert!(
+        recall >= 0.5,
+        "IP index-only recall {recall}, returned={returned:?} expected={expected:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_multi_file_bucket() {
+    enable_direct_exact_path();
+    // A hash bucket holding several append-only files must still use the
+    // direct payload read: the resolver picks the file that owns each
+    // candidate key instead of requiring one file per bucket (compaction).
+    use crate::datasource::file_format::vector_search_exec::EXACT_DIRECT_RUNS;
+    use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_multi_file";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    // Two commits: one data file each, both in the single hash bucket.
+    let first = seeded_vectors(200, 7);
+    let second = seeded_vectors(200, 9);
+    let mut vectors = first.clone();
+    vectors.extend(second.iter().cloned());
+    let ids: Vec<u64> = (0..400).collect();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids[..200], &first))
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids[200..], &second))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    let returned = collect_ids(&ctx, &sql).await;
+    let after = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a multi-file bucket must still be served by the direct payload read"
+    );
+    let expected = brute_force_topk(&vectors, &query, 10);
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "multi-file recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_multi_file_upsert_uses_newest_version() {
+    enable_direct_exact_path();
+    // The same keys written twice: the direct read resolves each candidate to
+    // the newest file that holds it (the row the merge-on-read view shows), so
+    // the fast path still serves the query and returns the newest vectors'
+    // neighbours.
+    use crate::datasource::file_format::vector_search_exec::EXACT_DIRECT_RUNS;
+    use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_multi_file_upsert";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let ids: Vec<u64> = (0..200).collect();
+    let original = seeded_vectors(200, 7);
+    let updated = seeded_vectors(200, 13);
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &original))
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &updated))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    let returned = collect_ids(&ctx, &sql).await;
+    let after = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a key with several versions must still be served by the direct read"
+    );
+    let expected = brute_force_topk(&updated, &query, 10);
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "upserted multi-file recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_projects_extra_columns() {
+    // A projection with columns the ranking does not need keeps the direct
+    // exact path: the kept rows' payload columns are fetched in a second pass.
+    use crate::datasource::file_format::vector_search_exec::EXACT_DIRECT_RUNS;
+    use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
+
+    enable_direct_exact_path();
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_extra_projection";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema_with_tag())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 400u64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<u64> = (0..n).collect();
+    let tags: Vec<i64> = ids.iter().map(|id| *id as i64 * 7 + 1).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch_with_tag(&ids, &vectors, &tags))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let expected = brute_force_topk(&vectors, &query, 10);
+
+    // Project the pk plus an extra column the ranking does not need.
+    let sql = format!(
+        "select id, tag from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "an extra projected column must keep the direct payload read"
+    );
+    let mut returned = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let tags = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("tag column");
+        for (id, tag) in ids.values().iter().zip(tags.values().iter()) {
+            assert_eq!(
+                *tag,
+                *id as i64 * 7 + 1,
+                "payload column {tag} does not belong to id {id}"
+            );
+            returned.push(*id);
+        }
+    }
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "extra-projection recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // A projection that drops the pk and the vector column still works.
+    let sql = format!(
+        "select tag from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut seen = 0usize;
+    for batch in &batches {
+        let tags = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("tag column");
+        seen += tags.len();
+        for tag in tags.values().iter() {
+            assert_eq!((tag - 1) % 7, 0, "unexpected payload value {tag}");
+        }
+    }
+    assert_eq!(seen, 10, "the bare projection must still return the limit");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_filter_narrows_probe() {
+    // A `WHERE` between the scan and the distance sort must not fall back to
+    // the reader's candidate scan: the scan evaluates the predicate on its
+    // candidates and widens the probe until it found enough matching rows, so
+    // a selective filter still returns the full limit.
+    use crate::datasource::file_format::vector_search_exec::FILTERED_CANDIDATE_RUNS;
+    use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_filtered_probe";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema_with_tag())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 400u64;
+    let ids: Vec<u64> = (0..n).collect();
+    let vectors = seeded_vectors(n as usize, 7);
+    let tags: Vec<i64> = ids.iter().map(|id| *id as i64 * 7 + 1).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch_with_tag(&ids, &vectors, &tags))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // ~28% selectivity: the filter keeps 114 of the 400 rows.
+    let sql = format!(
+        "select id, tag from \"lakesoul\".default.{table_name} \
+         where tag > 2000 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a filtered exact query must take the candidate-probe path"
+    );
+    let mut returned: Vec<(u64, i64)> = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let tags = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("tag column");
+        for (id, tag) in ids.values().iter().zip(tags.values().iter()) {
+            assert_eq!(*tag, *id as i64 * 7 + 1);
+            assert!(*tag > 2000, "filter was not applied to id {id}");
+            returned.push((*id, *tag));
+        }
+    }
+    assert_eq!(returned.len(), 10, "the filter must not shrink the limit");
+    let filtered: Vec<(u64, &Vec<f32>)> = ids
+        .iter()
+        .zip(vectors.iter())
+        .filter(|(id, _)| **id as i64 * 7 + 1 > 2000)
+        .map(|(id, vector)| (*id, vector))
+        .collect();
+    let expected: Vec<u64> = {
+        let vectors_only: Vec<Vec<f32>> = filtered
+            .iter()
+            .map(|(_, vector)| (*vector).clone())
+            .collect();
+        let top = brute_force_topk(&vectors_only, &query, 10);
+        top.iter()
+            .map(|position| filtered[*position as usize].0)
+            .collect()
+    };
+    let hits = returned
+        .iter()
+        .filter(|(id, _)| expected.contains(id))
+        .count();
+    assert!(
+        hits >= 8,
+        "filtered recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // Very selective filter (14 matching rows): the probe has to widen until
+    // it finds them instead of returning a short page.
+    let sql = format!(
+        "select id, tag from \"lakesoul\".default.{table_name} \
+         where tag > 2700 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(
+        rows, 10,
+        "a 3.5% selective filter must still fill the limit"
+    );
+
+    // A filter that matches nothing returns nothing.
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         where tag < 0 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(rows, 0, "a filter matching no row must return no row");
+}
+
+fn cdc_vector_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+        Field::new("op", DataType::Utf8, true),
+    ]))
+}
+
+fn make_cdc_vector_batch(ids: &[u64], vectors: &[Vec<f32>], ops: &[&str]) -> RecordBatch {
+    let id_array = arrow::array::UInt64Array::from(ids.to_vec());
+    let op_array = arrow::array::StringArray::from(
+        ops.iter().map(|op| Some(*op)).collect::<Vec<_>>(),
+    );
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        cdc_vector_schema(),
+        vec![Arc::new(id_array), Arc::new(vec_array), Arc::new(op_array)],
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_cdc_drops_tombstones() {
+    // A CDC table keeps delete tombstones in the data files (the change column
+    // says `delete`).  The candidate path must read the rows again and drop a
+    // tombstoned key before ranking instead of serving its old vector.
+    use crate::datasource::file_format::vector_search_exec::FILTERED_CANDIDATE_RUNS;
+    use crate::tests::create_cdc_vector_table;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_cdc";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    create_cdc_vector_table(
+        client.clone(),
+        table_name,
+        cdc_vector_schema(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 200u64;
+    let ids: Vec<u64> = (0..n).collect();
+    let vectors = seeded_vectors(n as usize, 7);
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let ops = vec!["insert"; ids.len()];
+    table
+        .execute_upsert(make_cdc_vector_batch(&ids, &vectors, &ops))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    // Tombstone every tenth row: their vectors stay in the files and in the
+    // index, but the merge-on-read view no longer holds them.
+    let deleted: Vec<u64> = ids.iter().copied().filter(|id| id % 10 == 0).collect();
+    let deleted_vectors: Vec<Vec<f32>> = deleted
+        .iter()
+        .map(|id| vectors[*id as usize].clone())
+        .collect();
+    let delete_ops = vec!["delete"; deleted.len()];
+    table
+        .execute_upsert(make_cdc_vector_batch(
+            &deleted,
+            &deleted_vectors,
+            &delete_ops,
+        ))
+        .await
+        .unwrap();
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    // The table itself must show the merge-on-read row count.
+    let count = ctx
+        .sql(&format!(
+            "select count(*) as cnt from \"lakesoul\".default.{table_name}"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let count = count[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .expect("count column")
+        .value(0);
+    assert_eq!(count, 180, "CDC deletes must remove 20 rows");
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let visible: Vec<(u64, &Vec<f32>)> = ids
+        .iter()
+        .zip(vectors.iter())
+        .filter(|(id, _)| *id % 10 != 0)
+        .map(|(id, vector)| (*id, vector))
+        .collect();
+    let expected: Vec<u64> = {
+        let vectors_only: Vec<Vec<f32>> = visible
+            .iter()
+            .map(|(_, vector)| (*vector).clone())
+            .collect();
+        let top = brute_force_topk(&vectors_only, &query, 10);
+        top.iter()
+            .map(|position| visible[*position as usize].0)
+            .collect()
+    };
+
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a CDC table must take the candidate path that drops tombstones"
+    );
+    let mut returned = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        for id in ids.values().iter() {
+            assert!(id % 10 != 0, "deleted id {id} must not be returned");
+            returned.push(*id);
+        }
+    }
+    assert_eq!(returned.len(), 10, "the result must still fill the limit");
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "CDC recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // The same with a WHERE clause: filter and tombstone checks compose.
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         where id > 100 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut rows = 0usize;
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        for id in ids.values().iter() {
+            assert!(*id > 100, "filter was not applied to id {id}");
+            assert!(id % 10 != 0, "deleted id {id} must not be returned");
+            rows += 1;
+        }
+    }
+    assert_eq!(rows, 10, "filter + CDC path must fill the limit");
+}
+
+fn partitioned_vector_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("id", DataType::UInt64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+    ]))
+}
+
+fn make_partitioned_vector_batch(
+    parts: &[i32],
+    ids: &[u64],
+    vectors: &[Vec<f32>],
+) -> RecordBatch {
+    let part_array = arrow::array::Int32Array::from(parts.to_vec());
+    let id_array = arrow::array::UInt64Array::from(ids.to_vec());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        partitioned_vector_schema(),
+        vec![
+            Arc::new(part_array),
+            Arc::new(id_array),
+            Arc::new(vec_array),
+        ],
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_range_partitioned_table() {
+    // Range partitions are several work units of the same table; the candidate
+    // path must read each partition's rows with its primary-key filters and
+    // merge the rankings, and a partition predicate must prune to one unit.
+    use crate::datasource::file_format::vector_search_exec::FILTERED_CANDIDATE_RUNS;
+    use crate::tests::create_partitioned_vector_table;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_partitioned";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    create_partitioned_vector_table(
+        client.clone(),
+        table_name,
+        partitioned_vector_schema(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 200u64;
+    let ids: Vec<u64> = (0..n).collect();
+    let parts: Vec<i32> = ids.iter().map(|id| (*id % 2) as i32).collect();
+    let vectors = seeded_vectors(n as usize, 7);
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_partitioned_vector_batch(&parts, &ids, &vectors))
+        .await
+        .unwrap();
+    // A partitioned table builds one index per partition, so look for the
+    // segments anywhere below the table root.
+    {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("default")
+            .join(table_name);
+        let mut stack = vec![root];
+        let mut segments = 0usize;
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().map(|e| e == "seg").unwrap_or(false) {
+                    segments += 1;
+                }
+            }
+        }
+        assert!(
+            segments > 0,
+            "no vector index segments under the table root"
+        );
+    }
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Across both partitions: the ranking merges the two work units.
+    let sql = format!(
+        "select id, part from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a partitioned table must take the candidate path"
+    );
+    let mut returned: Vec<(u64, i32)> = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let parts = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .expect("part column");
+        for (id, part) in ids.values().iter().zip(parts.values().iter()) {
+            assert_eq!(*part, (*id % 2) as i32, "partition value of id {id}");
+            returned.push((*id, *part));
+        }
+    }
+    assert_eq!(
+        returned.len(),
+        10,
+        "the partitioned query must fill the limit"
+    );
+    let expected = brute_force_topk(&vectors, &query, 10);
+    let hits = returned
+        .iter()
+        .filter(|(id, _)| expected.contains(id))
+        .count();
+    assert!(
+        hits >= 8,
+        "partitioned recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // A partition predicate prunes the scan to one work unit.
+    let sql = format!(
+        "select id, part from \"lakesoul\".default.{table_name} \
+         where part = 0 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut rows = 0usize;
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let parts = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .expect("part column");
+        for (id, part) in ids.values().iter().zip(parts.values().iter()) {
+            assert_eq!(*part, 0, "partition pruning failed for id {id}");
+            assert_eq!(*id % 2, 0);
+            rows += 1;
+        }
+    }
+    assert_eq!(rows, 10, "a pruned partition must still fill the limit");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_batch_ip_metric() {
+    // The snapshot batch entry must support the inner-product metric in both
+    // its index-only and its exact mode, with the same ranking direction as
+    // the single-query path.
+    use crate::datasource::table_provider::LakeSoulTableProvider;
+    use crate::tests::create_table_with_vector_index;
+    use crate::vector_batch::VectorBatchRequest;
+
+    enable_direct_exact_path();
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_batch_ip";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(int64_vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    let mut configs = vector_configs();
+    configs[0].params.metric = "IP".to_string();
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let n = 400i64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<i64> = (0..n).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch_int64(&ids, &vectors))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let state = ctx.state();
+    let catalog = ctx.catalog("lakesoul").expect("lakesoul catalog");
+    let schema = catalog.schema("default").expect("default schema");
+    let table = schema
+        .table(table_name)
+        .await
+        .unwrap()
+        .expect("table is registered");
+    let provider = table
+        .downcast_ref::<LakeSoulTableProvider>()
+        .expect("vector index table provider");
+
+    let queries = vec![
+        vec![0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8],
+        vec![-0.3f32, 0.2, 0.1, -0.4, 0.5, -0.6, 0.2, 0.1],
+    ];
+    let base = VectorBatchRequest {
+        column: "vec".to_string(),
+        queries: queries.clone(),
+        top_k: 10,
+        nprobe: 4,
+        parallelism: 1,
+        batch_size: 0,
+        exact: false,
+        exact_overfetch: 1,
+        metric: "IP".to_string(),
+    };
+
+    // Index-only mode: the index returns dot-product order.
+    let index_only = provider.vector_batch_search(&state, &base).await.unwrap();
+    assert_eq!(index_only.len(), queries.len());
+    for (query_index, query) in queries.iter().enumerate() {
+        let expected: Vec<i64> = brute_force_topk_ip(&vectors, query, 10)
+            .iter()
+            .map(|v| *v as i64)
+            .collect();
+        let hits = index_only[query_index]
+            .iter()
+            .filter(|id| expected.contains(id))
+            .count();
+        assert!(
+            hits >= 5,
+            "IP index-only batch recall {hits}/10, got={:?} expected={expected:?}",
+            index_only[query_index]
+        );
+    }
+
+    // Exact mode: re-rank the candidates by the stored dot product.
+    let exact_request = VectorBatchRequest {
+        exact: true,
+        ..base.clone()
+    };
+    let exact = provider
+        .vector_batch_search(&state, &exact_request)
+        .await
+        .unwrap();
+    for (query_index, query) in queries.iter().enumerate() {
+        let expected: Vec<i64> = brute_force_topk_ip(&vectors, query, 10)
+            .iter()
+            .map(|v| *v as i64)
+            .collect();
+        let hits = exact[query_index]
+            .iter()
+            .filter(|id| expected.contains(id))
+            .count();
+        assert!(
+            hits >= 8,
+            "IP exact batch recall {hits}/10, got={:?} expected={expected:?}",
+            exact[query_index]
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_vector_search_multi_column_fusion() {
     use crate::tests::create_table_with_vector_index;
@@ -2274,6 +3550,7 @@ async fn sql_vector_search_multi_column_fusion() {
     //    Sort above re-ranks it by the exact weighted distances.
     let ctx =
         crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
     assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
     assert!(
@@ -2326,6 +3603,122 @@ async fn sql_vector_search_multi_column_fusion() {
     assert!(
         recall >= 0.5,
         "index fusion recall {recall}, got {index_ids:?} truth {truth:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_multi_column_fusion_ip() {
+    // Two IP-indexed columns fused with weights: the reader turns each
+    // column's dot product into a distance (negated dot) before the weighted
+    // sum, so the fused ordering is "largest weighted dot first" for both the
+    // exact re-rank and the index-only ordering.
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_multi_ip";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(two_vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &two_vector_configs_ip(),
+    )
+    .await
+    .unwrap();
+
+    // `vec_b` holds the same vectors as `vec_a`, so both columns rank the same
+    // rows and the fused truth is stable.
+    let n = 200u64;
+    let vec_a = seeded_vectors(n as usize, 7);
+    let vec_b = vec_a.clone();
+    let ids: Vec<u64> = (0..n).collect();
+    let batch = make_two_vector_batch(&ids, &vec_a, &vec_b);
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(batch)
+        .await
+        .unwrap();
+    assert_column_index_built(table_name, "vec_a");
+    assert_column_index_built(table_name, "vec_b");
+
+    let query_a = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let query_b = query_a;
+    let qa = query_a
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let qb = qa.clone();
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by 0.7 * inner_product(vec_a, ARRAY[{qa}]) \
+                + 0.3 * inner_product(vec_b, ARRAY[{qb}]) desc limit 5"
+    );
+    let truth =
+        brute_force_topk_fused_ip(&vec_a, &vec_b, &query_a, &query_b, 0.7, 0.3, 5);
+
+    // Exact mode: candidates from the intersection, the Sort above re-ranks
+    // them by the exact weighted dot products.
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
+    assert!(
+        explain.contains("vec_a+vec_b"),
+        "both IP columns must reach the exec: {explain}"
+    );
+    assert!(
+        explain.contains("SortExec"),
+        "exact mode keeps the sort: {explain}"
+    );
+
+    let ids_result = collect_ids(&ctx, &sql).await;
+    assert_eq!(ids_result.len(), 5, "LIMIT 5 rows: {ids_result:?}");
+    let recall = ids_result.iter().filter(|id| truth.contains(id)).count() as f64 / 5.0;
+    assert!(
+        recall >= 0.5,
+        "IPE exact fusion recall {recall}, got {ids_result:?} truth {truth:?}"
+    );
+
+    // Index-only ordering: the fused negated-dot distances order the rows and
+    // the Sort disappears.
+    let mut session_config = crate::create_lakesoul_session_config().unwrap();
+    let mut options = LakeSoulVectorSearchConfig::default();
+    options.nprobe = 4;
+    options.rerank = "index".to_string();
+    session_config.options_mut().extensions.insert(options);
+    let index_ctx = crate::create_lakesoul_session_ctx_with_config(
+        client,
+        &default_args(),
+        session_config,
+    )
+    .unwrap();
+
+    let explain = explain_plan(&index_ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(
+        explain.contains("vec_a+vec_b"),
+        "both IP columns must reach the exec: {explain}"
+    );
+    assert!(explain.contains("order_by=true"), "{explain}");
+    assert!(
+        !explain.contains("SortExec"),
+        "index-only ordering must not sort on the vector columns: {explain}"
+    );
+
+    let index_ids = collect_ids(&index_ctx, &sql).await;
+    assert_eq!(index_ids.len(), 5, "LIMIT 5 rows: {index_ids:?}");
+    let recall = index_ids.iter().filter(|id| truth.contains(id)).count() as f64 / 5.0;
+    assert!(
+        recall >= 0.5,
+        "IPE index fusion recall {recall}, got {index_ids:?} truth {truth:?}"
     );
 }
 
@@ -2866,6 +4259,450 @@ async fn sql_vector_search_with_filter_above_scan_reads_payload_once() {
         "a filter above the scan must keep the single-read path"
     );
 
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_vector_index_removes_shards_and_declaration() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_index";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let test_prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let test_prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        test_prefix.to_str().unwrap(),
+    );
+    let cleanup_catalog = client.vector_index_catalog();
+    for prefix in cleanup_catalog
+        .list_dropped_under(&test_prefix)
+        .await
+        .unwrap()
+    {
+        let _ = cleanup_catalog.clear_dropped(&prefix).await;
+    }
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let vectors = random_vectors(100);
+    let ids: Vec<u64> = (0..100).collect();
+    let batch = make_batch(&ids, &vectors);
+    table.execute_upsert(batch).await.unwrap();
+
+    let catalog = client.vector_index_catalog();
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "test setup must create at least one vector index shard"
+    );
+
+    let dry = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            dry_run: true,
+            if_exists: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(dry.dry_run);
+    assert!(dry.shards_dropped > 0);
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "dry-run must not delete control-plane shards"
+    );
+
+    let report = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!report.dry_run);
+    assert_eq!(report.columns, vec!["vec".to_string()]);
+    assert!(report.shards_dropped > 0);
+    assert!(report.declaration_removed);
+    assert!(report.objects_deleted > 0);
+    assert!(
+        catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "drop must remove all control-plane shards"
+    );
+    // Removing the declaration keeps the tombstone: a long-running writer
+    // with the old table property must not recreate the prefix.
+    assert!(
+        !catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "declaration-removing drop must retain its tombstones"
+    );
+    let gc = crate::vector_index::gc_dropped_vector_index_objects(
+        &client,
+        table_name,
+        "default",
+        &std::collections::HashMap::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(gc.tombstones, report.shards_dropped);
+    assert!(
+        !catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "object GC must keep tombstones"
+    );
+    let info = client
+        .get_table_info_by_table_name(table_name, "default")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !info.properties.contains("vector_index_columns"),
+        "drop must remove vector_index_columns, got {}",
+        info.properties
+    );
+
+    // Data is untouched and a query falls back to the normal reader.
+    let q = vectors[0]
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(rows, 5, "search must fall back to a normal scan");
+
+    // The public re-declare path makes a declaration-removing drop
+    // rebuildable again: it writes the property and clears tombstones.
+    let configs = vector_configs();
+    crate::vector_index::declare_vector_index(&client, table_name, "default", configs)
+        .await
+        .unwrap();
+    assert!(
+        catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "re-declare must clear the target tombstones"
+    );
+    let rebuilt = table.rebuild_vector_index().await.unwrap();
+    assert!(rebuilt >= 1, "re-declare + rebuild must recreate shards");
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "re-declare + rebuild must publish shards"
+    );
+
+    // Leave the shared test database clean: drop_table does not remove
+    // index_drop rows.
+    for prefix in catalog.list_dropped_under(&prefix).await.unwrap() {
+        let _ = catalog.clear_dropped(&prefix).await;
+    }
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_vector_index_partitioned_table_uses_partition_dirs() {
+    use crate::tests::create_partitioned_vector_table;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_partitioned";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    create_partitioned_vector_table(
+        client.clone(),
+        table_name,
+        partitioned_vector_schema(),
+        &configs,
+    )
+    .await
+    .unwrap();
+
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let ids: Vec<u64> = (0..40).collect();
+    let parts: Vec<i32> = ids.iter().map(|id| (*id % 2) as i32).collect();
+    let vectors = seeded_vectors(40, 13);
+    table
+        .execute_upsert(make_partitioned_vector_batch(&parts, &ids, &vectors))
+        .await
+        .unwrap();
+
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    let catalog = client.vector_index_catalog();
+    let before = catalog.list_shards_under(&prefix).await.unwrap();
+    assert!(
+        before.iter().any(|prefix| prefix.contains("/part=0/")),
+        "partitioned table must have part=0 shards: {before:?}"
+    );
+    assert!(
+        before.iter().any(|prefix| prefix.contains("/part=1/")),
+        "partitioned table must have part=1 shards: {before:?}"
+    );
+
+    let dry = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            partition_desc: Some("part=0".to_string()),
+            keep_declaration: true,
+            dry_run: true,
+            if_exists: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(dry.partitions, vec!["part=0".to_string()]);
+    assert!(dry.shards_dropped > 0);
+
+    let report = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            partition_desc: Some("part=0".to_string()),
+            keep_declaration: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.partitions, vec!["part=0".to_string()]);
+    assert!(report.shards_dropped > 0);
+    assert!(report.objects_deleted > 0);
+
+    let after = catalog.list_shards_under(&prefix).await.unwrap();
+    assert!(
+        !after.iter().any(|prefix| prefix.contains("/part=0/")),
+        "part=0 shards must be removed: {after:?}"
+    );
+    assert!(
+        after.iter().any(|prefix| prefix.contains("/part=1/")),
+        "part=1 shards must remain: {after:?}"
+    );
+
+    // Reader fallback still returns correct rows for the dropped partition.
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let q = vectors[0]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} where part = 0 \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(rows, 5, "dropped partition must fall back to a normal scan");
+
+    for prefix in catalog.list_dropped_under(&prefix).await.unwrap() {
+        let _ = catalog.clear_dropped(&prefix).await;
+    }
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_vector_index_keep_declaration_can_rebuild() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_keep_declaration";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let test_prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let test_prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        test_prefix.to_str().unwrap(),
+    );
+    let cleanup_catalog = client.vector_index_catalog();
+    for prefix in cleanup_catalog
+        .list_dropped_under(&test_prefix)
+        .await
+        .unwrap()
+    {
+        let _ = cleanup_catalog.clear_dropped(&prefix).await;
+    }
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let vectors = random_vectors(100);
+    let ids: Vec<u64> = (0..100).collect();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+
+    let report = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            keep_declaration: true,
+            purge_files: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(report.shards_dropped > 0);
+    assert!(!report.declaration_removed);
+    let info = client
+        .get_table_info_by_table_name(table_name, "default")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        info.properties.contains("vector_index_columns"),
+        "keep_declaration must retain the property"
+    );
+
+    // An explicit rebuild is allowed to claim the dropped prefix and
+    // recreate the index.
+    let rebuilt = table.rebuild_vector_index().await.unwrap();
+    assert!(rebuilt >= 1, "expected rebuild after keep_declaration drop");
+    let catalog = client.vector_index_catalog();
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "explicit rebuild must recreate shards"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_table_cleans_vector_index_control_plane() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_table_cascade";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.clone().build(),
+        &configs,
+    )
+    .await
+    .unwrap();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let vectors = random_vectors(100);
+    let ids: Vec<u64> = (0..100).collect();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+
+    let catalog = client.vector_index_catalog();
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    assert!(!catalog.list_shards_under(&prefix).await.unwrap().is_empty());
+
+    client.drop_table(table_name, "default").await.unwrap();
+    assert!(
+        catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "drop_table must remove vector index shards"
+    );
+    assert!(
+        catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "drop_table must remove drop tombstones"
+    );
+
+    // Recreating the same path must be able to build a fresh index.
+    clean_table_dir(table_name);
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.clone().build(),
+        &configs,
+    )
+    .await
+    .unwrap();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "recreated table must build a fresh index"
+    );
     let _ = client.drop_table(table_name, "default").await;
     clean_table_dir(table_name);
 }

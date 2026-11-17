@@ -191,10 +191,15 @@ create table if not exists index_commit
     version       bigint      not null,
     header        bytea       not null,
     segments      jsonb       not null default '[]'::jsonb,
+    mutation_head text,
+    mutation_records integer   not null default 0,
     created_at    timestamptz not null default now(),
     superseded_at timestamptz,
     unique (shard_id, generation, version)
 );
+
+alter table index_commit add column if not exists mutation_head text;
+alter table index_commit add column if not exists mutation_records integer not null default 0;
 
 create index if not exists index_commit_shard_key_index
     on index_commit (shard_id, generation desc, version desc);
@@ -212,6 +217,41 @@ create table if not exists index_lease
 
 create index if not exists index_lease_expiry_index
     on index_lease (shard_id, expires_at);
+
+-- Long-running request read leases survive logical shard/commit deletion.
+-- No FK/cascade: drop and physical GC must wait for these leases explicitly.
+create table if not exists index_read_lease
+(
+    lease_id     uuid        not null,
+    kind         text        not null,
+    index_prefix text        not null,
+    shard_id     bigint      not null,
+    commit_id    bigint      not null,
+    generation   bigint      not null,
+    version      bigint      not null,
+    owner        text        not null,
+    data_files   text[]      not null default '{}',
+    acquired_at  timestamptz not null default clock_timestamp(),
+    expires_at   timestamptz not null,
+    primary key (lease_id, kind, index_prefix)
+);
+alter table index_read_lease add column if not exists data_files text[] not null default '{}';
+create index if not exists index_read_lease_expiry_index
+    on index_read_lease (kind, index_prefix, expires_at);
+
+-- Tombstones for drop-index: block a stale writer from recreating a shard
+-- while the drop's physical cleanup is in progress.
+create table if not exists index_drop
+(
+    kind         text        not null,
+    index_prefix text        not null,
+    dropped_at   timestamptz not null default now(),
+    reason       text,
+    primary key (kind, index_prefix)
+);
+alter table index_drop add column if not exists drop_id uuid;
+alter table index_drop add column if not exists state text not null default 'tombstoned';
+alter table index_drop add column if not exists updated_at timestamptz not null default now();
 
 -- Table-level snapshots and tags. A snapshot freezes the version and commit
 -- ids of every partition; a tag keeps a snapshot alive so the Flink clean job

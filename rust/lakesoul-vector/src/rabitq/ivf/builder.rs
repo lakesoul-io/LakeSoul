@@ -4,6 +4,7 @@ use super::IdAndVecBatch;
 use super::IvfRabitqIndex;
 use super::assign_batch_to_centroids_into;
 use super::cluster::{BuildPending, ClusterData};
+use crate::rabitq::key::IndexKey;
 use crate::rabitq::kmeans::KMeansResult;
 use crate::rabitq::quantizer::{
     QuantizeScratch, RabitqConfig, quantize_with_centroid_parts_into,
@@ -13,6 +14,8 @@ use crate::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use crate::rabitq::{Metric, RabitqError};
 use rand::prelude::*;
 use rand::rngs::StdRng;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 enum BuilderState {
     Fresh {
@@ -37,11 +40,112 @@ enum BuilderState {
         /// Segment files of the resolved view, grouped by cluster; used
         /// to pick the next delta version for each dirty cluster.
         cluster_map: crate::rabitq::segment::SegmentMap,
+        /// Keys with unflushed pending vectors, for cross-batch upserts.
+        pending_keys: HashSet<IndexKey>,
+        /// Every key accepted by this builder, written into the mutation
+        /// delta at flush time.
+        inserted_keys: BTreeSet<IndexKey>,
     },
 }
 
 pub struct IvfRabitqBuilder {
     state: BuilderState,
+    chunk_flush: Option<ChunkFlush>,
+}
+
+/// Optional segment sink for fresh builds: full clusters are written and
+/// cleared while the quantisation stream is still running.
+struct ChunkFlush {
+    store: IndexStore,
+    max_bytes: usize,
+    /// Next segment version for each cluster.
+    versions: Vec<u32>,
+    entries: Arc<Mutex<Vec<SegmentEntry>>>,
+}
+
+/// Keep the last occurrence of every key inside one input batch.
+fn dedup_batch_last_wins(batch: IdAndVecBatch, dim: usize) -> IdAndVecBatch {
+    let mut last = HashMap::with_capacity(batch.ids.len());
+    for (index, id) in batch.ids.iter().enumerate() {
+        last.insert(id.clone(), index);
+    }
+    if last.len() == batch.ids.len() {
+        return batch;
+    }
+    let mut ids = Vec::with_capacity(last.len());
+    let mut vectors = Vec::with_capacity(last.len() * dim);
+    for (index, id) in batch.ids.iter().enumerate() {
+        if last.get(id) == Some(&index) {
+            ids.push(id.clone());
+            vectors.extend_from_slice(&batch.vectors[index * dim..(index + 1) * dim]);
+        }
+    }
+    IdAndVecBatch { ids, vectors }
+}
+
+async fn flush_ready_clusters(
+    clusters: &mut [ClusterData],
+    flush: &mut ChunkFlush,
+) -> Result<(), RabitqError> {
+    for (cid, cluster) in clusters.iter_mut().enumerate() {
+        if cluster.memory_bytes() >= flush.max_bytes {
+            flush_cluster(cid, cluster, flush).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn flush_cluster(
+    cid: usize,
+    cluster: &mut ClusterData,
+    flush: &mut ChunkFlush,
+) -> Result<(), RabitqError> {
+    use crate::rabitq::segment::{ClusterSegmentData, segment_filename, write_segment};
+
+    cluster.flush_pending();
+    if cluster.num_vectors == 0 && cluster.ids.is_empty() {
+        return Ok(());
+    }
+    let version = flush.versions[cid];
+    flush.versions[cid] = version.saturating_add(1);
+    let filename = segment_filename(cid as u32, version);
+    let num_vectors = cluster.num_vectors as u32;
+    let data = ClusterSegmentData::from_cluster_data(
+        cid as u32,
+        version,
+        cluster.centroid.clone(),
+        cluster.padded_dim,
+        cluster.ex_bits,
+        std::mem::take(&mut cluster.ids),
+        std::mem::take(&mut cluster.batch_data),
+        std::mem::take(&mut cluster.ex_codes_packed),
+        std::mem::take(&mut cluster.f_add_ex),
+        std::mem::take(&mut cluster.f_rescale_ex),
+        std::mem::take(&mut cluster.delta),
+        std::mem::take(&mut cluster.vl),
+    );
+    let file_size = write_segment(&flush.store, &filename, &data, version).await?;
+    cluster.ids_version.clear();
+    cluster.ids_birth.clear();
+    cluster.num_vectors = 0;
+    cluster.pending_ids.clear();
+    cluster.pending_ids_version.clear();
+    cluster.pending_vectors.clear();
+    cluster.build_pending = BuildPending::default();
+    flush
+        .entries
+        .lock()
+        .expect("chunk entries lock")
+        .push(SegmentEntry {
+            data_files: Vec::new(),
+            cluster_id: cid as u32,
+            segment_version: version,
+            segment_filename: filename,
+            num_vectors,
+            file_size,
+            birth_version: 0,
+        });
+    Ok(())
 }
 
 impl IvfRabitqBuilder {
@@ -79,6 +183,7 @@ impl IvfRabitqBuilder {
         let rotator = DynamicRotator::new(dim, rotator_type, seed);
         let reservoir_capacity = nlist * 64;
         Self {
+            chunk_flush: None,
             state: BuilderState::Fresh {
                 dim,
                 nlist,
@@ -130,6 +235,7 @@ impl IvfRabitqBuilder {
                 centroid,
                 ids: Vec::new(),
                 ids_version: Vec::new(),
+                ids_birth: Vec::new(),
                 batch_data: Vec::new(),
                 ex_codes_packed: Vec::new(),
                 f_add_ex: Vec::new(),
@@ -157,13 +263,21 @@ impl IvfRabitqBuilder {
             padded_dim: header.padded_dim,
             metric: header.metric,
             rotator,
+            invalid_masks: vec![super::InvalidMask::None; clusters.len()],
             clusters,
             ex_bits: header.ex_bits,
             ip_func,
             key_kind: header.key_kind,
+            live_vectors: 0,
         };
         Ok(Self {
-            state: BuilderState::Loaded { index, cluster_map },
+            chunk_flush: None,
+            state: BuilderState::Loaded {
+                index,
+                cluster_map,
+                pending_keys: HashSet::new(),
+                inserted_keys: BTreeSet::new(),
+            },
         })
     }
 
@@ -204,8 +318,34 @@ impl IvfRabitqBuilder {
                 *reservoir_seen += n;
                 Ok(())
             }
-            BuilderState::Loaded { index, .. } => {
+            BuilderState::Loaded {
+                index,
+                pending_keys,
+                inserted_keys,
+                ..
+            } => {
+                let dim = index.dim();
+                let batch = dedup_batch_last_wins(batch, dim);
+                // Only a cross-batch duplicate needs the pending repack;
+                // ordinary appends stay allocation-light.
+                let duplicate_cross_batch =
+                    batch.ids.iter().any(|id| pending_keys.contains(id));
+                let ids = batch.ids.clone();
                 index.insert_batch(batch)?;
+                for id in ids {
+                    pending_keys.insert(id.clone());
+                    inserted_keys.insert(id);
+                }
+                if duplicate_cross_batch {
+                    index.dedupe_pending_last_wins();
+                    pending_keys.clear();
+                    pending_keys.extend(
+                        index
+                            .clusters
+                            .iter()
+                            .flat_map(|cluster| cluster.ids.iter().cloned()),
+                    );
+                }
                 Ok(())
             }
         }
@@ -218,6 +358,36 @@ impl IvfRabitqBuilder {
     ///   index with the external IDs from the stream.
     /// - **Loaded mode**: flushes pending vectors into batch_data, returns
     ///   the index for persistence.
+    /// Build a fresh index while flushing full clusters to `istore`.
+    ///
+    /// This is the bounded-output variant of [`build`]: after every input
+    /// batch, clusters whose resident buffers exceed `max_chunk_bytes` are
+    /// written as a segment (versions 0, 1, ...) and their buffers cleared.
+    /// The returned index has empty cluster buffers; its header is still the
+    /// canonical header for the generation.
+    pub async fn build_with_chunk_flush<F, S>(
+        mut self,
+        make_stream: F,
+        istore: IndexStore,
+        max_chunk_bytes: usize,
+    ) -> Result<(IvfRabitqIndex, Vec<SegmentEntry>), RabitqError>
+    where
+        F: FnMut() -> S,
+        S: futures::Stream<Item = IdAndVecBatch> + Unpin,
+    {
+        let entries = Arc::new(Mutex::new(Vec::new()));
+        let nlist = self.cluster_count();
+        self.chunk_flush = Some(ChunkFlush {
+            store: istore,
+            max_bytes: max_chunk_bytes,
+            versions: vec![0; nlist],
+            entries: Arc::clone(&entries),
+        });
+        let index = self.build(make_stream).await?;
+        let entries = entries.lock().expect("chunk entries lock").clone();
+        Ok((index, entries))
+    }
+
     pub async fn build<F, S>(
         self,
         mut make_stream: F,
@@ -228,7 +398,9 @@ impl IvfRabitqBuilder {
     {
         use futures::StreamExt;
 
-        match self.state {
+        let IvfRabitqBuilder { state, chunk_flush } = self;
+        let mut chunk_flush = chunk_flush;
+        match state {
             BuilderState::Fresh {
                 dim,
                 nlist,
@@ -312,6 +484,7 @@ impl IvfRabitqBuilder {
                         centroid: c.clone(),
                         ids: Vec::new(),
                         ids_version: Vec::new(),
+                        ids_birth: Vec::new(),
                         batch_data: Vec::new(),
                         ex_codes_packed: Vec::new(),
                         f_add_ex: Vec::new(),
@@ -450,8 +623,16 @@ impl IvfRabitqBuilder {
                         t_stream_quant += t0.elapsed().as_secs_f64();
                     }
                     total_vectors += bn;
+                    if let Some(flush) = chunk_flush.as_mut() {
+                        flush_ready_clusters(&mut clusters, flush).await?;
+                    }
                     if bc.is_multiple_of(10) {
                         println!("    {} vectors...", total_vectors);
+                    }
+                }
+                if let Some(flush) = chunk_flush.as_mut() {
+                    for cid in 0..clusters.len() {
+                        flush_cluster(cid, &mut clusters[cid], flush).await?;
                     }
                 }
                 let t_flush = Instant::now();
@@ -474,15 +655,23 @@ impl IvfRabitqBuilder {
                 println!("    stream append:     {:5.1}s", t_stream_append);
                 println!("    flush_pending:     {:5.1}s", t_flush.as_secs_f64());
                 let ip_func = crate::rabitq::simd::select_excode_ipfunc(ex_bits);
+                let live_vectors = clusters
+                    .iter()
+                    .map(|cluster| cluster.num_vectors + cluster.pending_ids.len())
+                    .sum();
+                let invalid_masks =
+                    vec![crate::rabitq::ivf::InvalidMask::None; clusters.len()];
                 Ok(IvfRabitqIndex {
                     dim,
                     padded_dim,
                     metric,
                     rotator,
+                    invalid_masks,
                     clusters,
                     ex_bits,
                     ip_func,
                     key_kind,
+                    live_vectors,
                 })
             }
 
@@ -504,10 +693,22 @@ impl IvfRabitqBuilder {
         self,
         istore: &IndexStore,
     ) -> Result<(IndexHeader, Vec<SegmentEntry>), RabitqError> {
+        let (header, segments, _) = self.flush_with_mutations(istore).await?;
+        Ok((header, segments))
+    }
+
+    /// Flush delta segments and return the keys that must be recorded in the
+    /// mutation delta so older copies are masked on the next load.
+    pub async fn flush_with_mutations(
+        self,
+        istore: &IndexStore,
+    ) -> Result<(IndexHeader, Vec<SegmentEntry>, Vec<IndexKey>), RabitqError> {
         match self.state {
             BuilderState::Loaded {
                 mut index,
                 cluster_map,
+                inserted_keys,
+                ..
             } => {
                 use crate::rabitq::segment::{
                     ClusterSegmentData, segment_filename, write_segment,
@@ -524,9 +725,10 @@ impl IvfRabitqBuilder {
                     .collect();
 
                 let header = index.index_header();
+                let inserted_keys: Vec<IndexKey> = inserted_keys.into_iter().collect();
                 if dirty_cids.is_empty() {
                     println!("Flush: no dirty clusters, nothing to commit.");
-                    return Ok((header, Vec::new()));
+                    return Ok((header, Vec::new(), inserted_keys));
                 }
 
                 println!(
@@ -579,6 +781,8 @@ impl IvfRabitqBuilder {
                         // The core builder works on vectors, not files; the
                         // shard builder records which data files a build read.
                         data_files: Vec::new(),
+                        // Stamped by the catalog committer.
+                        birth_version: 0,
                     });
                 }
 
@@ -586,21 +790,29 @@ impl IvfRabitqBuilder {
                 for &cid_u32 in &dirty_cids {
                     let c = &mut index.clusters[cid_u32 as usize];
                     c.ids.clear();
+                    c.ids_version.clear();
+                    c.ids_birth.clear();
                     c.batch_data.clear();
                     c.ex_codes_packed.clear();
                     c.f_add_ex.clear();
                     c.f_rescale_ex.clear();
                     c.delta.clear();
                     c.vl.clear();
+                    c.pending_ids.clear();
+                    c.pending_ids_version.clear();
+                    c.pending_vectors.clear();
                     c.num_vectors = 0;
                 }
+                index.invalid_masks =
+                    vec![super::InvalidMask::None; index.clusters.len()];
+                index.live_vectors = 0;
 
                 println!(
                     "Flush complete: {} delta segments ({} new vectors)",
                     new_segments.len(),
                     total_new
                 );
-                Ok((header, new_segments))
+                Ok((header, new_segments, inserted_keys))
             }
             BuilderState::Fresh { .. } => Err(RabitqError::InvalidConfig(
                 "call build() before flush() for fresh builder",

@@ -77,6 +77,7 @@ pub mod locality;
 pub mod planner;
 pub mod resolver;
 mod trace_context;
+pub(crate) mod vector_batch_codec;
 pub mod worker;
 
 pub use planner::LakeSoulDistributedQueryPlanner;

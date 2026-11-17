@@ -57,13 +57,33 @@ pub async fn search_resolved_shard_with(
     top_k: usize,
     analyzer: Option<&str>,
 ) -> IoResult<Vec<Candidate>> {
+    let identity = fallback_store_identity(store);
+    search_resolved_shard_with_identity(
+        &identity, store, resolved, query, top_k, analyzer,
+    )
+    .await
+}
+
+/// Like [`search_resolved_shard_with`], with an explicit store identity.
+///
+/// Reader-driven queries pass the identity derived from the table's
+/// object-store options ([`cache::store_identity`]) so two stores serving the
+/// same index prefix cannot share one cache entry.
+pub(crate) async fn search_resolved_shard_with_identity(
+    identity: &str,
+    store: &Arc<dyn ObjectStore>,
+    resolved: &ResolvedIndex,
+    query: &str,
+    top_k: usize,
+    analyzer: Option<&str>,
+) -> IoResult<Vec<Candidate>> {
     if !resolved.is_kind(IndexKind::Text) {
         return Err(rootcause::report!(
             "resolved index '{}' is not a text index",
             resolved.index_prefix
         ));
     }
-    let entry = open_cached_shard(store, resolved).await?;
+    let entry = open_cached_shard(identity, store, resolved).await?;
 
     let mut hits: Vec<TextHit> = Vec::new();
     for index in &entry.indexes {
@@ -90,6 +110,14 @@ pub async fn search_resolved_shard_with(
         .collect())
 }
 
+/// Store identity of callers that only hold the store handle (the public
+/// single-shard entry points used by the ES gateway and benchmarks).  The
+/// reader path uses the table's object-store options instead, which
+/// distinguishes stores whose display form is identical.
+fn fallback_store_identity(store: &Arc<dyn ObjectStore>) -> String {
+    cache::store_identity(store, None)
+}
+
 /// Global BM25 statistics of one text index shard (all of its splits).
 ///
 /// The statistics are merged across shards by the caller and used to score
@@ -106,7 +134,8 @@ pub async fn shard_stats(
             resolved.index_prefix
         ));
     }
-    let entry = open_cached_shard(store, resolved).await?;
+    let identity = fallback_store_identity(store);
+    let entry = open_cached_shard(&identity, store, resolved).await?;
     let mut stats = lakesoul_text::CorpusStats::default();
     for index in &entry.indexes {
         stats.merge(lakesoul_text::collect_index_stats(index, terms).map_err(
@@ -124,6 +153,7 @@ pub async fn shard_stats(
 
 /// Open (or reuse from the shared cache) every split of a text shard.
 async fn open_cached_shard(
+    identity: &str,
     store: &Arc<dyn ObjectStore>,
     resolved: &ResolvedIndex,
 ) -> IoResult<Arc<CachedTextShard>> {
@@ -131,7 +161,7 @@ async fn open_cached_shard(
     let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
     let cache_prefix = prefix.clone();
     let commit_id = resolved.commit_id;
-    cache::get_or_load(store, IndexKind::Text, &prefix, commit_id, move || {
+    cache::get_or_load(identity, IndexKind::Text, &prefix, commit_id, move || {
         let store = store.clone();
         let prefix = cache_prefix.clone();
         let splits = splits.clone();
@@ -170,6 +200,32 @@ pub async fn search_matching_shards(
     top_k: usize,
     resolved_shards: &[ResolvedIndex],
 ) -> IoResult<Vec<Candidate>> {
+    let identity = fallback_store_identity(store);
+    search_matching_shards_with_identity(
+        &identity,
+        store,
+        file_paths,
+        text_column,
+        table_prefix,
+        query,
+        top_k,
+        resolved_shards,
+    )
+    .await
+}
+
+/// Like [`search_matching_shards`], with an explicit store identity.
+#[allow(clippy::too_many_arguments)]
+async fn search_matching_shards_with_identity(
+    identity: &str,
+    store: &Arc<dyn ObjectStore>,
+    file_paths: &[String],
+    text_column: &str,
+    table_prefix: &str,
+    query: &str,
+    top_k: usize,
+    resolved_shards: &[ResolvedIndex],
+) -> IoResult<Vec<Candidate>> {
     let prefixes =
         derive_index_prefixes(file_paths, table_prefix, IndexKind::Text, text_column);
     let Some((index_prefix, _bucket_id)) = prefixes.first() else {
@@ -186,7 +242,8 @@ pub async fn search_matching_shards(
             normalized
         ));
     };
-    search_resolved_shard(store, resolved, query, top_k).await
+    search_resolved_shard_with_identity(identity, store, resolved, query, top_k, None)
+        .await
 }
 
 /// Run the text search selected by a parsed [`SearchRequest`].
@@ -196,7 +253,12 @@ pub async fn search_request(
     request: &SearchRequest,
     table_prefix: &str,
 ) -> IoResult<Vec<Candidate>> {
-    search_matching_shards(
+    // Reader-driven queries know the table's storage options; they are part of
+    // the cache identity so two stores that serve the same index prefix do not
+    // share a loaded shard.
+    let identity = cache::store_identity(store, Some(io_config.object_store_options()));
+    search_matching_shards_with_identity(
+        &identity,
         store,
         io_config.files_slice(),
         &request.column,

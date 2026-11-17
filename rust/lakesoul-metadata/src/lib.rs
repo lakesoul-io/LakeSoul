@@ -27,7 +27,8 @@ use lakesoul_metadata_proto::entity;
 pub use metadata_client::{
     CommitOutcome, IncrementalWindow, MetaDataClient, MetaDataClientRef,
     PartitionChangelog, TableDefinitionUpdate, TransactionTableCommit,
-    client_secret_from_config, client_secret_from_env, pg_config_from_env,
+    VectorBatchMetadata, client_secret_from_config, client_secret_from_env,
+    pg_config_from_env,
 };
 
 pub mod transfusion;

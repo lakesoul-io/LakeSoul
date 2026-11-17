@@ -150,7 +150,7 @@ Vortex 和 Parquet 都支持：Vortex 直接按 row index 读，Parquet 使用 r
 - `index_commit` 保存不可变的 `(generation, version)`、索引 header 和 segment 列表；全量重建发布新 generation，增量 flush 发布 `version + 1`；
 - `index_lease` 在读者加载某个 generation 期间保活，避免 GC 删掉正在读取的文件。
 
-索引数据存放在表旁边的对象存储里。向量索引是 IVF + RaBitQ，全文索引是 Tantivy BM25。两者都在数据提交之后维护，并由读取表的同一个引擎查询。见[向量索引管理](vector-search/index-management.md)和[文本索引管理](full-text-search/index-management.md)。
+索引数据存放在表旁边的对象存储里。向量索引是 IVF + RaBitQ，全文索引是 Tantivy BM25。两者都在数据提交之后维护，并由读取表的同一个引擎查询。见[向量索引管理](vector-search/api.md)和[文本索引管理](full-text-search/index-management.md)。
 
 ## 建立在 commit log 上的增量计算
 
@@ -193,5 +193,5 @@ LakeSoul 解决的是另一层：一个跑在对象存储上、需要行级更�
 - [引擎概览](overview.md)
 - [PostgreSQL 前端](postgres/overview.md)
 - [增量 SQL](incremental-sql/overview.md)
-- [向量检索](vector-search/overview.md)
+- [向量检索](vector-search/quickstart.md)
 - [物理文件格式](../operations/physical-file-formats.md)

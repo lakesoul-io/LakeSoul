@@ -5,7 +5,8 @@
 mod insert_only;
 mod metadata_format;
 mod text_search_exec;
-mod vector_search_exec;
+pub(crate) mod vector_batch_exec;
+pub(crate) mod vector_search_exec;
 mod write_exec;
 
 pub(crate) use insert_only::{InsertOnly, remove_files};

@@ -1,0 +1,17 @@
+[package]
+name = "lakesoul-vector-benchmark16"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Keep this harness out of the enclosing LakeSoul workspace and its Cargo.lock.
+[workspace]
+resolver = "3"
+
+[dependencies]
+# benchmark16/ is directly inside rust/lakesoul-vector/.
+lakesoul-vector = { path = ".." }
+futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+rayon = "1.8"
+serde_json = "1.0"

@@ -169,7 +169,7 @@ pub(crate) struct BuildPending {
 
 #[repr(C, align(64))]
 #[derive(Debug, Clone)]
-pub(crate) struct ClusterData {
+pub struct ClusterData {
     /// Cluster centroid
     pub(crate) centroid: Vec<f32>,
     /// Vector IDs (all vectors in cluster)
@@ -177,6 +177,9 @@ pub(crate) struct ClusterData {
     /// Segment version of each entry in `ids` (parallel array), used to
     /// prefer the newest version of a key when several segments contain it.
     pub(crate) ids_version: Vec<u32>,
+    /// Catalog revision each physical record was born at. Mutation validity
+    /// compares this against the key's latest mutation revision.
+    pub(crate) ids_birth: Vec<u64>,
     /// Single contiguous memory block for all batches
     /// Layout: [Batch 0][Batch 1]...[Batch N]
     /// Each batch layout:
@@ -221,6 +224,7 @@ impl ClusterData {
         bytes += self.ids.capacity() * std::mem::size_of::<IndexKey>();
         bytes += self.ids.iter().map(|key| key.heap_bytes()).sum::<usize>();
         bytes += self.ids_version.capacity() * 4;
+        bytes += self.ids_birth.capacity() * 8;
         bytes += self.batch_data.capacity();
         bytes += self
             .ex_codes_packed
@@ -410,10 +414,12 @@ impl ClusterData {
     pub(crate) fn from_segment(seg: crate::rabitq::segment::ClusterSegmentData) -> Self {
         let nv = seg.ids.len();
         let version = seg.version;
+        let birth = seg.birth_version;
         Self {
             centroid: seg.centroid,
             ids: seg.ids,
             ids_version: vec![version; nv],
+            ids_birth: vec![birth; nv],
             batch_data: seg.batch_data,
             ex_codes_packed: seg.ex_codes_packed,
             f_add_ex: seg.f_add_ex,
@@ -441,6 +447,21 @@ impl ClusterData {
     pub(crate) fn merge_segments(
         segments: Vec<crate::rabitq::segment::ClusterSegmentData>,
     ) -> Result<Self, RabitqError> {
+        Self::merge_segments_inner(segments, true)
+    }
+
+    /// Lazy batch tile workers already own a CPU slot in the shared pool.
+    /// Repacking here stays sequential to honor their request-wide budget.
+    pub(crate) fn merge_segments_sequential(
+        segments: Vec<crate::rabitq::segment::ClusterSegmentData>,
+    ) -> Result<Self, RabitqError> {
+        Self::merge_segments_inner(segments, false)
+    }
+
+    fn merge_segments_inner(
+        segments: Vec<crate::rabitq::segment::ClusterSegmentData>,
+        parallel: bool,
+    ) -> Result<Self, RabitqError> {
         if segments.is_empty() {
             return Err(RabitqError::InvalidPersistence(
                 "cluster has no segments to merge",
@@ -463,7 +484,7 @@ impl ClusterData {
         if aligned {
             Self::concat_aligned(segments)
         } else {
-            Self::repack_segments(segments)
+            Self::repack_segments(segments, parallel)
         }
     }
 
@@ -483,6 +504,9 @@ impl ClusterData {
             merged
                 .ids_version
                 .extend(std::iter::repeat_n(seg.version, seg.ids.len()));
+            merged
+                .ids_birth
+                .extend(std::iter::repeat_n(seg.birth_version, seg.ids.len()));
             merged.ids.extend(seg.ids);
             merged.batch_data.extend(seg.batch_data);
             merged.ex_codes_packed.extend(seg.ex_codes_packed);
@@ -504,6 +528,7 @@ impl ClusterData {
     /// per-vector metadata arrays are moved rather than cloned.
     fn repack_segments(
         segments: Vec<crate::rabitq::segment::ClusterSegmentData>,
+        parallel: bool,
     ) -> Result<Self, RabitqError> {
         use rayon::prelude::*;
 
@@ -524,6 +549,7 @@ impl ClusterData {
         let mut offsets: Vec<usize> = Vec::with_capacity(segments.len());
         let mut ids: Vec<IndexKey> = Vec::with_capacity(n_total);
         let mut ids_version: Vec<u32> = Vec::with_capacity(n_total);
+        let mut ids_birth: Vec<u64> = Vec::with_capacity(n_total);
         let mut ex_codes_packed: Vec<Vec<u8>> = Vec::with_capacity(n_total);
         let mut f_add_ex: Vec<f32> = Vec::with_capacity(n_total);
         let mut f_rescale_ex: Vec<f32> = Vec::with_capacity(n_total);
@@ -539,6 +565,7 @@ impl ClusterData {
             let mut cd = ClusterData::from_segment(seg);
             ids.extend_from_slice(&cd.ids);
             ids_version.extend_from_slice(&cd.ids_version);
+            ids_birth.extend_from_slice(&cd.ids_birth);
             ex_codes_packed.append(&mut cd.ex_codes_packed);
             f_add_ex.append(&mut cd.f_add_ex);
             f_rescale_ex.append(&mut cd.f_rescale_ex);
@@ -553,17 +580,19 @@ impl ClusterData {
         let cds = &cds;
         let offsets = &offsets;
 
-        batch_data.par_chunks_mut(stride).enumerate().for_each_init(
-            || {
-                (
-                    vec![0u8; batch * dim_bytes],
-                    vec![0u8; padded_dim],
-                    vec![0f32; batch],
-                    vec![0f32; batch],
-                    vec![0f32; batch],
-                )
-            },
-            |(codes, unpacked, f_add, f_rescale, f_error), (b, batch_slice)| {
+        let buffers = || {
+            (
+                vec![0u8; batch * dim_bytes],
+                vec![0u8; padded_dim],
+                vec![0f32; batch],
+                vec![0f32; batch],
+                vec![0f32; batch],
+            )
+        };
+        type RepackBuffers = (Vec<u8>, Vec<u8>, Vec<f32>, Vec<f32>, Vec<f32>);
+        let repack =
+            |(codes, unpacked, f_add, f_rescale, f_error): &mut RepackBuffers,
+             (b, batch_slice): (usize, &mut [u8])| {
                 let actual = (n_total - b * batch).min(batch);
                 for s in 0..actual {
                     let g = b * batch + s;
@@ -587,8 +616,7 @@ impl ClusterData {
                     f_rescale[s] = cd.batch_f_rescale(src_batch)[src_slot];
                     f_error[s] = cd.batch_f_error(src_batch)[src_slot];
                 }
-                // The thread-local buffers are reused: clear the padding
-                // slots of a partial batch.
+                // The worker-local buffers are reused: clear a partial block's padding.
                 codes[actual * dim_bytes..].fill(0);
                 for s in actual..batch {
                     f_add[s] = 0.0;
@@ -623,12 +651,23 @@ impl ClusterData {
                     )
                     .copy_from_slice(f_error);
                 }
-            },
-        );
+            };
+        if parallel {
+            batch_data
+                .par_chunks_mut(stride)
+                .enumerate()
+                .for_each_init(buffers, repack);
+        } else {
+            let mut scratch = buffers();
+            for block in batch_data.chunks_mut(stride).enumerate() {
+                repack(&mut scratch, block);
+            }
+        }
 
         Ok(ClusterData {
             centroid,
             ids_version,
+            ids_birth,
             ids,
             batch_data,
             ex_codes_packed,
@@ -653,6 +692,7 @@ impl ClusterData {
             centroid,
             ids: Vec::new(),
             ids_version: Vec::new(),
+            ids_birth: Vec::new(),
             batch_data: Vec::new(),
             ex_codes_packed: Vec::new(),
             f_add_ex: Vec::new(),
@@ -678,6 +718,7 @@ impl ClusterData {
             + self.ids.capacity() * std::mem::size_of::<IndexKey>()
             + self.ids.iter().map(|key| key.heap_bytes()).sum::<usize>()
             + self.ids_version.capacity() * 4
+            + self.ids_birth.capacity() * 8
             + self.batch_data.capacity()
             + self.ex_codes_packed.capacity() * std::mem::size_of::<Vec<u8>>()
             + ex_codes_heap
@@ -787,6 +828,7 @@ impl ClusterData {
         Self {
             centroid,
             ids_version: vec![0; ids.len()],
+            ids_birth: vec![0; ids.len()],
             ids,
             batch_data,
             ex_codes_packed,

@@ -142,3 +142,4 @@ are `L2` and `IP`; cosine search is evaluated exactly.
 - [Core API](../python/core-api.md)
 - [PyTorch and Hugging Face](../python/pytorch-huggingface.md)
 - [Vector search from Python](../python/vector-search.md)
+- [Vector search quick start](../engine/vector-search/quickstart.md)

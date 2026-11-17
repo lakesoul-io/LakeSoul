@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from lakesoul.metadata import (
 )
 
 from . import index as _index
+from .adapters import OutputFormat, convert
+from .session import BatchSearchResult, LakeSoulQueryError, LakeSoulSession
 from .vacuum import maybe_vacuum_after_commit
 
 if TYPE_CHECKING:
@@ -272,6 +275,12 @@ class LakeSoulCatalog:
             )
 
         self._client = client
+        # The native query session takes the same connection string; `None`
+        # means "use the LAKESOUL_* environment variables".
+        self._metadata_config: str | None = (
+            metadata_config.primary_config() if metadata_config is not None else None
+        )
+        self._session: LakeSoulSession | None = None
         self._namespace = namespace
         self._object_store_options = MappingProxyType(
             _validate_string_mapping("object_store_options", object_store_options or {})
@@ -289,6 +298,27 @@ class LakeSoulCatalog:
             object_store_options=object_store_options,
             _client=NativeMetadataClient.from_env(),
         )
+
+    def session(self, *, reuse: bool = True, **kwargs: Any) -> LakeSoulSession:
+        """Return a :class:`LakeSoulSession` over this catalog's connection.
+
+        The session is a read-only DataFusion engine that runs lakehouse SQL and
+        all vector-search entry points (``LakeSoulTable.search`` uses it).  It
+        is created once and reused by default: the metadata, index and block
+        caches stay warm across queries.
+
+        Args:
+            reuse: Return the catalog's cached session instead of a new one.
+            **kwargs: Forwarded to :class:`LakeSoulSession` (``vector_search``,
+                ``target_partitions``, ``object_store_options``, ...).
+        """
+        if reuse and self._session is not None and not kwargs:
+            return self._session
+        metadata_config = kwargs.pop("metadata_config", self._metadata_config)
+        session = LakeSoulSession(metadata_config=metadata_config, **kwargs)
+        if reuse and not kwargs:
+            self._session = session
+        return session
 
     @property
     def namespace(self) -> str:
@@ -375,6 +405,31 @@ class LakeSoulCatalog:
             retain_partition_columns=retain_partition_columns,
             object_store_options=object_store_options,
         ).to_arrow_dataset()
+
+    def search(
+        self,
+        name: str,
+        query: Sequence[float],
+        *,
+        namespace: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Vector search on a named table (see :meth:`LakeSoulTable.search`)."""
+        return self.table(name, namespace).search(query, **kwargs)
+
+    def search_batch(
+        self,
+        name: str,
+        queries: Sequence[Sequence[float]],
+        *,
+        namespace: str | None = None,
+        **kwargs: Any,
+    ) -> BatchSearchResult:
+        """Batch vector search on a named table.
+
+        See :meth:`LakeSoulTable.search_batch`.
+        """
+        return self.table(name, namespace).search_batch(queries, **kwargs)
 
     def create_table(
         self,
@@ -733,6 +788,18 @@ class LakeSoulCatalog:
             f"table must be a name or LakeSoulTable, got {type(table).__name__}"
         )
 
+    def drop_vector_index(
+        self,
+        table: str | LakeSoulTable,
+        column: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Drop a vector index through the table handle.
+
+        Convenience wrapper around :meth:`LakeSoulTable.drop_vector_index`.
+        """
+        return self._resolve_table(table).drop_vector_index(column, **kwargs)
+
     def drop_table(
         self,
         name: str,
@@ -803,6 +870,15 @@ class LakeSoulTable:
     @property
     def catalog(self) -> LakeSoulCatalog:
         return self._catalog
+
+    def _reset_query_session(self) -> None:
+        """Drop the cached DataFusion session after index metadata changes.
+
+        The session holds a metadata/catalog snapshot and vector snapshot
+        caches.  Keeping it after a drop can let a query plan the old index;
+        the next search creates a fresh session instead.
+        """
+        self._catalog._session = None
 
     @property
     def name(self) -> str:
@@ -880,6 +956,520 @@ class LakeSoulTable:
         if "vector_index_columns" not in self.properties:
             return ()
         return tuple(str(config["column"]) for config in self._vector_configs())
+
+    # -- vector search -------------------------------------------------------
+
+    def _search_session(self, session: LakeSoulSession | None) -> LakeSoulSession:
+        if session is not None:
+            if not isinstance(session, LakeSoulSession):
+                raise TypeError("session must be a LakesoulSession")
+            return session
+        return self.catalog.session()
+
+    @staticmethod
+    def _sql_identifier(name: str) -> str:
+        return '"' + str(name).replace('"', '""') + '"'
+
+    def _vector_search_sql(
+        self,
+        query: Sequence[float],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        filter: str | None = None,
+        columns: Sequence[str] | None = None,
+        with_distance: bool = False,
+        table_ref: str | None = None,
+    ) -> tuple[str, str, str]:
+        """Build the vector-search SQL and return ``(sql, column, metric)``.
+
+        The statement is exactly what a user would write by hand:
+
+        ``SELECT <columns> FROM <table> [WHERE <filter>]
+        ORDER BY <distance>(<column>, ARRAY[...]) <ASC|DESC> LIMIT <top_k>``
+
+        so it runs through the regular pushdown rule and vector-index scan.
+        """
+        configs = self._vector_configs()
+        if not configs:
+            raise ValueError(
+                "the table has no vector_index_columns property; create the "
+                "table with vector_index=[...] to enable vector search"
+            )
+        if column is None:
+            if len(configs) != 1:
+                raise ValueError(
+                    "the table declares several vector columns; pass 'column' "
+                    f"explicitly (declared: {[c['column'] for c in configs]})"
+                )
+            column = str(configs[0]["column"])
+        config = next((c for c in configs if c["column"] == column), None)
+        if config is None:
+            raise ValueError(
+                f"column {column!r} is not declared in vector_index_columns"
+            )
+        resolved_metric = metric if metric is not None else config.get("metric", "L2")
+        resolved_metric = (
+            "IP" if str(resolved_metric).upper() in ("IP", "INNERPRODUCT") else "L2"
+        )
+        if int(top_k) < 1:
+            raise ValueError("top_k must be >= 1")
+        values = [float(value) for value in query]
+        if not values:
+            raise ValueError("query must not be empty")
+        expected_dim = config.get("dim")
+        if expected_dim is not None and len(values) != int(expected_dim):
+            raise ValueError(
+                f"query dimension {len(values)} does not match the index "
+                f"dimension {int(expected_dim)}"
+            )
+        if filter is not None and not isinstance(filter, str):
+            raise TypeError(
+                "filter must be a SQL predicate string, e.g. \"lang = 'zh'\""
+            )
+
+        literal = "ARRAY[" + ", ".join(f"{value:.9g}" for value in values) + "]"
+        quoted_column = self._sql_identifier(column)
+        distance = (
+            f"array_distance({quoted_column}, {literal})"
+            if resolved_metric == "L2"
+            else f"inner_product({quoted_column}, {literal})"
+        )
+        order = "ASC" if resolved_metric == "L2" else "DESC"
+
+        table_schema_names = [field.name for field in self.schema]
+        if columns is None:
+            selected = [name for name in table_schema_names if name != column]
+        else:
+            selected = [str(name) for name in columns]
+            unknown = [name for name in selected if name not in table_schema_names]
+            if unknown:
+                raise ValueError(
+                    f"unknown column(s) in columns: {unknown}; the table has "
+                    f"{table_schema_names}"
+                )
+        select_list = ", ".join(self._sql_identifier(name) for name in selected)
+        if with_distance:
+            select_list += (
+                f", {distance} AS {self._sql_identifier(VECTOR_DISTANCE_COLUMN)}"
+            )
+        where = f" WHERE ({filter})" if filter is not None else ""
+        resolved_table_ref = (
+            table_ref
+            if table_ref is not None
+            else (
+                f'"lakesoul".{self._sql_identifier(self.namespace)}.'
+                f"{self._sql_identifier(self.name)}"
+            )
+        )
+        sql = (
+            f"SELECT {select_list} FROM {resolved_table_ref}{where} "
+            f"ORDER BY {distance} {order} LIMIT {int(top_k)}"
+        )
+        return sql, column, resolved_metric
+
+    def to_sql(
+        self,
+        query: Sequence[float],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        filter: str | None = None,
+        columns: Sequence[str] | None = None,
+        with_distance: bool = False,
+    ) -> str:
+        """Return the SQL that :meth:`search` would execute.
+
+        Useful for auditing a search and for running it through another
+        DataFusion frontend.
+        """
+        sql, _, _ = self._vector_search_sql(
+            query,
+            column=column,
+            top_k=top_k,
+            metric=metric,
+            filter=filter,
+            columns=columns,
+            with_distance=with_distance,
+        )
+        return sql
+
+    def search(
+        self,
+        query: Sequence[float],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        rerank: str = "index",
+        nprobe: int | None = None,
+        exact_overfetch: int | None = None,
+        filter: str | None = None,
+        columns: Sequence[str] | None = None,
+        with_distance: bool = False,
+        session: LakeSoulSession | None = None,
+        snapshot: int | None = None,
+        tag: str | None = None,
+        as_of: int | None = None,
+        to: OutputFormat | None = None,
+    ) -> Any:
+        """Run a vector search and return the nearest rows as an Arrow table.
+
+        The search is a lakehouse query: it runs on the session's DataFusion
+        engine, so it follows the table's snapshot and merge-on-read semantics
+        (latest version per primary key, CDC delete tombstones removed,
+        range-partition pruning) and uses the vector-index fast paths when the
+        index can serve it.  Results are ordered by distance: L2 ascending, IP
+        descending.
+
+        Args:
+            query: Query vector (sequence of floats; dimension must match the
+                index).
+            column: Vector column to search.  Defaults to the only declared
+                column; required when the table declares several.
+            top_k: Number of rows to return.
+            metric: ``"L2"`` or ``"IP"``.  Defaults to the index metric.  A
+                metric that differs from the index falls back to a plain scan
+                (same as the SQL path) instead of failing.
+            rerank: ``"index"`` (default) orders by the index distance and
+                does not read the vector column (approximate, faster);
+                ``"exact"`` re-ranks candidates against the stored vectors.
+            nprobe: IVFFlat clusters probed per bucket (session option; set to
+                trade recall for latency).
+            exact_overfetch: Candidates per bucket in exact mode
+                (``top_k * this``).
+            filter: SQL predicate (e.g. ``"lang = 'zh'"``) pushed down with
+                the scan; partition columns prune files, other predicates are
+                evaluated on the candidates (with iterative widening).
+            columns: Projection; defaults to every non-vector column.  Extra
+                columns stay on the fast path: only the kept rows are read.
+            with_distance: Also return the distance in
+                ``__lakesoul_vector_distance``.
+            session: Session to query; defaults to the catalog's session.
+            snapshot: Read a pinned snapshot (id from
+                :meth:`LakeSoulCatalog.create_snapshot`) instead of the latest
+                version.  Pinned reads skip the vector index (it describes the
+                latest files) but keep the distance ordering exact.
+            tag: Read the snapshot pinned by a tag.
+            as_of: Read the latest versions committed at or before this Unix
+                millisecond timestamp.
+
+        Returns:
+            A :class:`pyarrow.Table` ordered by distance.
+        """
+        selectors = [snapshot is not None, tag is not None, as_of is not None]
+        if sum(selectors) > 1:
+            raise ValueError("pass at most one of snapshot, tag or as_of")
+        if rerank not in ("auto", "exact", "index"):
+            raise ValueError(
+                f"rerank must be 'auto', 'exact' or 'index', got {rerank!r}"
+            )
+        query_session = self._search_session(session)
+        pinned = snapshot is not None or tag is not None or as_of is not None
+        alias: str | None = None
+        if pinned:
+            alias = query_session.register_snapshot(
+                self.name,
+                namespace=self.namespace,
+                snapshot=snapshot,
+                tag=tag,
+                as_of=as_of,
+            )
+        try:
+            sql, _, _ = self._vector_search_sql(
+                query,
+                column=column,
+                top_k=top_k,
+                metric=metric,
+                filter=filter,
+                columns=columns,
+                with_distance=with_distance,
+                table_ref=alias,
+            )
+            options: dict[str, object] = {}
+            if rerank != "auto":
+                options["rerank"] = rerank
+            if nprobe is not None:
+                options["nprobe"] = int(nprobe)
+            if exact_overfetch is not None:
+                options["exact_overfetch"] = int(exact_overfetch)
+            if options:
+                query_session.set_vector_search(**options)
+            return convert(query_session.sql(sql), to)
+        finally:
+            if alias is not None:
+                query_session.unregister(alias)
+
+    @staticmethod
+    def _identifier_pattern(name: str) -> str:
+        escaped = re.escape(str(name))
+        return f'(?:"{escaped}"|{escaped})'
+
+    def _rewrite_table_reference(self, sql: str, alias: str) -> str:
+        """Point this table's references in ``sql`` at a pinned view.
+
+        Both forms are accepted: the fully-qualified quoted name produced by
+        :meth:`to_sql` and a plain ``lakesoul.<namespace>.<table>`` spelling.
+        """
+        pattern = re.compile(
+            self._identifier_pattern("lakesoul")
+            + r"\s*\.\s*"
+            + self._identifier_pattern(self.namespace)
+            + r"\s*\.\s*"
+            + self._identifier_pattern(self.name),
+            re.IGNORECASE,
+        )
+        return pattern.sub(lambda _match: alias, sql)
+
+    def sql(
+        self,
+        sql: str,
+        *,
+        session: LakeSoulSession | None = None,
+        snapshot: int | None = None,
+        tag: str | None = None,
+        as_of: int | None = None,
+        to: OutputFormat | None = None,
+    ) -> Any:
+        """Run an arbitrary lakehouse SQL query against this table's catalog.
+
+        Vector search is one shape of such a query::
+
+            table.sql(
+                'SELECT id FROM "lakesoul".default.docs '
+                "ORDER BY array_distance(embedding, ARRAY[0.1, 0.2]) LIMIT 10"
+            )
+
+        The statement may join other LakeSoul tables, aggregate, filter and
+        project freely; it runs on the same engine as :meth:`search`.  Pass
+        ``snapshot``/``tag``/``as_of`` to run the statement against a pinned
+        version of this table: every occurrence of this table's name is
+        rewritten to a time-travel view for the duration of the query.
+        """
+        query_session = self._search_session(session)
+        if snapshot is not None or tag is not None or as_of is not None:
+            alias = query_session.register_snapshot(
+                self.name,
+                namespace=self.namespace,
+                snapshot=snapshot,
+                tag=tag,
+                as_of=as_of,
+            )
+            try:
+                return query_session.sql(
+                    self._rewrite_table_reference(sql, alias), to=to
+                )
+            finally:
+                query_session.unregister(alias)
+        return query_session.sql(sql, to=to)
+
+    def search_batch(
+        self,
+        queries: Sequence[Sequence[float]],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        rerank: str = "index",
+        nprobe: int | None = None,
+        exact_overfetch: int | None = None,
+        batch_size: int = 1024,
+        parallelism: int = 1,
+        session: LakeSoulSession | None = None,
+    ) -> BatchSearchResult:
+        """Run a batch of vector queries and return one primary-key list each.
+
+        Prefers the native snapshot batch entry (one shard resolution and one
+        ranking pass for the whole call, same semantics as the SQL path).  When
+        the table cannot use it - the native entry requires a single Int64
+        primary key named ``id``; exact mode also needs a proven snapshot
+        coverage, `LAKESOUL_CACHE` decoded-block cache and per-file index ranks
+        (several data files per hash bucket are supported) - the batch falls back to
+        one SQL search per query.  The fallback gives identical ids, just
+        slower (it re-plans the search per query).
+
+        Args:
+            queries: Query vectors (``(nq, dim)``); all must have the same
+                dimension.
+            column: Vector column; defaults to the only declared column.
+            top_k: Neighbours returned per query.
+            metric: ``"L2"`` or ``"IP"``; defaults to the index metric.
+            rerank: ``"index"`` (default; index ordering, no vector-column
+                reads) or ``"exact"`` (re-rank by stored vectors).
+            nprobe: Clusters probed per bucket; defaults to the session's
+                ``nprobe``.
+            exact_overfetch: Candidates per bucket in exact mode
+                (``top_k * this``); defaults to the native entry's 10.
+            batch_size: Queries per snapshot batch (``0`` = the API default).
+            parallelism: Cluster-probe parallelism inside one shard.
+            session: Session to query; defaults to the catalog's session.
+
+        Returns:
+            :class:`lakesoul.session.BatchSearchResult`; use
+            ``result.ids`` or ``result.to_arrow()``.
+        """
+        if rerank not in ("auto", "exact", "index"):
+            raise ValueError(
+                f"rerank must be 'auto', 'exact' or 'index', got {rerank!r}"
+            )
+        if queries is None or len(queries) == 0:
+            return BatchSearchResult(ids=[])
+        values = [[float(value) for value in query] for query in queries]
+        dimensions = {len(query) for query in values}
+        if len(dimensions) > 1:
+            raise ValueError(
+                f"all queries must have the same dimension, got {sorted(dimensions)}"
+            )
+        if not values[0]:
+            raise ValueError("query must not be empty")
+        query_session = self._search_session(session)
+        # Validate column/metric/dimension and reuse the resolved values.
+        _, resolved_column, resolved_metric = self._vector_search_sql(
+            values[0], column=column, top_k=10, metric=metric
+        )
+        config = next(
+            (c for c in self._vector_configs() if c["column"] == resolved_column),
+            None,
+        )
+        expected_dim = config.get("dim") if config is not None else None
+        if expected_dim is not None:
+            for index, query in enumerate(values):
+                if len(query) != int(expected_dim):
+                    raise ValueError(
+                        f"query {index} dimension {len(query)} does not match "
+                        f"the index dimension {int(expected_dim)}"
+                    )
+        requested_nprobe = nprobe if nprobe is not None else query_session.nprobe
+        exact = rerank == "exact"
+        overfetch = 10 if exact_overfetch is None else int(exact_overfetch)
+        if overfetch < 1:
+            raise ValueError("exact_overfetch must be >= 1")
+        if batch_size < 0:
+            raise ValueError("batch_size must be >= 0")
+
+        native_supported = (
+            self.primary_keys == ("id",)
+            and "id" in self.schema.names
+            and pa.types.is_int64(self.schema.field("id").type)
+        )
+        if native_supported:
+            try:
+                return query_session.batch_search(
+                    self.name,
+                    values,
+                    namespace=self.namespace,
+                    column=resolved_column,
+                    top_k=top_k,
+                    nprobe=int(requested_nprobe),
+                    parallelism=int(parallelism),
+                    batch_size=int(batch_size),
+                    exact=exact,
+                    exact_overfetch=overfetch,
+                    metric=resolved_metric,
+                )
+            except LakeSoulQueryError as error:
+                # The native snapshot batch cannot serve this table; keep the
+                # result identical with the per-query SQL fallback.
+                fallback_error = error
+        else:
+            fallback_error = None
+        try:
+            return self._search_batch_via_sql(
+                values,
+                column=resolved_column,
+                metric=resolved_metric,
+                top_k=top_k,
+                rerank=rerank,
+                nprobe=requested_nprobe,
+                exact_overfetch=exact_overfetch,
+                session=query_session,
+            )
+        except Exception as error:  # noqa: BLE001 - surface both failures
+            if fallback_error is not None:
+                raise LakeSoulQueryError(
+                    f"native batch search failed ({fallback_error}); the SQL "
+                    f"fallback failed too: {error}"
+                ) from error
+            raise
+
+    def _search_batch_via_sql(
+        self,
+        queries: list[list[float]],
+        *,
+        column: str,
+        metric: str,
+        top_k: int,
+        rerank: str,
+        nprobe: int | None,
+        exact_overfetch: int | None,
+        session: LakeSoulSession,
+    ) -> BatchSearchResult:
+        """Per-query SQL fallback used when the native batch cannot run."""
+        primary_key = self.primary_keys[0] if self.primary_keys else "id"
+        effective_rerank = "index" if rerank == "auto" else rerank
+        # Apply the search options once for the whole batch: `table.search`
+        # issues a `SET` per call when options are passed, and doing that per
+        # query would roughly double the fallback cost.  A per-query search
+        # that passes no options then reuses the session settings.
+        batch_options: dict[str, object] = {"rerank": effective_rerank}
+        if nprobe is not None:
+            batch_options["nprobe"] = int(nprobe)
+        if exact_overfetch is not None:
+            batch_options["exact_overfetch"] = int(exact_overfetch)
+        session.set_vector_search(**batch_options)
+        ids: list[list[int]] = []
+        for query in queries:
+            # Keys only: asking for the distance column would force the
+            # engine to evaluate the distance expression above the scan, which
+            # disables the candidate/block fast paths and can re-read the
+            # whole vector column per query.
+            rows = self.search(
+                query,
+                column=column,
+                top_k=top_k,
+                metric=metric,
+                rerank=effective_rerank,
+                columns=[primary_key],
+                with_distance=False,
+                session=session,
+            )
+            ids.append([int(value) for value in rows.column(primary_key).to_pylist()])
+        return BatchSearchResult(ids=ids, distances=None)
+
+    def distributed(
+        self,
+        *,
+        engine: str = "threads",
+        num_workers: int = 4,
+        session: LakeSoulSession | None = None,
+    ) -> Any:
+        """Return a distributed search driver for this table.
+
+        Range partitions are searched in parallel by several workers and their
+        local top-k is merged on the driver.  ``engine="threads"`` needs no
+        extra dependency; ``"ray"``/``"dask"`` run each worker in the
+        respective framework.  Tables without range partitions fall back to a
+        single-node search (the fan-out unit is a partition).
+
+        Example:
+            >>> dist = table.distributed(engine="threads", num_workers=8)
+            >>> rows = dist.search(query, top_k=10, filter="lang = 'zh'")
+        """
+        from .distributed import DistributedSearch
+
+        return DistributedSearch(
+            self, engine=engine, num_workers=num_workers, session=session
+        )
+
+    def _native_batch_supported(self) -> bool:
+        """True when the native snapshot batch entry can serve this table."""
+        return (
+            self.primary_keys == ("id",)
+            and "id" in self.schema.names
+            and pa.types.is_int64(self.schema.field("id").type)
+        )
 
     def scan(
         self,
@@ -1220,6 +1810,151 @@ class LakeSoulTable:
                 store_config=store_config,
             ),
             "vector_column",
+        )
+
+    def drop_vector_index(
+        self,
+        column: str | None = None,
+        *,
+        partition_desc: str | None = None,
+        partitions: Mapping[str, str] | None = None,
+        keep_declaration: bool | None = None,
+        purge_files: bool = True,
+        dry_run: bool = False,
+        if_exists: bool = True,
+        grace_seconds: float = 0.0,
+        wait_for_cleanup: bool = True,
+    ) -> dict[str, Any]:
+        """Drop the IVF+RaBitQ vector index for this table.
+
+        By default the column declaration is removed from
+        ``vector_index_columns`` so later writes do not rebuild the index.
+        Dropping a single partition keeps the declaration and requires
+        ``keep_declaration=True``.
+
+        Args:
+            column: Column to drop; ``None`` means all declared vector columns.
+            partition_desc: Drop only one partition's shards.
+            partitions: Partition-column mapping shorthand.
+            keep_declaration: Keep ``vector_index_columns`` unchanged.
+                Defaults to ``True`` for a partition-scoped drop, otherwise
+                ``False``.
+            purge_files: Delete the ``_vector_index/...`` objects as well.
+            dry_run: Only report what would be deleted.
+            if_exists: Do not fail when the index is absent.
+            grace_seconds: Keep index objects for this many seconds after the
+                control plane is removed, so readers holding an old commit can
+                finish.  ``0`` deletes immediately.
+            wait_for_cleanup: When false, return after removing the control
+                plane; a background drop job finishes object cleanup and
+                ``drop_id`` identifies it.
+
+        Returns:
+            Dict with ``shards_dropped``, ``objects_deleted``,
+            ``bytes_deleted``, ``declaration_removed``, ``dry_run`` and the
+            resolved columns/partitions.
+        """
+        if partition_desc is not None and partitions is not None:
+            raise ValueError("partition_desc and partitions are mutually exclusive")
+        if partitions is not None:
+            partition_desc = self._partition_desc(partitions)
+
+        if keep_declaration is None:
+            keep_declaration = partition_desc is not None
+        elif partition_desc is not None and not keep_declaration:
+            raise ValueError(
+                "partition-scoped drop requires keep_declaration=True: "
+                "other partitions still use the vector_index_columns entry"
+            )
+
+        from .vector_index import drop_vector_index as _drop_vector_index
+
+        result = _drop_vector_index(
+            self.name,
+            self.namespace,
+            vector_column=column,
+            partition_desc=partition_desc,
+            keep_declaration=keep_declaration,
+            purge_files=purge_files,
+            dry_run=dry_run,
+            if_exists=if_exists,
+            grace_seconds=grace_seconds,
+            wait_for_cleanup=wait_for_cleanup,
+            store_config=_index.default_object_store_config(
+                catalog=self._catalog, table=self
+            ),
+        )
+        # The table object holds a snapshot of table_info.  Refresh it so a
+        # later write on this object does not resurrect the dropped
+        # vector_index_columns declaration.
+        if not dry_run:
+            self._table_info = self._catalog.table(
+                self.name, namespace=self.namespace
+            )._table_info
+            self._reset_query_session()
+        return result
+
+    def declare_vector_index(self, configs: Sequence[Mapping[str, Any]]) -> None:
+        """Re-add or replace ``vector_index_columns`` declarations.
+
+        This clears the drop tombstone for the declared columns, so a
+        ``drop_vector_index(keep_declaration=False)`` can be followed by
+        ``rebuild_vector_index()``.
+        """
+        from .vector_index import declare_vector_index as _declare
+
+        _declare(self.name, self.namespace, [dict(config) for config in configs])
+        self._table_info = self._catalog.table(
+            self.name, namespace=self.namespace
+        )._table_info
+        self._reset_query_session()
+
+    def recreate_vector_index(
+        self,
+        *,
+        column: str,
+        dim: int,
+        nlist: int = 1024,
+        total_bits: int = 7,
+        metric: str = "L2",
+        rotator_type: str = "FhtKac",
+        seed: int = 42,
+        use_faster_config: bool = True,
+        partition_desc: str | None = None,
+        partitions: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Re-declare and rebuild a dropped vector index."""
+        config = {
+            "column": column,
+            "dim": dim,
+            "nlist": nlist,
+            "total_bits": total_bits,
+            "metric": metric,
+            "rotator_type": rotator_type,
+            "seed": seed,
+            "use_faster_config": use_faster_config,
+        }
+        self.declare_vector_index([config])
+        return self.rebuild_vector_index(
+            column=column,
+            partition_desc=partition_desc,
+            partitions=partitions,
+        )
+
+    def gc_dropped_vector_index_objects(self) -> dict[str, Any]:
+        """Sweep objects left behind by a failed/deferred vector-index drop.
+
+        Tombstones are retained to block stale writers; an explicit
+        ``rebuild_vector_index()`` claims and clears them.
+        """
+        from .vector_index import gc_dropped_vector_index_objects as _gc
+
+        return _gc(
+            self.name,
+            self.namespace,
+            store_config=_index.default_object_store_config(
+                catalog=self._catalog, table=self
+            ),
         )
 
     def rebuild_vector_index(

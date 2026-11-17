@@ -35,15 +35,108 @@ use std::time::Duration;
 use lakesoul_common::IndexKind;
 use postgres_types::Json;
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::MetaDataClient;
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::pooled_client::{PooledClient, QueryType};
 
+#[path = "index_read_lease.rs"]
+mod read_lease;
+pub use read_lease::{
+    INDEX_READ_LEASE_RENEW_INTERVAL, INDEX_READ_LEASE_TTL, IndexReadLeaseGuard,
+};
+
 /// Maximum number of publish attempts per commit.
 pub const COMMIT_RETRIES: usize = 3;
+
+/// DDL for the index control-plane tables.
+///
+/// Canonical copy lives in `script/meta_init.sql`; this constant lets tests
+/// and tools bootstrap a database without applying the full metadata schema.
+pub const CREATE_TABLES_SQL: &str = r#"
+create table if not exists index_shard
+(
+    shard_id     bigserial primary key,
+    kind         text not null,
+    index_prefix text not null,
+    unique (kind, index_prefix)
+);
+
+create table if not exists index_commit
+(
+    commit_id     bigserial primary key,
+    shard_id      bigint      not null references index_shard (shard_id) on delete cascade,
+    generation    bigint      not null,
+    version       bigint      not null,
+    header        bytea       not null,
+    segments      jsonb       not null default '[]'::jsonb,
+    mutation_head text,
+    mutation_records integer   not null default 0,
+    created_at    timestamptz not null default now(),
+    superseded_at timestamptz,
+    unique (shard_id, generation, version)
+);
+
+alter table index_commit add column if not exists mutation_head text;
+alter table index_commit add column if not exists mutation_records integer not null default 0;
+
+create index if not exists index_commit_shard_key_index
+    on index_commit (shard_id, generation desc, version desc);
+
+create table if not exists index_lease
+(
+    lease_id    uuid primary key,
+    shard_id    bigint      not null references index_shard (shard_id) on delete cascade,
+    generation  bigint      not null,
+    version     bigint      not null,
+    owner       text        not null,
+    acquired_at timestamptz not null default now(),
+    expires_at  timestamptz not null
+);
+
+create index if not exists index_lease_expiry_index
+    on index_lease (shard_id, expires_at);
+
+-- Request read leases deliberately have no foreign key to index_shard or
+-- index_commit: logical drop may remove both while an active request still
+-- needs their immutable objects.
+create table if not exists index_read_lease
+(
+    lease_id     uuid        not null,
+    kind         text        not null,
+    index_prefix text        not null,
+    shard_id     bigint      not null,
+    commit_id    bigint      not null,
+    generation   bigint      not null,
+    version      bigint      not null,
+    owner        text        not null,
+    data_files   text[]      not null default '{}',
+    acquired_at  timestamptz not null default clock_timestamp(),
+    expires_at   timestamptz not null,
+    primary key (lease_id, kind, index_prefix)
+);
+alter table index_read_lease add column if not exists data_files text[] not null default '{}';
+create index if not exists index_read_lease_expiry_index
+    on index_read_lease (kind, index_prefix, expires_at);
+
+-- Tombstones written by drop-index.  A stale writer that still carries the
+-- old table property must not recreate a shard while the drop is running;
+-- the row is removed once the physical cleanup has finished.
+create table if not exists index_drop
+(
+    kind         text not null,
+    index_prefix text not null,
+    dropped_at   timestamptz not null default now(),
+    reason       text,
+    primary key (kind, index_prefix)
+);
+
+alter table index_drop add column if not exists drop_id uuid;
+alter table index_drop add column if not exists state text not null default 'tombstoned';
+alter table index_drop add column if not exists updated_at timestamptz not null default now();
+"#;
 
 /// One artifact referenced by an index commit.
 ///
@@ -64,6 +157,9 @@ pub struct VectorSegmentEntry {
     /// written before coverage tracking.
     #[serde(default)]
     pub data_files: Vec<String>,
+    /// Catalog revision this segment was published at (0 = legacy/unknown).
+    #[serde(default)]
+    pub birth_version: u64,
 }
 
 impl CatalogSegment for VectorSegmentEntry {
@@ -94,6 +190,10 @@ pub struct IndexCommitView<S> {
     pub header: Vec<u8>,
     /// Every segment of the current generation up to `version`.
     pub segments: Vec<S>,
+    /// Head object key of the durable mutation chain, if any.
+    pub mutation_head: Option<String>,
+    /// Number of mutation objects in the chain.
+    pub mutation_records: u32,
 }
 
 /// How a commit advances the index.
@@ -138,6 +238,10 @@ pub struct GcShardPlan {
     pub retained_filenames: Vec<String>,
     /// Segment filenames that became unreferenced in this pass.
     pub removed_filenames: Vec<String>,
+    /// Generations whose rows were dropped in this pass.  Mutation sidecars
+    /// under `_mutations/g{generation}/` may be deleted with their
+    /// generation.
+    pub removed_generations: Vec<u64>,
 }
 
 /// Shared connection state of a catalog; non-generic so [`LeaseHandle`] can
@@ -310,6 +414,10 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         self.core.init_tables().await
     }
 
+    pub(crate) async fn ensure_tables(&self) -> Result<()> {
+        self.core.ensure_tables().await
+    }
+
     /// Resolve the current commit of a shard, if any.
     pub async fn resolve(
         &self,
@@ -365,6 +473,94 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         Ok(view)
     }
 
+    /// Resolve the current commits of several shards with one catalog round
+    /// trip.
+    ///
+    /// Same freshness contract as [`resolve_cached`](Self::resolve_cached):
+    /// every call reads the current commit id of every shard, and only the
+    /// header/segments of a commit this process has not seen yet are fetched.
+    /// The vector search scan resolves one shard per bucket, so batching the
+    /// lookup turns N round trips per query into one.
+    pub async fn resolve_cached_many(
+        &self,
+        index_prefixes: &[String],
+    ) -> Result<HashMap<String, Option<Arc<IndexCommitView<S>>>>> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let mut result: HashMap<String, Option<Arc<IndexCommitView<S>>>> =
+            HashMap::with_capacity(index_prefixes.len());
+        if index_prefixes.is_empty() {
+            return Ok(result);
+        }
+        let prefixes: Vec<String> = index_prefixes.to_vec();
+        let guard = self.core.client.lock().await;
+        // A left join keeps one row per requested prefix, so a shard without
+        // a commit resolves to `None` exactly like the single-shard call.
+        let rows = guard
+            .query(
+                "select p.prefix, c.commit_id \
+                 from unnest($2::text[]) as p(prefix) \
+                 left join index_shard sh \
+                   on sh.kind = $1 and sh.index_prefix = p.prefix \
+                 left join lateral (select commit_id from index_commit \
+                                    where shard_id = sh.shard_id \
+                                    order by generation desc, version desc \
+                                    limit 1) c on true",
+                QueryType::RO,
+                &[&kind.as_str(), &prefixes],
+            )
+            .await?;
+        let mut current: HashMap<String, i64> = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            if let Some(commit_id) = row.get::<usize, Option<i64>>(1) {
+                current.insert(row.get(0), commit_id);
+            }
+        }
+        for prefix in index_prefixes {
+            let Some(&commit_id) = current.get(prefix) else {
+                result.insert(prefix.clone(), None);
+                continue;
+            };
+            // Reuse the cached view only when it is exactly the commit the
+            // catalog just reported; a moved commit resolves in full below.
+            // The view is shared by `Arc` so a warm query does not clone the
+            // (potentially thousand-entry) segment list per shard.
+            let cache_key = (kind, prefix.clone());
+            let cached = {
+                let cache = VIEW_CACHE.lock().await;
+                cache.get(&cache_key).and_then(|entry| {
+                    let view = entry.downcast_ref::<IndexCommitView<S>>()?;
+                    if view.commit_id != commit_id {
+                        return None;
+                    }
+                    entry.clone().downcast::<IndexCommitView<S>>().ok()
+                })
+            };
+            let view = match cached {
+                Some(view) => Some(view),
+                None => {
+                    let resolved = resolve_with(&guard, kind, prefix).await?;
+                    match resolved {
+                        Some(view) => {
+                            let view = Arc::new(view);
+                            let mut cache = VIEW_CACHE.lock().await;
+                            // Keep the map bounded by the number of live
+                            // shards.
+                            if cache.len() > 4096 {
+                                cache.clear();
+                            }
+                            cache.insert(cache_key, view.clone() as CachedView);
+                            Some(view)
+                        }
+                        None => None,
+                    }
+                }
+            };
+            result.insert(prefix.clone(), view);
+        }
+        Ok(result)
+    }
+
     /// Publish a commit and return the refreshed view.
     ///
     /// Retries against the concurrent view on a unique violation.
@@ -381,7 +577,20 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         for _ in 0..self.core.max_retry.max(1) {
             let guard = self.core.client.lock().await;
             let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
-            match try_commit::<S>(&guard, shard_id, header, segments, mode).await {
+            match try_commit::<S>(
+                &guard,
+                kind,
+                index_prefix,
+                shard_id,
+                header,
+                segments,
+                mode,
+                None,
+                None,
+                0,
+            )
+            .await
+            {
                 Ok(view) => return Ok(view),
                 Err(error) if is_unique_violation(&error) => {
                     last_error = Some(error);
@@ -395,6 +604,64 @@ impl<S: CatalogSegment> IndexCatalog<S> {
                 "{kind} index commit exceeded its retry budget"
             ))
         }))
+    }
+
+    /// Publish a commit together with its mutation-chain head.
+    ///
+    /// `expected` guards against publishing a mutation object that was
+    /// computed from a stale view.  Unlike [`commit`], this is not retried
+    /// internally: a stale view yields
+    /// [`LakeSoulMetaDataError::IndexVersionConflict`] so the caller can
+    /// rewrite its sidecar object at the new revision and try again.
+    ///
+    /// Empty `segments` are allowed so a delete-only mutation can be
+    /// published.  [`CommitMode::Rebuild`] always clears the mutation chain.
+    pub async fn commit_with_mutations(
+        &self,
+        index_prefix: &str,
+        header: &[u8],
+        segments: &[S],
+        mode: CommitMode,
+        expected: (u64, u64),
+        mutation_head: Option<String>,
+        mutation_records: u32,
+    ) -> Result<IndexCommitView<S>> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
+        let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
+        match try_commit::<S>(
+            &guard,
+            kind,
+            index_prefix,
+            shard_id,
+            header,
+            segments,
+            mode,
+            Some(expected),
+            mutation_head,
+            mutation_records,
+        )
+        .await
+        {
+            Ok(view) => Ok(view),
+            Err(error) if is_unique_violation(&error) => {
+                // Another writer landed between validation and insert.
+                let actual = resolve_with(&guard, kind, index_prefix)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|view: IndexCommitView<S>| (view.generation, view.version))
+                    .unwrap_or((0, 0));
+                Err(LakeSoulMetaDataError::IndexVersionConflict {
+                    expected_generation: expected.0,
+                    expected_version: expected.1,
+                    actual_generation: actual.0,
+                    actual_version: actual.1,
+                })
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Acquire a reader lease for the shard's current commit.
@@ -477,11 +744,36 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         grace: Duration,
         keep_generations: usize,
     ) -> Result<GcShardPlan> {
+        self.with_gc_cleanup(index_prefix, grace, keep_generations, |plan| async {
+            Ok(plan)
+        })
+        .await
+    }
+
+    /// Run a physical sweep under the same lock as publication and lease
+    /// acquisition. A GC plan alone is insufficient: a writer could publish
+    /// a new generation between planning and an unreferenced-object sweep.
+    pub async fn with_gc_cleanup<T, F, Fut>(
+        &self,
+        index_prefix: &str,
+        grace: Duration,
+        keep_generations: usize,
+        cleanup: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(GcShardPlan) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.lock().await;
-        let mut conn = guard.get(QueryType::RW).await?;
-        let tx = conn.transaction().await?;
+        let client = self.core.client.lock().await.primary_only();
+        let mut conn = client.get(QueryType::RW).await?;
+        let tx = conn
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await?;
+        read_lease::lock_index_prefix(&tx, kind, index_prefix).await?;
 
         let shard_id: Option<i64> = tx
             .query_opt(
@@ -492,14 +784,25 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             .await?
             .map(|row| row.get(0));
         let Some(shard_id) = shard_id else {
+            // A logically dropped shard may still have independent request
+            // pins. No generation sweep is safe or useful without commits;
+            // drop cleanup handles this prefix once those readers finish.
+            let result = cleanup(GcShardPlan::default()).await?;
             tx.commit().await?;
-            return Ok(GcShardPlan::default());
+            return Ok(result);
         };
 
-        let deleted_lease_rows = tx
+        let mut deleted_lease_rows = tx
             .execute(
-                "delete from index_lease where shard_id = $1 and expires_at <= now()",
+                "delete from index_lease where shard_id = $1 and expires_at <= clock_timestamp()",
                 &[&shard_id],
+            )
+            .await?;
+        deleted_lease_rows += tx
+            .execute(
+                "delete from index_read_lease where kind = $1 and index_prefix = $2 \
+             and expires_at <= clock_timestamp()",
+                &[&kind.as_str(), &index_prefix],
             )
             .await?;
 
@@ -512,11 +815,13 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             .await?
             .map(|row| row.get(0));
         let Some(current_generation) = current_generation else {
-            tx.commit().await?;
-            return Ok(GcShardPlan {
+            let result = cleanup(GcShardPlan {
                 deleted_lease_rows,
                 ..Default::default()
-            });
+            })
+            .await?;
+            tx.commit().await?;
+            return Ok(result);
         };
         let keep = keep_generations.max(1) as i64;
         let cutoff = current_generation - keep + 1;
@@ -525,11 +830,13 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             .query(
                 "select distinct generation from index_commit \
                  where shard_id = $1 and generation < $2 \
-                   and superseded_at is not null and superseded_at <= now() - make_interval(secs => $3) \
+                   and superseded_at is not null and superseded_at <= clock_timestamp() - make_interval(secs => $3) \
                    and generation not in \
                        (select generation from index_lease \
-                        where shard_id = $1 and expires_at > now())",
-                &[&shard_id, &cutoff, &grace.as_secs_f64()],
+                        where shard_id = $1 and expires_at > clock_timestamp() \
+                        union select generation from index_read_lease \
+                        where kind = $4 and index_prefix = $5 and expires_at > clock_timestamp())",
+                &[&shard_id, &cutoff, &grace.as_secs_f64(), &kind.as_str(), &index_prefix],
             )
             .await?
             .into_iter()
@@ -554,15 +861,20 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         };
 
         let retained = collect_filenames::<S>(&tx, shard_id, &[]).await?;
-        tx.commit().await?;
-
-        Ok(GcShardPlan {
+        let result = cleanup(GcShardPlan {
             current_generation: Some(current_generation as u64),
             deleted_commit_rows,
             deleted_lease_rows,
             retained_filenames: retained,
             removed_filenames: removed,
+            removed_generations: removable
+                .iter()
+                .map(|generation| *generation as u64)
+                .collect(),
         })
+        .await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Delete every shard of this kind whose `index_prefix` lives under
@@ -618,15 +930,196 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn delete_shard(&self, index_prefix: &str) -> Result<u64> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.lock().await;
-        let deleted = guard
+        let client = self.core.client.lock().await.primary_only();
+        let mut conn = client.get(QueryType::RW).await?;
+        let tx = conn
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await?;
+        read_lease::lock_index_prefix(&tx, kind, index_prefix).await?;
+        let deleted = tx
             .execute(
                 "delete from index_shard where kind = $1 and index_prefix = $2",
-                QueryType::RW,
                 &[&kind.as_str(), &index_prefix],
             )
             .await?;
+        tx.commit().await?;
         Ok(deleted)
+    }
+
+    /// Mark a shard as dropping.
+    ///
+    /// While the tombstone exists a concurrent build that still carries the
+    /// old table property fails with [`LakeSoulMetaDataError::IndexDropped`]
+    /// instead of recreating the shard.  The tombstone is removed by
+    /// [`Self::clear_dropped`] once the drop's physical cleanup has run.
+    pub async fn mark_dropped(&self, index_prefix: &str, reason: &str) -> Result<()> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let client = self.core.client.lock().await.primary_only();
+        let mut conn = client.get(QueryType::RW).await?;
+        let tx = conn
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await?;
+        read_lease::lock_index_prefix(&tx, kind, index_prefix).await?;
+        tx.execute(
+            "insert into index_drop (kind, index_prefix, reason) \
+             values ($1, $2, $3) \
+             on conflict (kind, index_prefix) do update \
+                set dropped_at = now(), reason = excluded.reason",
+            &[&kind.as_str(), &index_prefix, &reason],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Mark a shard as dropping as part of a specific drop job.
+    pub async fn mark_dropped_for_job(
+        &self,
+        index_prefix: &str,
+        reason: &str,
+        drop_id: Uuid,
+        state: &str,
+    ) -> Result<()> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let client = self.core.client.lock().await.primary_only();
+        let mut conn = client.get(QueryType::RW).await?;
+        let tx = conn
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await?;
+        read_lease::lock_index_prefix(&tx, kind, index_prefix).await?;
+        tx.execute(
+            "insert into index_drop \
+             (kind, index_prefix, reason, drop_id, state, updated_at) \
+             values ($1, $2, $3, $4, $5, now()) \
+             on conflict (kind, index_prefix) do update \
+                set dropped_at = now(), reason = excluded.reason, \
+                    drop_id = excluded.drop_id, state = excluded.state, \
+                    updated_at = now()",
+            &[&kind.as_str(), &index_prefix, &reason, &drop_id, &state],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Advance one tombstone's drop state.
+    pub async fn set_drop_state(&self, index_prefix: &str, state: &str) -> Result<u64> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
+        let updated = guard
+            .execute(
+                "update index_drop set state = $1, updated_at = now() \
+                 where kind = $2 and index_prefix = $3",
+                QueryType::RW,
+                &[&state, &kind.as_str(), &index_prefix],
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    /// List tombstones in a non-terminal state under `directory`.
+    pub async fn list_pending_drops_under(
+        &self,
+        directory: &str,
+    ) -> Result<Vec<(String, Uuid)>> {
+        self.core.ensure_tables().await?;
+        let normalized = normalize_index_prefix(directory);
+        let normalized = normalized.trim_end_matches('/');
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+        let kind = self.core.kind;
+        let pattern = format!("{normalized}/");
+        let guard = self.core.client.lock().await;
+        let rows = guard
+            .query(
+                "select index_prefix, drop_id from index_drop \
+                 where kind = $1 and left(index_prefix, length($2)) = $2 \
+                   and drop_id is not null \
+                   and state not in ('completed', 'tombstone_retained') \
+                 order by index_prefix",
+                QueryType::RO,
+                &[&kind.as_str(), &pattern],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get(0), row.get::<_, Uuid>(1)))
+            .collect())
+    }
+
+    /// Remove the drop tombstone of one shard (after cleanup, or when an
+    /// explicit rebuild claims the prefix).
+    pub async fn clear_dropped(&self, index_prefix: &str) -> Result<u64> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let client = self.core.client.lock().await.primary_only();
+        let mut conn = client.get(QueryType::RW).await?;
+        let tx = conn
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await?;
+        read_lease::lock_index_prefix(&tx, kind, index_prefix).await?;
+        let deleted = tx
+            .execute(
+                "delete from index_drop where kind = $1 and index_prefix = $2",
+                &[&kind.as_str(), &index_prefix],
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
+    /// List every tombstoned prefix under `directory`.
+    ///
+    /// Tombstones are retained after a drop when the column declaration was
+    /// removed, so a stale writer carrying the old property cannot recreate
+    /// the index.  The object files can still be swept by a maintenance task.
+    pub async fn list_dropped_under(&self, directory: &str) -> Result<Vec<String>> {
+        self.core.ensure_tables().await?;
+        let normalized = normalize_index_prefix(directory);
+        let normalized = normalized.trim_end_matches('/');
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+        let kind = self.core.kind;
+        let pattern = format!("{normalized}/");
+        let guard = self.core.client.lock().await;
+        let rows = guard
+            .query(
+                "select index_prefix from index_drop \
+                 where kind = $1 and left(index_prefix, length($2)) = $2 \
+                 order by index_prefix",
+                QueryType::RO,
+                &[&kind.as_str(), &pattern],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    /// Whether a shard is currently marked as dropping.
+    pub async fn is_dropped(&self, index_prefix: &str) -> Result<bool> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
+        let row = guard
+            .query_opt(
+                "select 1 from index_drop where kind = $1 and index_prefix = $2",
+                QueryType::RO,
+                &[&kind.as_str(), &index_prefix],
+            )
+            .await?;
+        Ok(row.is_some())
     }
 }
 
@@ -683,9 +1176,11 @@ async fn resolve_with<S: CatalogSegment>(
     // its generation.
     let row = client
         .query_opt(
-            "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, c.segments \
+            "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, c.segments, \
+                    c.mutation_head, c.mutation_records \
              from index_shard sh \
-             join lateral (select commit_id, shard_id, generation, version, header, segments \
+             join lateral (select commit_id, shard_id, generation, version, header, segments, \
+                                  mutation_head, mutation_records \
                            from index_commit where shard_id = sh.shard_id \
                            order by generation desc, version desc limit 1) c on true \
              where sh.kind = $1 and sh.index_prefix = $2",
@@ -702,6 +1197,8 @@ async fn resolve_with<S: CatalogSegment>(
     let version = row.get::<_, i64>(3) as u64;
     let header: Vec<u8> = row.get(4);
     let segments_json: serde_json::Value = row.get(5);
+    let mutation_head: Option<String> = row.get(6);
+    let mutation_records: i32 = row.get(7);
 
     let mut segments = parse_segments::<S>(segments_json)?;
     // Deterministic base-then-deltas order.
@@ -714,7 +1211,54 @@ async fn resolve_with<S: CatalogSegment>(
         version,
         header,
         segments,
+        mutation_head,
+        mutation_records: mutation_records.max(0) as u32,
     }))
+}
+
+/// Resolve all non-dropped views under a table in the caller's PostgreSQL
+/// snapshot. This deliberately bypasses process caches and read replicas.
+pub(crate) async fn table_views_in_snapshot<S: CatalogSegment>(
+    tx: &tokio_postgres::Transaction<'_>,
+    table_path: &str,
+) -> Result<HashMap<String, IndexCommitView<S>>> {
+    let root = normalize_index_prefix(table_path);
+    if root.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let pattern = format!("{root}/");
+    let rows = tx.query(
+        "select sh.index_prefix, sh.shard_id, c.commit_id, c.generation, c.version, \
+                c.header, c.segments, c.mutation_head, c.mutation_records \
+         from index_shard sh \
+         join lateral (select commit_id, generation, version, header, segments, \
+                              mutation_head, mutation_records from index_commit \
+                       where shard_id = sh.shard_id order by generation desc, version desc limit 1) c on true \
+         where sh.kind = $1 and left(sh.index_prefix, length($2)) = $2 \
+           and not exists (select 1 from index_drop d \
+                           where d.kind = sh.kind and d.index_prefix = sh.index_prefix) \
+         order by sh.index_prefix",
+        &[&IndexKind::Vector.as_str(), &pattern],
+    ).await?;
+    let mut views = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let mut segments = parse_segments::<S>(row.get(6))?;
+        segments.sort_by_key(CatalogSegment::sort_key);
+        views.insert(
+            row.get(0),
+            IndexCommitView {
+                shard_id: row.get(1),
+                commit_id: row.get(2),
+                generation: row.get::<_, i64>(3) as u64,
+                version: row.get::<_, i64>(4) as u64,
+                header: row.get(5),
+                segments,
+                mutation_head: row.get(7),
+                mutation_records: row.get::<_, i32>(8).max(0) as u32,
+            },
+        );
+    }
+    Ok(views)
 }
 
 struct CurrentCommit {
@@ -762,6 +1306,19 @@ async fn ensure_shard(
     kind: IndexKind,
     index_prefix: &str,
 ) -> Result<i64> {
+    let dropped = client
+        .query_opt(
+            "select 1 from index_drop where kind = $1 and index_prefix = $2",
+            QueryType::RO,
+            &[&kind.as_str(), &index_prefix],
+        )
+        .await?;
+    if dropped.is_some() {
+        return Err(LakeSoulMetaDataError::IndexDropped {
+            kind: kind.as_str().to_string(),
+            index_prefix: index_prefix.to_string(),
+        });
+    }
     client
         .execute(
             "insert into index_shard (kind, index_prefix) values ($1, $2) \
@@ -788,26 +1345,67 @@ async fn ensure_shard(
 
 async fn try_commit<S: CatalogSegment>(
     client: &PooledClient,
+    kind: IndexKind,
+    index_prefix: &str,
     shard_id: i64,
     header: &[u8],
     segments: &[S],
     mode: CommitMode,
+    expected: Option<(u64, u64)>,
+    mutation_head: Option<String>,
+    mutation_records: u32,
 ) -> Result<IndexCommitView<S>> {
     let mut conn = client.get(QueryType::RW).await?;
-    let tx = conn.transaction().await?;
-
-    let current: Option<(i64, i64, serde_json::Value)> = tx
+    let tx = conn
+        .build_transaction()
+        .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+        .start()
+        .await?;
+    read_lease::lock_index_prefix(&tx, kind, index_prefix).await?;
+    // ensure_shard() preceded this transaction and may have raced a drop.
+    // Recheck under the same lock as drop/acquire/physical GC.
+    if tx
         .query_opt(
-            "select generation, version, segments from index_commit \
-             where shard_id = $1 order by generation desc, version desc limit 1",
+            "select 1 from index_drop where kind = $1 and index_prefix = $2",
+            &[&kind.as_str(), &index_prefix],
+        )
+        .await?
+        .is_some()
+    {
+        return Err(LakeSoulMetaDataError::IndexDropped {
+            kind: kind.as_str().to_string(),
+            index_prefix: index_prefix.to_string(),
+        });
+    }
+
+    let current: Option<(i64, i64, serde_json::Value, Option<String>, i32)> = tx
+        .query_opt(
+            "select generation, version, segments, mutation_head, mutation_records \
+             from index_commit where shard_id = $1 \
+             order by generation desc, version desc limit 1",
             &[&shard_id],
         )
         .await?
-        .map(|row| (row.get(0), row.get(1), row.get(2)));
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)));
+
+    if let Some((expected_generation, expected_version)) = expected {
+        let actual = current
+            .as_ref()
+            .map(|(generation, version, ..)| (*generation as u64, *version as u64))
+            .unwrap_or((0, 0));
+        if actual != (expected_generation, expected_version) {
+            return Err(LakeSoulMetaDataError::IndexVersionConflict {
+                expected_generation,
+                expected_version,
+                actual_generation: actual.0,
+                actual_version: actual.1,
+            });
+        }
+    }
 
     let current_key = current
         .as_ref()
-        .map(|(generation, version, _)| (*generation, *version));
+        .map(|(generation, version, ..)| (*generation, *version));
     let (generation, version) = match (mode, current_key) {
         (CommitMode::Delta, Some((generation, version))) => {
             (generation.max(1), version + 1)
@@ -830,8 +1428,24 @@ async fn try_commit<S: CatalogSegment>(
     // Every commit row carries the cumulative segment list of its
     // generation, so resolve() reads a single row instead of aggregating
     // the arrays of all versions.
+    // A rebuild starts a fresh generation and drops the mutation chain.
+    // Delta commits that do not publish a new mutation object inherit the
+    // current head so legacy callers cannot silently forget tombstones.
+    let (mutation_head, mutation_records) = match mode {
+        CommitMode::Rebuild => (None, 0),
+        CommitMode::Delta => match (mutation_head, &current) {
+            (Some(head), _) => (Some(head), mutation_records),
+            (None, Some((_, _, _, Some(head), records))) => {
+                (Some(head.clone()), (*records).max(0) as u32)
+            }
+            _ => (None, 0),
+        },
+    };
+
     let mut cumulative: Vec<S> = match (mode, &current) {
-        (CommitMode::Delta, Some((_, _, value))) => parse_segments::<S>(value.clone())?,
+        (CommitMode::Delta, Some((_, _, value, ..))) => {
+            parse_segments::<S>(value.clone())?
+        }
         _ => Vec::new(),
     };
     let mut seen: HashSet<String> = cumulative
@@ -848,8 +1462,8 @@ async fn try_commit<S: CatalogSegment>(
     let row = tx
         .query_one(
             "insert into index_commit \
-             (shard_id, generation, version, header, segments) \
-             values ($1, $2, $3, $4, $5) \
+             (shard_id, generation, version, header, segments, mutation_head, mutation_records) \
+             values ($1, $2, $3, $4, $5, $6, $7) \
              returning commit_id",
             &[
                 &shard_id,
@@ -857,6 +1471,8 @@ async fn try_commit<S: CatalogSegment>(
                 &version,
                 &header,
                 &Json(&segments_json),
+                &mutation_head,
+                &(mutation_records as i32),
             ],
         )
         .await?;
@@ -870,6 +1486,8 @@ async fn try_commit<S: CatalogSegment>(
         version: version as u64,
         header: header.to_vec(),
         segments: cumulative,
+        mutation_head,
+        mutation_records,
     })
 }
 
@@ -1073,6 +1691,7 @@ mod tests {
             num_vectors: 1,
             file_size: 1,
             data_files: Vec::new(),
+            birth_version: 0,
         };
         let delta = VectorSegmentEntry {
             cluster_id: 1,
@@ -1081,6 +1700,7 @@ mod tests {
             num_vectors: 1,
             file_size: 1,
             data_files: Vec::new(),
+            birth_version: 0,
         };
         assert!(base.sort_key() > delta.sort_key());
     }

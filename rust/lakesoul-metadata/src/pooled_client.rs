@@ -121,8 +121,19 @@ impl PooledClient {
         query: &str,
         query_type: QueryType,
     ) -> Result<(PgConnection<'_>, Statement)> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_get = std::time::Instant::now();
         let conn = self.get(query_type).await?;
+        let get_ms = t_get.elapsed().as_secs_f64() * 1000.0;
+        let t_prepare = std::time::Instant::now();
         let statement = conn.prepare_cached(query).await?;
+        if profile {
+            tracing::debug!(
+                get_ms,
+                prepare_ms = t_prepare.elapsed().as_secs_f64() * 1000.0,
+                "pooled client prepare cached"
+            );
+        }
         Ok((conn, statement))
     }
 

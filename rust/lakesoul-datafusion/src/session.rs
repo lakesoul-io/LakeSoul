@@ -662,6 +662,11 @@ pub struct LakeSoulSessionFactory {
     catalog_snapshot: Arc<CatalogSnapshot>,
 }
 
+/// Whether literal query vectors are folded before analysis.
+fn fold_vector_literals() -> bool {
+    !std::env::var("LAKESOUL_FOLD_VECTOR_LITERALS").is_ok_and(|value| value == "0")
+}
+
 impl LakeSoulSessionFactory {
     pub fn new(meta_client: crate::MetaDataClientRef, args: &CoreArgs) -> Result<Self> {
         Self::new_with_memory_pool(
@@ -791,6 +796,17 @@ impl LakeSoulSessionFactory {
         // search scan — and the vector index auto-build after a commit
         // construct their stores from the table's io config, which would
         // otherwise carry no credentials at all.
+        // Native batch SQL orchestrates bounded windows on the coordinator;
+        // only pre-dispatch fallback follows the session's availability policy.
+        let session_config = if let Some(dist) = &distributed {
+            session_config.with_extension(Arc::new(
+                crate::vector_batch::distributed::NativeBatchDistribution {
+                    fallback_to_local: dist.fallback_to_local,
+                },
+            ))
+        } else {
+            session_config
+        };
         let mut session_config =
             session_config.with_extension(Arc::new(self.object_store_config.clone()));
         // Locality placement reads its options from the session config: the
@@ -828,10 +844,22 @@ impl LakeSoulSessionFactory {
         // `with_distributed_planner()`: the latter wraps the planner already
         // present on the builder, and the reverse order would let the
         // LakeSoul planner overwrite the distributed one.
+        // Fold literal query vectors before the analyzer coerces them: the
+        // per-dimension array nodes otherwise cost ~1.1 ms of the ~2.4 ms a
+        // single-query statement spends planning (see the rule's docs).
+        // `LAKESOUL_FOLD_VECTOR_LITERALS=0` restores the plain analyzer order.
+        let mut analyzer_rules = datafusion::optimizer::analyzer::Analyzer::new().rules;
+        if fold_vector_literals() {
+            analyzer_rules.insert(
+                1,
+                Arc::new(crate::planner::fold_vector_literals::FoldVectorQueryLiterals),
+            );
+        }
         let mut builder = SessionStateBuilder::new()
             .with_config(session_config)
             .with_runtime_env(runtime)
             .with_default_features()
+            .with_analyzer_rules(analyzer_rules)
             .with_query_planner(Arc::clone(&self.planner))
             .with_optimizer_rule(Arc::new(
                 crate::planner::vector_search_rule::VectorSearchPushdownRule,
@@ -958,11 +986,15 @@ impl LakeSoulSessionFactory {
         );
         let provider_options = LakeSoulProviderOptions::from_session(&state);
         let ctx = Arc::new(SessionContext::new_with_state(state));
+        crate::udf::vector_batch::register(&ctx);
         ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
         ctx.register_udf((*crate::udf::vector_search_marker::multi_marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::text_match_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::text_score_udf()).clone());
+        ctx.register_udf(crate::udf::drop_index::udf_with_options(
+            self.object_store_config.object_store_options(),
+        ));
 
         let lakesoul_catalog = Arc::new(LakeSoulCatalog::with_snapshot(
             Arc::clone(&self.meta_client),

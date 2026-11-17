@@ -685,6 +685,7 @@ pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
     codecs.push(Arc::new(ExternalFileScanCodec));
     codecs.push(Arc::new(ExternalFileWriteCodec));
     codecs.push(Arc::new(UpsertExecCodec));
+    codecs.push(Arc::new(super::vector_batch_codec::NativeBatchProbeCodec));
     codecs
 }
 

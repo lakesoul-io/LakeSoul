@@ -94,6 +94,8 @@ async fn build_split(index_prefix: &str, files: Vec<String>) -> ResolvedIndex {
         version: 1,
         header: outcome.header,
         segments,
+        mutation_head: None,
+        mutation_records: 0,
     }
 }
 

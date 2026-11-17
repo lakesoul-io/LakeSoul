@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
+import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 
 import org.apache.flink.api.common.state.*;
@@ -17,6 +19,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -150,11 +158,15 @@ public class TtlBroadcastProcessFunction
                 boolean processTooOld = sinceLastProcess >= maxProcessIntervalMillis;
 
                 if (updateExpired && processTooOld) {
-                    dropPartition(tableId, partitionDesc);
-                    // 删除已过期分区的状态，避免无意义的重复检查
-                    partitionLatestProcessTimeState.clear();
-                    partitionLatestFreshTimeState.clear();
-                    partitionTimerTimestampState.clear();
+                    if (dropPartition(tableId, partitionDesc)) {
+                        partitionLatestProcessTimeState.clear();
+                        partitionLatestFreshTimeState.clear();
+                        partitionTimerTimestampState.clear();
+                    } else {
+                        long nextCheckTime = currentProcTime + maxProcessIntervalMillis;
+                        ctx.timerService().registerProcessingTimeTimer(nextCheckTime);
+                        partitionTimerTimestampState.update(nextCheckTime);
+                    }
                 } else {
                     long nextCheckTime = currentProcTime + maxProcessIntervalMillis;
                     log.info("table_id: {},分区 {}并没有过期，将在后续继续判断", tableId, partitionDesc);
@@ -169,42 +181,102 @@ public class TtlBroadcastProcessFunction
         }
     }
 
-    public void dropPartition(String tableId, String partitionDesc) throws CatalogException {
+    public boolean dropPartition(String tableId, String partitionDesc) throws CatalogException {
         DBManager dbManager = new DBManager();
         TableInfo tableInfo = dbManager.getTableInfoByTableId(tableId);
-
         if (tableInfo == null) {
             throw new CatalogException("Table " + tableId + " does not exist");
         }
-        List<String> deleteFilePath =
+        try (Connection connection = DBConnector.getConn()) {
+            // Null for tables without a vector index: the original cleanup path
+            // runs with no advisory locks, fences or per-file metadata work.
+            DataFileReadLeaseGuard readers =
+                    DataFileReadLeaseGuard.acquireOrNull(connection, tableId);
+            try {
+                if (readers != null && readers.hasActiveReaders()) {
+                    return false;
+                }
+                try (PreparedStatement statement =
+                        connection.prepareStatement(
+                                "select 1 from partition_info where table_id = ? and partition_desc"
+                                        + " = ? and pinned = true limit 1")) {
+                    statement.setString(1, tableId);
+                    statement.setString(2, partitionDesc);
+                    try (ResultSet rows = statement.executeQuery()) {
+                        if (rows.next()) {
+                            return false;
+                        }
+                    }
+                }
+                List<String> paths = new ArrayList<>();
+                try (PreparedStatement statement =
+                        connection.prepareStatement(
+                                "select distinct f.path from partition_info p join data_commit_info"
+                                        + " d on d.table_id = p.table_id and d.partition_desc ="
+                                        + " p.partition_desc and d.commit_id = any(p.snapshot),"
+                                        + " unnest(d.file_ops) f where p.table_id = ? and"
+                                        + " p.partition_desc = ?")) {
+                    statement.setString(1, tableId);
+                    statement.setString(2, partitionDesc);
+                    try (ResultSet rows = statement.executeQuery()) {
+                        while (rows.next()) {
+                            paths.add(rows.getString(1));
+                        }
+                    }
+                }
+                // One protection probe and one fence commit for the partition.
+                List<String> deletable = paths;
+                if (readers != null) {
+                    List<String> retired = readers.retireBatch(paths, Collections.emptyList());
+                    // The guard answers with canonical paths; keep the original
+                    // strings for the filesystem call.
+                    java.util.Set<String> retiredCanonical = new java.util.HashSet<>();
+                    for (String path : retired) {
+                        retiredCanonical.add(DataFileReadLeaseGuard.normalizePath(path));
+                    }
+                    deletable = new ArrayList<>();
+                    for (String path : paths) {
+                        if (retiredCanonical.contains(DataFileReadLeaseGuard.normalizePath(path))) {
+                            deletable.add(path);
+                        }
+                    }
+                }
+                if (deletable.size() != paths.size()) {
+                    // Keep both files and metadata; a later run retries once the
+                    // reader or tag releases the remaining files.
+                    return false;
+                }
+                CleanUtils cleanUtils = new CleanUtils();
+                Path partitionDir = null;
+                for (String filePath : deletable) {
+                    cleanUtils.deleteFile(filePath);
+                    if (partitionDir == null) {
+                        partitionDir = new Path(filePath).getParent();
+                    }
+                }
+                // Metadata remains available after any failed deletion. Native
+                // acquisition rejects the durable file fences until a fresh
+                // partition snapshot no longer references the retired paths.
                 dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
-        Path partitionDir = null;
-        log.info("开始清理过期分区数据：" + tableInfo.getTableName() + "/" + partitionDesc);
-        for (String filePath : deleteFilePath) {
-            Path path = new Path(filePath);
-            try {
-                FileSystem fs = path.getFileSystem();
-                if (partitionDir == null) {
-                    partitionDir = path.getParent();
+                if (partitionDir != null) {
+                    FileSystem fs = partitionDir.getFileSystem();
+                    if (fs.exists(partitionDir) && fs.listStatus(partitionDir).length == 0) {
+                        // Partition roots are reusable: never recursively remove
+                        // a concurrent writer's new files or fence the directory.
+                        fs.delete(partitionDir, false);
+                    }
                 }
-                if (fs.exists(path)) {
-                    log.info("====================delete file：{} ======================", path);
-                    fs.delete(path, false);
+                if (readers != null) {
+                    readers.commit();
                 }
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to delete file: " + filePath, e);
+                return true;
+            } finally {
+                if (readers != null) {
+                    readers.close();
+                }
             }
-        }
-        if (partitionDir != null) {
-            try {
-                FileSystem fs = partitionDir.getFileSystem();
-                if (fs.exists(partitionDir)) {
-                    fs.delete(partitionDir, true);
-                }
-            } catch (IOException e) {
-                throw new RuntimeException(
-                        "Failed to delete partition directory: " + partitionDir, e);
-            }
+        } catch (SQLException | IOException error) {
+            throw new CatalogException("failed to clean partition " + partitionDesc, error);
         }
     }
 }
