@@ -98,10 +98,13 @@ general upserts in autocommit statements.
 | `42601` | Source and target columns do not line up |
 | `42804` | An expression is not assignment-castable to the target column |
 | `22P02` | A string literal does not convert to the target type |
-| `0A000` | `RETURNING`, `ON CONFLICT` on a range-partitioned or CDC table, an assignment list that misses a non-key column, or a general `DO UPDATE` inside a transaction block |
+| `0A000` | `RETURNING` with `ON CONFLICT` or a non-`VALUES` source, `ON CONFLICT` on a range-partitioned or CDC table, an assignment list that misses a non-key column, or a general `DO UPDATE` inside a transaction block |
 
-`RETURNING` is not supported: the sink commits after the rows are written and
-there is no row stream to return.
+`INSERT ... VALUES ... RETURNING` returns the inserted rows. `RETURNING *`,
+column references and column aliases are supported; expressions, `INSERT ...
+SELECT ... RETURNING`, `ON CONFLICT ... RETURNING` and `UPDATE ... RETURNING`
+are not supported yet. `RETURNING` on foreign and external-file tables is also
+refused.
 
 ## Index maintenance
 

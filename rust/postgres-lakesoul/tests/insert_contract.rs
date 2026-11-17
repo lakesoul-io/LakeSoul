@@ -63,6 +63,7 @@ async fn distributed_insert_contract() -> Result<()> {
 async fn insert_scenarios(h: &Harness) -> Result<()> {
     plain_insert_writes_rows_metadata_and_files(h).await?;
     parameterized_insert_executes_twice(h).await?;
+    returning_returns_inserted_rows(h).await?;
     cdc_delete_marker_hides_the_key(h).await?;
     duplicate_key_leaves_no_state(h).await?;
     not_null_violation_is_23502(h).await?;
@@ -273,6 +274,71 @@ async fn parameterized_insert_executes_twice(h: &Harness) -> Result<()> {
         lake_i64(h, "SELECT count(*) FROM pk_items WHERE id >= 9001").await?,
         2,
     )?;
+    Ok(())
+}
+
+/// `INSERT ... VALUES ... RETURNING` returns the inserted rows in both
+/// protocols and does not publish when the surrounding transaction rolls back.
+async fn returning_returns_inserted_rows(h: &Harness) -> Result<()> {
+    h.lake.batch_execute("BEGIN").await?;
+
+    let messages = h
+        .lake
+        .simple_query(
+            "INSERT INTO empty_items (id, val, label) \
+             VALUES (5501, 11, 'a'), (5502, NULL, 'b') \
+             RETURNING id, val, label",
+        )
+        .await
+        .context("simple INSERT ... RETURNING")?;
+    let rows = messages
+        .iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ensure_eq("simple RETURNING row count", rows.len(), 2)?;
+    ensure_eq("simple RETURNING id", rows[0].get("id"), Some("5501"))?;
+    ensure_eq("simple RETURNING val", rows[0].get("val"), Some("11"))?;
+    ensure_eq("simple RETURNING label", rows[0].get("label"), Some("a"))?;
+    ensure_eq("simple RETURNING null val", rows[1].get("val"), None)?;
+    ensure_eq(
+        "simple RETURNING second label",
+        rows[1].get("label"),
+        Some("b"),
+    )?;
+
+    let statement = h
+        .lake
+        .prepare(
+            "INSERT INTO empty_items (id, val, label) VALUES ($1, $2, $3) \
+             RETURNING id AS new_id, val",
+        )
+        .await
+        .context("prepare INSERT ... RETURNING")?;
+    let row = h
+        .lake
+        .query_one(&statement, &[&5503_i32, &22_i32, &"c"])
+        .await
+        .context("extended INSERT ... RETURNING")?;
+    ensure_eq("extended RETURNING id", row.get::<_, i32>("new_id"), 5503)?;
+    ensure_eq("extended RETURNING val", row.get::<_, i32>("val"), 22)?;
+
+    h.lake.batch_execute("ROLLBACK").await?;
+    ensure_eq(
+        "RETURNING rows rolled back",
+        lake_i64(
+            h,
+            "SELECT count(*) FROM empty_items WHERE id BETWEEN 5501 AND 5503",
+        )
+        .await?,
+        0,
+    )?;
+    eprintln!(
+        "PASS case=insert-returning simple=rows extended=rows \
+         transaction=rolled-back"
+    );
     Ok(())
 }
 
@@ -1473,11 +1539,6 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
     let before = h.authoritative_snapshot().await?;
 
     for (sql, code, case) in [
-        (
-            "INSERT INTO items (id, val, label) VALUES (7, 7, 'x') RETURNING id",
-            "0A000",
-            "RETURNING",
-        ),
         (
             "INSERT INTO pk_items (id, val, label) VALUES (7, 7, 'x') \
              ON CONFLICT (val) DO NOTHING",

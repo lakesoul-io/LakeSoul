@@ -41,7 +41,7 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 
 ## 不支持
 
-`DELETE`、`COPY`、`RETURNING`、`CREATE TABLE AS`、`CREATE TEMP TABLE`、`TRUNCATE`、非 `READ COMMITTED` 隔离级别，以及多语句 simple-query batch 里的写入，都会以 SQLSTATE `0A000` 被拒绝。显式事务块里的写入使用 deferred publication。完整列表见[兼容性矩阵](compatibility.md)。
+`DELETE`、`COPY`、`CREATE TABLE AS`、`CREATE TEMP TABLE`、`TRUNCATE`、非 `READ COMMITTED` 隔离级别，以及多语句 simple-query batch 里的写入，都会以 SQLSTATE `0A000` 被拒绝。显式事务块里的写入使用 deferred publication。完整列表见[兼容性矩阵](compatibility.md)。
 
 ## 下一步
 

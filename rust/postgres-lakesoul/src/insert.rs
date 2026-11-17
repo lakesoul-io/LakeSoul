@@ -42,26 +42,34 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::TableProvider;
 use datafusion::common::ParamValues;
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::LogicalPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
+use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
-    ConflictTarget, Insert, ObjectNamePart, OnConflictAction, OnInsert, Statement,
+    ConflictTarget, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Insert,
+    ObjectNamePart, OnConflictAction, OnInsert, SelectItem, SetExpr, Statement,
     TableObject,
 };
 use datafusion_postgres::QueryHook;
+use datafusion_postgres::arrow_pg::datatypes::arrow_schema_to_pg_fields;
+use datafusion_postgres::arrow_pg::encode_recordbatch;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire::api::ClientInfo;
-use datafusion_postgres::pgwire::api::results::{Response, Tag};
+use datafusion_postgres::pgwire::api::portal::Format;
+use datafusion_postgres::pgwire::api::results::{
+    FieldInfo, QueryResponse, Response, Tag,
+};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::response::{
     CommandComplete, TransactionStatus,
 };
 
+use futures::stream;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use lakesoul_datafusion::federation::FederationTableProvider;
 use lakesoul_datafusion::federation::external_file::ExternalFileTableProvider;
@@ -75,7 +83,7 @@ use lakesoul_datafusion::write_mode::{
 
 use crate::catalog::PUBLIC_SCHEMA;
 use crate::ddl::{feature_not_supported, normalize_column_ident, normalize_ident};
-use crate::server::ConnectionSession;
+use crate::server::{ConnectionSession, ResultFormatCell};
 
 /// SQLSTATE `undefined_table`.
 const UNDEFINED_TABLE: &str = "42P01";
@@ -132,7 +140,11 @@ impl QueryHook for InsertStatementHook {
                     return Ok(planned.plan.clone());
                 }
                 let target = prepare(insert, session_context, status, &database).await?;
-                plan_target(&target, session_context).await
+                if target.returning.is_some() {
+                    returning_plan(&target, session_context).await
+                } else {
+                    plan_target(&target, session_context).await
+                }
             }
             .await,
         )
@@ -201,12 +213,32 @@ impl QueryHook for InsertStatementHook {
                     return execute_upsert(&planned, Some(params), session_context).await;
                 }
                 let target = prepare(insert, session_context, status, &database).await?;
-                // The mode is read while the write plan is built, which happens in
-                // `execute_logical_plan` below.
+                // The Parse-time plan carries the result schema for RETURNING
+                // (`Describe` needs it), not the DML node to execute. Build the
+                // write plan again only in that case; a plain prepared INSERT
+                // keeps using the plan it parsed with.
+                let write_plan = if target.returning.is_some() {
+                    plan_target(&target, session_context).await?
+                } else {
+                    logical_plan.clone()
+                };
+                let returning = execute_returning(
+                    &target,
+                    &write_plan,
+                    Some(params),
+                    &current_result_format(client),
+                    session_context,
+                )
+                .await?;
                 if let TargetKind::LakeSoul(mode) = target.kind {
                     write_mode(session_context)?.set(mode);
                 }
-                execute_bound(logical_plan, params, session_context).await
+                let (rows, tag) =
+                    execute_bound(&write_plan, params, session_context).await?;
+                match returning {
+                    Some((fields, batches)) => returning_response(fields, batches, rows),
+                    None => Ok(Response::Execution(tag.with_rows(rows))),
+                }
             }
             .await,
         )
@@ -381,17 +413,117 @@ fn upsert_exec_error(error: DataFusionError) -> PgWireError {
 /// Everything the statement's execution depends on, resolved once.
 struct Target {
     kind: TargetKind,
-    /// The statement to plan: `ON CONFLICT` is dropped (DataFusion refuses
-    /// it) and a no-list `VALUES`/`SELECT` source shorter than the table is
-    /// padded with NULLs, which is PostgreSQL's default semantics for the
-    /// unlisted columns. `DO UPDATE` never reaches this path.
+    /// The statement to plan: `ON CONFLICT` and `RETURNING` are dropped
+    /// (DataFusion refuses both) and a no-list `VALUES`/`SELECT` source
+    /// shorter than the table is padded with NULLs, which is PostgreSQL's
+    /// default semantics for the unlisted columns. `DO UPDATE` never reaches
+    /// this path.
     statement: Insert,
+    /// The resolved `RETURNING` projection, when the statement has one.
+    returning: Option<ReturningSpec>,
 }
 
 enum TargetKind {
     LakeSoul(ConflictMode),
     Foreign,
     ExternalFile,
+}
+
+/// One column of an `INSERT ... RETURNING` result.
+struct ReturningColumn {
+    output_name: String,
+    target_index: usize,
+}
+
+struct ReturningSpec {
+    columns: Vec<ReturningColumn>,
+}
+
+impl ReturningSpec {
+    fn new(items: &[SelectItem], schema: &SchemaRef) -> PgWireResult<Self> {
+        let mut columns = Vec::new();
+        for item in items {
+            match item {
+                SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => {
+                    columns.extend(schema.fields().iter().enumerate().map(
+                        |(index, field)| ReturningColumn {
+                            output_name: field.name().clone(),
+                            target_index: index,
+                        },
+                    ));
+                }
+                SelectItem::UnnamedExpr(expr) => {
+                    let name = returning_column_name(expr)?;
+                    let target_index = schema.index_of(&name).map_err(|_| {
+                        user_error("42703", format!("column \"{name}\" does not exist"))
+                    })?;
+                    columns.push(ReturningColumn {
+                        output_name: name,
+                        target_index,
+                    });
+                }
+                SelectItem::ExprWithAlias { expr, alias } => {
+                    let name = returning_column_name(expr)?;
+                    let target_index = schema.index_of(&name).map_err(|_| {
+                        user_error("42703", format!("column \"{name}\" does not exist"))
+                    })?;
+                    columns.push(ReturningColumn {
+                        output_name: alias.value.clone(),
+                        target_index,
+                    });
+                }
+                _ => {
+                    return Err(feature_not_supported(
+                        "RETURNING expressions are not supported: return columns or *"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        if columns.is_empty() {
+            return Err(feature_not_supported(
+                "RETURNING needs at least one column".to_string(),
+            ));
+        }
+        Ok(Self { columns })
+    }
+}
+
+fn returning_column_name(expr: &Expr) -> PgWireResult<String> {
+    match expr {
+        Expr::Identifier(ident) => {
+            pg_insert_analysis::normalize_column(ident).map_err(insert_analysis_error)
+        }
+        Expr::CompoundIdentifier(parts) => {
+            let ident = parts.last().ok_or_else(|| {
+                feature_not_supported("RETURNING has an empty column name".to_string())
+            })?;
+            pg_insert_analysis::normalize_column(ident).map_err(insert_analysis_error)
+        }
+        Expr::Nested(inner) => returning_column_name(inner),
+        _ => Err(feature_not_supported(
+            "RETURNING expressions are not supported: return columns or *".to_string(),
+        )),
+    }
+}
+
+/// Builds a target and resolves its RETURNING projection against the schema.
+fn target_from(
+    kind: TargetKind,
+    insert: &Insert,
+    schema: SchemaRef,
+    statement: Insert,
+) -> PgWireResult<Target> {
+    let returning = insert
+        .returning
+        .as_deref()
+        .map(|items| ReturningSpec::new(items, &schema))
+        .transpose()?;
+    Ok(Target {
+        kind,
+        statement,
+        returning,
+    })
 }
 
 /// Connection state a hook may hold across an `await`.
@@ -436,14 +568,21 @@ async fn prepare(
         let mode = conflict_plan(insert, &primary_keys, &range)?;
         let statement =
             checked_statement(insert, &provider.schema(), session_context).await?;
-        return Ok(Target {
-            kind: TargetKind::LakeSoul(mode),
+        return target_from(
+            TargetKind::LakeSoul(mode),
+            insert,
+            provider.schema(),
             statement,
-        });
+        );
     }
 
     if let Some(provider) = provider_any.downcast_ref::<FederationTableProvider>() {
         reject_transaction_strict(status, "INSERT")?;
+        if insert.returning.is_some() {
+            return Err(feature_not_supported(
+                "INSERT ... RETURNING is not supported on a foreign table".to_string(),
+            ));
+        }
         if insert.on.is_some() {
             return Err(feature_not_supported(
                 "INSERT ... ON CONFLICT is not supported on a foreign table; \
@@ -454,14 +593,17 @@ async fn prepare(
         }
         let statement =
             checked_statement(insert, &provider.schema(), session_context).await?;
-        return Ok(Target {
-            kind: TargetKind::Foreign,
-            statement,
-        });
+        return target_from(TargetKind::Foreign, insert, provider.schema(), statement);
     }
 
     if let Some(provider) = provider_any.downcast_ref::<ExternalFileTableProvider>() {
         reject_transaction_strict(status, "INSERT")?;
+        if insert.returning.is_some() {
+            return Err(feature_not_supported(
+                "INSERT ... RETURNING is not supported on an external file table"
+                    .to_string(),
+            ));
+        }
         if insert.on.is_some() {
             return Err(feature_not_supported(
                 "INSERT ... ON CONFLICT is not supported on an external file table; \
@@ -471,10 +613,12 @@ async fn prepare(
         }
         let statement =
             checked_statement(insert, &provider.schema(), session_context).await?;
-        return Ok(Target {
-            kind: TargetKind::ExternalFile,
+        return target_from(
+            TargetKind::ExternalFile,
+            insert,
+            provider.schema(),
             statement,
-        });
+        );
     }
 
     Err(feature_not_supported(format!(
@@ -496,6 +640,7 @@ async fn checked_statement(
 ) -> PgWireResult<Insert> {
     let mut statement = insert.clone();
     statement.on = None;
+    statement.returning = None;
     let analysis = pg_insert_analysis::analyse(insert, schema.as_ref(), session_context)
         .await
         .map_err(insert_analysis_error)?;
@@ -574,15 +719,77 @@ fn conflict_plan(
     }
 }
 
+/// Whether a VALUES expression can be evaluated a second time for RETURNING
+/// without changing its value. Only literals, parameters and casts/negations
+/// of them qualify; functions such as `now()` and subqueries do not.
+fn returning_safe_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Value(_) | Expr::TypedString(_) => true,
+        Expr::Nested(inner) => returning_safe_expr(inner),
+        Expr::Cast { expr, .. } => returning_safe_expr(expr),
+        Expr::UnaryOp { expr, .. } => returning_safe_expr(expr),
+        // The bytea literal rewrite turns `'\x..'::bytea` into
+        // `decode('..', 'hex')` before the INSERT reaches this analysis. It is
+        // deterministic, unlike a general function call.
+        Expr::Function(function) => {
+            function
+                .name
+                .0
+                .last()
+                .and_then(|part| part.as_ident())
+                .is_some_and(|ident| ident.value.eq_ignore_ascii_case("decode"))
+                && function_args(&function.args)
+                    .is_some_and(|args| args.iter().all(|arg| returning_safe_expr(arg)))
+        }
+        _ => false,
+    }
+}
+
+fn function_args(args: &FunctionArguments) -> Option<Vec<&Expr>> {
+    let FunctionArguments::List(list) = args else {
+        return None;
+    };
+    list.args
+        .iter()
+        .map(|arg| match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => Some(expr),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Refuse the clauses LakeSoul cannot honour, with a stable `0A000` instead
 /// of the planner's internal error.
 fn reject_unsupported(insert: &Insert) -> PgWireResult<()> {
     if insert.returning.is_some() {
-        return Err(feature_not_supported(
-            "INSERT ... RETURNING is not supported: LakeSoul commits the write \
-             after the rows are written and returns no row stream"
-                .to_string(),
-        ));
+        if insert.on.is_some() {
+            return Err(feature_not_supported(
+                "INSERT ... RETURNING with ON CONFLICT is not supported yet".to_string(),
+            ));
+        }
+        let Some(source) = insert.source.as_deref() else {
+            return Err(feature_not_supported(
+                "INSERT ... RETURNING needs a VALUES source".to_string(),
+            ));
+        };
+        let SetExpr::Values(values) = source.body.as_ref() else {
+            return Err(feature_not_supported(
+                "INSERT ... RETURNING is only supported for INSERT ... VALUES; \
+                 INSERT ... SELECT ... RETURNING is not supported yet"
+                    .to_string(),
+            ));
+        };
+        for row in &values.rows {
+            for expr in &row.content {
+                if !returning_safe_expr(expr) {
+                    return Err(feature_not_supported(
+                        "INSERT ... RETURNING requires literal or parameter \
+                         VALUES; volatile expressions are not supported yet"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
     }
     for (present, clause) in [
         (insert.overwrite, "INSERT OVERWRITE"),
@@ -797,8 +1004,12 @@ async fn run(
     status: TransactionStatus,
     database: &str,
 ) -> PgWireResult<Response> {
-    let (rows, tag) = execute_write(insert, session_context, status, database).await?;
-    Ok(Response::Execution(tag.with_rows(rows)))
+    let (rows, tag, returning) =
+        execute_write(insert, session_context, status, database).await?;
+    match returning {
+        Some((fields, batches)) => returning_response(fields, batches, rows),
+        None => Ok(Response::Execution(tag.with_rows(rows))),
+    }
 }
 
 /// Runs one `INSERT` for a detached job, outside a client connection.
@@ -811,6 +1022,11 @@ pub(crate) async fn run_for_job(
     session_context: &SessionContext,
     database: &str,
 ) -> PgWireResult<(usize, String)> {
+    if insert.returning.is_some() {
+        return Err(feature_not_supported(
+            "INSERT ... RETURNING is not supported for background jobs".to_string(),
+        ));
+    }
     if is_do_update(insert) {
         let planned = prepare_upsert(
             insert,
@@ -822,36 +1038,52 @@ pub(crate) async fn run_for_job(
         let (rows, tag) = execute_upsert_plan(&planned, None, session_context).await?;
         return Ok((rows, CommandComplete::from(tag).tag));
     }
-    let (rows, tag) =
+    let (rows, tag, _returning) =
         execute_write(insert, session_context, TransactionStatus::Idle, database).await?;
     let tag = CommandComplete::from(tag.with_rows(rows)).tag;
     Ok((rows, tag))
 }
+
+type ReturnedRows = (Arc<Vec<FieldInfo>>, Vec<RecordBatch>);
 
 async fn execute_write(
     insert: &Insert,
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
-) -> PgWireResult<(usize, Tag)> {
+) -> PgWireResult<(usize, Tag, Option<ReturnedRows>)> {
     let target = prepare(insert, session_context, status, database).await?;
+    let write_plan = plan_target(&target, session_context).await?;
+    // Evaluate RETURNING before the write so a failing returning expression
+    // cannot leave a committed insert without its response rows.
+    let returning = execute_returning(
+        &target,
+        &write_plan,
+        None,
+        &Format::UnifiedText,
+        session_context,
+    )
+    .await?;
     if let TargetKind::LakeSoul(mode) = target.kind {
         write_mode(session_context)?.set(mode);
     }
-    let plan = plan_target(&target, session_context).await?;
     let dataframe = session_context
-        .execute_logical_plan(plan)
+        .execute_logical_plan(write_plan)
         .await
         .map_err(insert_error)?;
     let batches = dataframe.collect().await.map_err(insert_error)?;
-    Ok((rows_affected(&batches)?, Tag::new("INSERT").with_oid(0)))
+    Ok((
+        rows_affected(&batches)?,
+        Tag::new("INSERT").with_oid(0),
+        returning,
+    ))
 }
 
 async fn execute_bound(
     logical_plan: &LogicalPlan,
     params: &ParamValues,
     session_context: &SessionContext,
-) -> PgWireResult<Response> {
+) -> PgWireResult<(usize, Tag)> {
     let plan = logical_plan
         .clone()
         .replace_params_with_values(params)
@@ -861,11 +1093,107 @@ async fn execute_bound(
         .await
         .map_err(insert_error)?;
     let batches = dataframe.collect().await.map_err(insert_error)?;
-    Ok(Response::Execution(
-        Tag::new("INSERT")
-            .with_oid(0)
-            .with_rows(rows_affected(&batches)?),
-    ))
+    Ok((rows_affected(&batches)?, Tag::new("INSERT").with_oid(0)))
+}
+
+async fn returning_plan(
+    target: &Target,
+    session_context: &SessionContext,
+) -> PgWireResult<LogicalPlan> {
+    let write_plan = plan_target(target, session_context).await?;
+    let Some(spec) = &target.returning else {
+        return Err(internal("RETURNING plan requested without a projection"));
+    };
+    returning_projection(&write_plan, spec)
+}
+
+/// Projects the RETURNING columns from the DML input plan.
+///
+/// The insert planner has already reordered and cast the source to the target
+/// schema at this point, so this projection inherits the same parameter types
+/// as the write. It also returns the values the write consumes instead of
+/// evaluating the source expressions a second time.
+fn returning_projection(
+    write_plan: &LogicalPlan,
+    spec: &ReturningSpec,
+) -> PgWireResult<LogicalPlan> {
+    let LogicalPlan::Dml(dml) = write_plan else {
+        return Err(internal("the INSERT plan is not a DML node"));
+    };
+    let input = dml.input.as_ref();
+    let input_schema = input.schema();
+
+    let mut projections = Vec::with_capacity(spec.columns.len());
+    for column in &spec.columns {
+        let field = input_schema
+            .fields()
+            .get(column.target_index)
+            .ok_or_else(|| {
+                internal("RETURNING target is outside the INSERT input schema")
+            })?;
+        projections.push(col(field.name()).alias(column.output_name.as_str()));
+    }
+    let projected = LogicalPlanBuilder::from(input.clone())
+        .project(projections)
+        .and_then(|builder| builder.build())
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    Ok(projected)
+}
+
+/// The result format of the current extended-protocol portal; simple queries
+/// use text format.
+fn current_result_format(client: &(impl ClientInfo + ?Sized)) -> Format {
+    client
+        .session_extensions()
+        .get::<ResultFormatCell>()
+        .map(|cell| cell.0.lock().clone())
+        .unwrap_or_default()
+}
+
+async fn execute_returning(
+    target: &Target,
+    write_plan: &LogicalPlan,
+    params: Option<&ParamValues>,
+    format: &Format,
+    session_context: &SessionContext,
+) -> PgWireResult<Option<ReturnedRows>> {
+    let Some(spec) = &target.returning else {
+        return Ok(None);
+    };
+    let plan = returning_projection(write_plan, spec)?;
+    let plan = match params {
+        Some(params) => plan
+            .replace_params_with_values(params)
+            .map_err(insert_error)?,
+        None => plan,
+    };
+    let dataframe = session_context
+        .execute_logical_plan(plan)
+        .await
+        .map_err(insert_error)?;
+    let fields = Arc::new(arrow_schema_to_pg_fields(
+        dataframe.schema().as_arrow(),
+        format,
+        None,
+    )?);
+    let batches = dataframe.collect().await.map_err(insert_error)?;
+    Ok(Some((fields, batches)))
+}
+
+fn returning_response(
+    fields: Arc<Vec<FieldInfo>>,
+    batches: Vec<RecordBatch>,
+    affected: usize,
+) -> PgWireResult<Response> {
+    let rows = batches
+        .into_iter()
+        .flat_map(|batch| {
+            encode_recordbatch(Arc::clone(&fields), batch).collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut response = QueryResponse::new(fields, stream::iter(rows));
+    response.set_command_tag(&format!("INSERT 0 {affected}"));
+    Ok(Response::Query(response))
 }
 
 /// The sink reports the written row count in its single `count` batch.
