@@ -46,7 +46,7 @@ for the metadata database and the first table.
 
 ## What does not
 
-`DELETE`, `COPY`, `RETURNING`, `CREATE TABLE AS`, `CREATE TEMP TABLE`,
+`DELETE`, `COPY`, `CREATE TABLE AS`, `CREATE TEMP TABLE`,
 `TRUNCATE`, non-`READ COMMITTED` isolation, and writes inside a multi-statement
 simple-query batch are refused with SQLSTATE `0A000`. Writes inside an explicit
 block use deferred publication. See the

@@ -118,6 +118,14 @@ pub struct ConnectionSession {
     pub limits: crate::limits::Limits,
 }
 
+/// The result format requested by the current extended-protocol `Bind`.
+///
+/// pgwire sends `RowDescription` from the portal's `result_column_format` at
+/// Describe time, while a query hook returns already-encoded `DataRow`s. A
+/// hook that produces rows itself must encode them with the same format.
+#[derive(Default)]
+pub(crate) struct ResultFormatCell(pub(crate) parking_lot::Mutex<Format>);
+
 impl Drop for ConnectionSession {
     /// A connection that goes away with an open block leaves its staged files
     /// unreferenced: delete them instead of waiting for GC.
@@ -1425,6 +1433,13 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
                     pgwire::api::store::Entry::Value(portal) => Some(portal),
                     pgwire::api::store::Entry::Empty => None,
                 });
+        if let Some(portal) = stored.as_ref() {
+            *client
+                .session_extensions()
+                .get_or_insert_with(ResultFormatCell::default)
+                .0
+                .lock() = portal.result_column_format.clone();
+        }
         let execution = stored
             .as_ref()
             .map(|portal| {

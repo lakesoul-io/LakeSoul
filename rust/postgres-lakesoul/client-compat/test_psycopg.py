@@ -278,6 +278,16 @@ def test_duplicate_key_sqlstate_and_recovery(driver, connector, table_factory):
             cursor.execute("SELECT 1")
             assert rows(cursor) == [(1,)]
 
+            bytea_table = table_factory(
+                "id bigint primary key, payload bytea", "client_returning_bytea"
+            )
+            cursor.execute(
+                f"INSERT INTO {bytea_table} (id, payload) VALUES (%s, %s) "
+                "RETURNING payload",
+                (1, b"\x00\x01\xff"),
+            )
+            assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
+
 
 def test_catalog_introspection(driver, connector, table_factory):
     table = table_factory("id bigint primary key, name text", "client_catalog")
@@ -403,24 +413,76 @@ def test_copy_from_stdin_is_explicitly_refused(driver, connector, table_factory)
                 )
 
 
-def test_returning_is_explicitly_refused(driver, connector, table_factory):
-    table = table_factory("id bigint primary key, name text", "client_returning")
+def test_insert_returning(driver, connector, table_factory):
+    table = table_factory(
+        "id bigint primary key, name text, amount numeric(20,4)",
+        "client_returning",
+    )
     with closing(connector(driver)) as connection:
         with connection.cursor() as cursor:
-            try:
+            cursor.execute(
+                f"INSERT INTO {table} (id, name, amount) VALUES (%s, %s, %s) "
+                "RETURNING id, name, amount",
+                (1, "a", Decimal("1.5000")),
+            )
+            assert rows(cursor) == [(1, "a", Decimal("1.5000"))]
+            assert cursor.rowcount == 1
+
+            cursor.execute(f"INSERT INTO {table} (id) VALUES (%s) RETURNING *", (2,))
+            assert rows(cursor) == [(2, None, None)]
+
+            cursor.execute(
+                f"INSERT INTO {table} (id, name) VALUES (%s, %s) "
+                "RETURNING id AS new_id",
+                (3, "c"),
+            )
+            assert rows(cursor) == [(3,)]
+            assert cursor.description[0].name == "new_id"
+
+            with pytest.raises(Exception) as caught:
                 cursor.execute(
                     f"INSERT INTO {table} (id, name) VALUES (%s, %s) RETURNING id",
+                    (1, "duplicate"),
+                )
+            assert sqlstate(caught.value) == "23505"
+            cursor.execute("SELECT 1")
+            assert rows(cursor) == [(1,)]
+
+            bytea_table = table_factory(
+                "id bigint primary key, payload bytea", "client_returning_bytea"
+            )
+            cursor.execute(
+                f"INSERT INTO {bytea_table} (id, payload) VALUES (%s, %s) "
+                "RETURNING payload",
+                (1, b"\x00\x01\xff"),
+            )
+            assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
+
+
+def test_insert_returning_unsupported_forms(driver, connector, table_factory):
+    table = table_factory("id bigint primary key, name text", "client_returning_gap")
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            for sql, params in [
+                (
+                    f"INSERT INTO {table} (id, name) VALUES (%s, %s) "
+                    "ON CONFLICT (id) DO NOTHING RETURNING id",
                     (1, "a"),
-                )
-            except Exception as error:
-                assert sqlstate(error) == "0A000"
-                cursor.execute("SELECT 1")
-                assert rows(cursor) == [(1,)]
-            else:
-                pytest.fail(
-                    "INSERT ... RETURNING unexpectedly succeeded; update the "
-                    "compatibility baseline"
-                )
+                ),
+                (
+                    f"INSERT INTO {table} (id, name) VALUES (%s, %s) RETURNING id + 1",
+                    (2, "b"),
+                ),
+                (
+                    f"INSERT INTO {table} (id, name) SELECT 3, 'c' RETURNING id",
+                    (),
+                ),
+            ]:
+                with pytest.raises(Exception) as caught:
+                    cursor.execute(sql, params)
+                assert sqlstate(caught.value) == "0A000", sql
+                if not connection.autocommit:
+                    connection.rollback()
 
 
 def test_sqlalchemy_select_and_write(sqlalchemy_url, table_factory):
@@ -444,6 +506,26 @@ def test_sqlalchemy_select_and_write(sqlalchemy_url, table_factory):
     finally:
         engine.dispose()
     print(f"sqlalchemy={sqlalchemy.__version__}")
+
+
+def test_sqlalchemy_insert_returning(sqlalchemy_url, table_factory):
+    pytest.importorskip("sqlalchemy")
+    from sqlalchemy import MetaData, Table, create_engine, insert
+
+    table = table_factory("id bigint primary key, name text", "client_sa_returning")
+    engine = create_engine(sqlalchemy_url)
+    try:
+        metadata = MetaData()
+        reflected = Table(table, metadata, autoload_with=engine)
+        with engine.begin() as connection:
+            result = connection.execute(
+                insert(reflected)
+                .values(id=1, name="alice")
+                .returning(reflected.c.id, reflected.c.name)
+            )
+            assert [tuple(row) for row in result] == [(1, "alice")]
+    finally:
+        engine.dispose()
 
 
 def test_sqlalchemy_reflection(sqlalchemy_url, table_factory):
