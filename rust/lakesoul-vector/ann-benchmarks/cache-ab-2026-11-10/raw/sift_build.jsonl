@@ -1,4 +1,0 @@
-{"dataset": "sift", "nlist": 256, "bits": 1, "build_s": 11.743706533685327, "status": "ok", "rss": {"VmHWM": 703.26953125, "VmRSS": 576.69140625}}
-{"dataset": "sift", "nlist": 256, "bits": 7, "build_s": 13.438028391450644, "status": "ok", "rss": {"VmHWM": 693.02734375, "VmRSS": 567.0859375}}
-{"dataset": "sift", "nlist": 1024, "bits": 1, "build_s": 42.9403322301805, "status": "ok", "rss": {"VmHWM": 658.0390625, "VmRSS": 501.02734375}}
-{"dataset": "sift", "nlist": 1024, "bits": 7, "build_s": 44.44398832693696, "status": "ok", "rss": {"VmHWM": 713.75, "VmRSS": 521.75390625}}

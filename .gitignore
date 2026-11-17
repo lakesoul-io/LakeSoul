@@ -113,3 +113,6 @@ agent_export/
 **/result
 
 
+
+# Local benchmark raw data / scripts (not published)
+rust/lakesoul-vector/ann-benchmarks/

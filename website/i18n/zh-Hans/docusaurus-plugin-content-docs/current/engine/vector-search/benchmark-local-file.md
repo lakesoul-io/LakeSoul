@@ -253,16 +253,11 @@ native batch 已经按 bucket 并行探测；短 batch 再增加 `parallelism` �
 - pgvector 不同缓存大小只在 GloVe 目标配置上测了 512MiB/1GiB/8GiB；
   其它 pgvector 接口结果使用 8GiB。
 - 未报告 `index_bytes`：多配置构建时旧 index generation 仍在磁盘上，构建时间和 RSS 不受影响。
-- 中文和英文页面使用同一批原始数据；如需更新应同时重生成。
+- 中文和英文页面使用同一批原始数据；如需更新请重新运行基准。
 
 ## 10. 原始结果
 
-- [raw/sift_query.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
-- [raw/glove.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
-- [raw/glove_target.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
-- [raw/glove_target_fix.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target_fix.jsonl)
-- [raw/gist.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
-- [raw/deep.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
+原始 JSONL 不随仓库发布。
 
 ## 附录 A：完整 index-only 参数扫描
 

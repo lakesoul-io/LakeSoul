@@ -256,16 +256,11 @@ the short batch. Keep `hash_bucket_num × vector_search.parallelism` near the CP
   other pgvector interface rows use 8 GiB.
 - Reported `index_bytes` is omitted because old index generations were still on disk
   while building multiple configurations; build time/RSS are not affected.
-- The English and Chinese pages share this data set; regenerate both from the raw JSONL if needed.
+- The English and Chinese pages share this data set; re-run the benchmark to refresh both.
 
 ## 10. Raw results
 
-- [raw/sift_query.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
-- [raw/glove.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
-- [raw/glove_target.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
-- [raw/glove_target_fix.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target_fix.jsonl)
-- [raw/gist.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
-- [raw/deep.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
+Raw JSONL files are not published with the repository.
 
 ## Appendix A: full index-only parameter sweep
 
