@@ -403,9 +403,10 @@ impl PgSessionFactory {
     }
 
     /// Installs the detached-query service used by the SQL control statements
-    /// and the status/result table functions.
-    pub fn with_jobs(mut self, jobs: Arc<crate::jobs::JobService>) -> Self {
-        self.jobs = Some(jobs);
+    /// and the status/result table functions; `None` (no `--jobs`) leaves
+    /// them unregistered and refused.
+    pub fn with_jobs(mut self, jobs: Option<Arc<crate::jobs::JobService>>) -> Self {
+        self.jobs = jobs;
         self
     }
 

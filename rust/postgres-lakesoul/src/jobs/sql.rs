@@ -17,7 +17,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
     Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Query,
-    SelectItem, SetExpr, Statement, Value,
+    SelectItem, SetExpr, Statement, TableFactor, Value,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
@@ -322,6 +322,50 @@ fn function_name(function: &Function) -> String {
         .unwrap_or_default()
 }
 
+/// The table functions the job service registers in every session.
+const JOB_TABLE_FUNCTIONS: [&str; 5] = [
+    "lakesoul_query_status",
+    "lakesoul_queries",
+    "lakesoul_query_result",
+    "lakesoul_query_result_set",
+    "lakesoul_query_result_sets",
+];
+
+/// Whether `statement` calls a detached-query function: a control call in
+/// its projection or a status/result table function in its `FROM`. Lets a
+/// server without the job service refuse it instead of failing it as an
+/// unknown function.
+pub(crate) fn mentions_job_function(statement: &Statement) -> bool {
+    if [JobFunction::Submit, JobFunction::Cancel, JobFunction::Wait]
+        .into_iter()
+        .any(|function| mentions(statement, function.name()))
+    {
+        return true;
+    }
+    let Some(query) = query_of(statement) else {
+        return false;
+    };
+    let SetExpr::Select(select) = &*query.body else {
+        return false;
+    };
+    select.from.iter().any(|from| match &from.relation {
+        TableFactor::Table {
+            name,
+            args: Some(_),
+            ..
+        } => name
+            .0
+            .last()
+            .and_then(|part| part.as_ident())
+            .is_some_and(|ident| {
+                JOB_TABLE_FUNCTIONS
+                    .iter()
+                    .any(|function| ident.value.eq_ignore_ascii_case(function))
+            }),
+        _ => false,
+    })
+}
+
 fn mentions(statement: &Statement, name: &str) -> bool {
     let Some(query) = query_of(statement) else {
         return false;
@@ -602,6 +646,27 @@ mod tests {
             .parse(sql)
             .expect("parse")
             .remove(0)
+    }
+
+    #[test]
+    fn job_functions_are_recognized_for_refusal() {
+        for sql in [
+            "SELECT lakesoul_submit('select 1')",
+            "SELECT lakesoul_cancel_query('00000000-0000-0000-0000-000000000000')",
+            "SELECT lakesoul_wait_query('00000000-0000-0000-0000-000000000000') AS s",
+            "SELECT * FROM lakesoul_query_status('00000000-0000-0000-0000-000000000000')",
+            "SELECT * FROM lakesoul_queries()",
+            "SELECT * FROM lakesoul_query_result('00000000-0000-0000-0000-000000000000')",
+        ] {
+            assert!(mentions_job_function(&statement(sql)), "{sql}");
+        }
+        for sql in [
+            "SELECT 1",
+            "SELECT * FROM lakesoul_queries",
+            "SELECT submit('x')",
+        ] {
+            assert!(!mentions_job_function(&statement(sql)), "{sql}");
+        }
     }
 
     #[test]

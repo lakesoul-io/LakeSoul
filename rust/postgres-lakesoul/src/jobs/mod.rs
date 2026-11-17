@@ -48,7 +48,7 @@ pub use result::{
 pub use runner::JobRunner;
 pub(crate) use sql::JobIdentityGuard;
 pub use sql::JobStatementHook;
-pub(crate) use sql::register_control_stubs;
+pub(crate) use sql::{mentions_job_function, register_control_stubs};
 
 pub(crate) use runner::spool_scan;
 
