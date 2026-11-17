@@ -26,7 +26,22 @@ static PROCESS_NONCE: LazyLock<u128> = LazyLock::new(|| {
     time.rotate_left(37) ^ ((std::process::id() as u128) << 64)
 });
 static NEXT_STORE_ID: AtomicU64 = AtomicU64::new(1);
-static NAMESPACES: LazyLock<Mutex<HashMap<usize, Weak<StoreCacheNamespace>>>> =
+
+/// Allocation address -> (token id, weak store).
+///
+/// The store is only weakly held, so a session's stores are never pinned.  The
+/// id is kept even after every `StoreCacheNamespace` for the allocation has
+/// been dropped: recreating a cache (e.g. a new `IndexSsdCache` instance) must
+/// land on the same disk keys, otherwise persisted entries become invisible
+/// when the namespace is resolved again.  Pointer reuse is safe because the
+/// entry is only honoured while the old store is still alive; a new store at
+/// the same address gets a fresh id.
+struct NamespaceEntry {
+    store_id: u64,
+    store: Weak<dyn ObjectStore>,
+}
+
+static NAMESPACES: LazyLock<Mutex<HashMap<usize, NamespaceEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub struct StoreCacheNamespace {
@@ -62,15 +77,27 @@ pub(crate) fn store_cache_namespace(
     let mut namespaces = NAMESPACES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(namespace) = namespaces.get(&address).and_then(Weak::upgrade) {
-        return namespace;
+    if let Some(entry) = namespaces.get(&address)
+        && let Some(live_store) = entry.store.upgrade()
+    {
+        return Arc::new(StoreCacheNamespace {
+            store_id: entry.store_id,
+            process_nonce: *PROCESS_NONCE,
+            _store: live_store,
+        });
     }
-    namespaces.retain(|_, namespace| namespace.strong_count() > 0);
-    let namespace = Arc::new(StoreCacheNamespace {
-        store_id: NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed),
+    namespaces.retain(|_, entry| entry.store.strong_count() > 0);
+    let store_id = NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed);
+    namespaces.insert(
+        address,
+        NamespaceEntry {
+            store_id,
+            store: Arc::downgrade(store),
+        },
+    );
+    Arc::new(StoreCacheNamespace {
+        store_id,
         process_nonce: *PROCESS_NONCE,
         _store: Arc::clone(store),
-    });
-    namespaces.insert(address, Arc::downgrade(&namespace));
-    namespace
+    })
 }
