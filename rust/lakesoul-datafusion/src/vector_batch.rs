@@ -1072,22 +1072,18 @@ async fn exact_rank_and_merge(
     let mut cursor = 0usize;
     for (bucket_index, count) in counts.into_iter().enumerate() {
         let mut files = Vec::with_capacity(count);
-        for offset in 0..count {
+        for file_name in &buckets[bucket_index].1 {
             let source = opened[cursor].as_ref().ok_or_else(|| {
                 DataFusionError::NotImplemented(format!(
-                    "exact batch search could not open data file {}",
-                    buckets[bucket_index].1[offset]
+                    "exact batch search could not open data file {file_name}"
                 ))
             })?;
             let rank = if count > 1 {
-                *file_ranks
-                    .get(&buckets[bucket_index].1[offset])
-                    .ok_or_else(|| {
-                        DataFusionError::NotImplemented(format!(
-                            "exact batch search has no index rank for {}",
-                            buckets[bucket_index].1[offset]
-                        ))
-                    })?
+                *file_ranks.get(file_name).ok_or_else(|| {
+                    DataFusionError::NotImplemented(format!(
+                        "exact batch search has no index rank for {file_name}"
+                    ))
+                })?
             } else {
                 0
             };
