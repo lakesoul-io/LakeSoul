@@ -32,6 +32,8 @@ use lakesoul_io::physical_plan::{
     PARQUET_READ_OPTION_PREFIX, ScanFile, ScanWorkUnit, capture_read_options,
     restore_read_options,
 };
+use lakesoul_io::pk_locator::{KeyConstraint, KeyValue};
+use lakesoul_io::writer::create_writer_with_io_config;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as StorePath;
 use object_store::{
@@ -209,6 +211,28 @@ fn write_parquet(
     let size = std::fs::metadata(&path).expect("file metadata").len();
     let url = format!("file://{}", path.display());
     (url, size)
+}
+
+async fn write_vortex(dir: &Path, name: &str, batch: &RecordBatch) -> (String, u64) {
+    let path = dir.join(name);
+    let path = path.to_string_lossy().to_string();
+    let config = LakeSoulIOConfig::builder()
+        .with_file(path.clone())
+        .with_schema(batch.schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_physical_format(PhysicalFormat::Vortex)
+        .with_thread_num(1)
+        .build();
+    let mut writer = create_writer_with_io_config(config)
+        .await
+        .expect("vortex writer");
+    writer
+        .write_record_batch(batch.clone())
+        .await
+        .expect("write vortex batch");
+    writer.flush_and_close().await.expect("close vortex writer");
+    let size = std::fs::metadata(&path).expect("vortex metadata").len();
+    (format!("file://{path}"), size)
 }
 
 /// The store-relative path a full `file://` URL addresses.
@@ -750,6 +774,138 @@ async fn sparse_versions_keep_a_missing_column_apart_from_an_explicit_null() {
             (2, None, Some(2), Some("delete".to_string())),
         ],
         "an absent column keeps the older value; an explicit NULL replaces it"
+    );
+}
+
+fn enable_locator_cache() {
+    static ENABLE: std::sync::Once = std::sync::Once::new();
+    ENABLE.call_once(|| {
+        let cache_dir = std::env::temp_dir()
+            .join(format!("lakesoul-lazy-scan-cache-{}", std::process::id()));
+        // SAFETY: the integration test sets these before the first locator
+        // use in this process.
+        unsafe {
+            std::env::set_var("LAKESOUL_CACHE", "1");
+            std::env::set_var("LAKESOUL_CACHE_PATH", cache_dir);
+        }
+    });
+}
+
+#[tokio::test]
+async fn key_candidates_are_requested_only_after_the_first_poll() {
+    enable_locator_cache();
+    let dir = TempDir::new().expect("temp dir");
+    let table = id_schema();
+    let values: Vec<i64> = (0..5_000).collect();
+    let (url, size) =
+        write_parquet(dir.path(), "keys.parquet", &int_batch(&table, &values), 128);
+
+    let config = LakeSoulScanConfig {
+        table_schema: Arc::clone(&table),
+        output_schema: Arc::clone(&table),
+        partition_schema: Arc::new(Schema::empty()),
+        io_config: LakeSoulIOConfig::builder()
+            .with_schema(Arc::clone(&table))
+            .with_primary_keys(vec!["id".to_string()])
+            .build(),
+        predicate: None,
+        key_constraint: Some(KeyConstraint {
+            columns: vec!["id".to_string()],
+            values: vec![vec![KeyValue::Int(7)].into()],
+        }),
+        parquet_force_view_types: false,
+        read_options: HashMap::new(),
+        limit: None,
+        min_index_rows: 1,
+    };
+    let node = LakeSoulScanExec::try_new(
+        config,
+        vec![unit(vec![scan_file(&url, Some(size), None)], 0)],
+        1,
+    )
+    .expect("valid key-lookup descriptor");
+    let store = Arc::new(CountingStore::new());
+    let mut stream = node
+        .execute(0, task_context(&store))
+        .expect("the scan returns a lazy stream");
+    assert!(
+        store.calls().is_empty(),
+        "execute must not read storage before the first poll: {:?}",
+        store.calls()
+    );
+
+    let batch = stream
+        .next()
+        .await
+        .expect("the first poll produces the candidate batch")
+        .expect("the candidate read succeeds");
+    assert_eq!(int64_rows(std::slice::from_ref(&batch), 0), vec![Some(7)]);
+    assert!(
+        !store.calls().is_empty(),
+        "the first poll performs the candidate read"
+    );
+}
+
+#[tokio::test]
+async fn vortex_key_candidates_also_stream_after_the_first_poll() {
+    enable_locator_cache();
+    let dir = TempDir::new().expect("temp dir");
+    let table = id_schema();
+    let values: Vec<i64> = (0..5_000).collect();
+    let (url, size) =
+        write_vortex(dir.path(), "keys.vortex", &int_batch(&table, &values)).await;
+
+    let config = LakeSoulScanConfig {
+        table_schema: Arc::clone(&table),
+        output_schema: Arc::clone(&table),
+        partition_schema: Arc::new(Schema::empty()),
+        io_config: LakeSoulIOConfig::builder()
+            .with_schema(Arc::clone(&table))
+            .with_primary_keys(vec!["id".to_string()])
+            .with_physical_format(PhysicalFormat::Vortex)
+            .build(),
+        predicate: None,
+        key_constraint: Some(KeyConstraint {
+            columns: vec!["id".to_string()],
+            values: vec![vec![KeyValue::Int(7)].into()],
+        }),
+        parquet_force_view_types: false,
+        read_options: HashMap::new(),
+        limit: None,
+        min_index_rows: 1,
+    };
+    let node = LakeSoulScanExec::try_new(
+        config,
+        vec![unit(
+            vec![ScanFile {
+                path: url,
+                physical_format: PhysicalFormat::Vortex,
+                size: Some(size),
+                range: None,
+            }],
+            0,
+        )],
+        1,
+    )
+    .expect("valid vortex key-lookup descriptor");
+    let store = Arc::new(CountingStore::new());
+    let mut stream = node
+        .execute(0, task_context(&store))
+        .expect("the scan returns a lazy stream");
+    assert!(
+        store.calls().is_empty(),
+        "execute must not read storage before the first poll: {:?}",
+        store.calls()
+    );
+    let batch = stream
+        .next()
+        .await
+        .expect("the first poll produces the candidate batch")
+        .expect("the vortex candidate read succeeds");
+    assert_eq!(int64_rows(std::slice::from_ref(&batch), 0), vec![Some(7)]);
+    assert!(
+        !store.calls().is_empty(),
+        "the first poll performs the vortex candidate read"
     );
 }
 
