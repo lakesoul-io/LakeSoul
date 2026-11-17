@@ -466,9 +466,16 @@ needs none).  A typical trap: the two branches of a
     asserts that key and leaves the old row in place;
   - several live versions for one key resolve to the latest (the writer keeps
     the input order for a key), so a source should keep its key unique.
-* Tables consumed by an IVM view must keep LakeSoul's default retention: the
-  refresh needs the `partition_info` / `data_commit_info` history back to the
-  cursors. See the retention notes in [`lib.rs`](src/lib.rs).
+* A user-visible source or target with `partition.ttl` is rejected when a view
+  is first registered: the Flink TTL job drops whole partitions without a
+  changelog event. IVM-created internal tables never set `partition.ttl`; a
+  property added later is ignored.
+* The Flink `NewCleanJob` keeps partition versions inside `dataExpiredTime`
+  together with their files and `data_commit_info` rows. Refresh each view
+  inside that retention window; older history may be cleaned and the view then
+  rebuilds from the current state. The legacy Spark `CleanExpiredData` and
+  `cleanOldCompaction` paths are not covered. See the retention notes in
+  [`lib.rs`](src/lib.rs).
 
 ## Reading materialized views
 

@@ -4771,6 +4771,48 @@ impl IvmRuntime {
         &self.client
     }
 
+    /// Reject a user table that carries `partition.ttl`.
+    ///
+    /// The Flink clean job drops a whole partition when its TTL expires. That
+    /// is not a changelog event, so an incremental view would keep the rows
+    /// of the dropped source partition. IVM therefore requires the default
+    /// retention for user-visible sources and targets. IVM-created internal
+    /// tables are skipped: a later property added to one of them is treated
+    /// as unsupported rather than as a reason to fail every statement.
+    pub(crate) async fn ensure_default_retention(
+        &self,
+        table: &IvmTable,
+        skip_internal: bool,
+    ) -> Result<()> {
+        let Some(info) = self
+            .client
+            .get_table_info_by_table_id(&table.table_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        let properties: serde_json::Value =
+            serde_json::from_str(&info.properties).unwrap_or_default();
+        if skip_internal
+            && properties
+                .get("lakesoul.ivm.internal")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        {
+            return Ok(());
+        }
+        if let Some(ttl) = properties.get("partition.ttl") {
+            return Err(report!(
+                "table `{}.{}` has partition.ttl={ttl}; IVM requires the default \
+                 retention. Remove partition.ttl before creating or refreshing \
+                 this view.",
+                table.namespace,
+                table.table_name
+            ));
+        }
+        Ok(())
+    }
+
     /// The `ivm` schema access layer.
     pub fn metadata(&self) -> &IvmMetadata {
         &self.metadata
@@ -6317,6 +6359,15 @@ impl IvmRuntime {
         tables: &[(StateRole, &IvmTable)],
     ) -> Result<()> {
         for (role, table) in tables {
+            // The target is user-visible and must not be dropped by a TTL
+            // while the view is incremental. Check it only when the view is
+            // first registered; a property added later is ignored. Internal
+            // state tables are skipped; their layout is owned by IVM.
+            if *role == StateRole::Mv
+                && self.metadata.get_view_spec(view_id).await?.is_none()
+            {
+                self.ensure_default_retention(table, true).await?;
+            }
             self.metadata.register_state(view_id, *role, table).await?;
         }
         Ok(())
