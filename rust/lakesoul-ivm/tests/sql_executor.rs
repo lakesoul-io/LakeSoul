@@ -99,6 +99,72 @@ async fn state_table_id(runtime: &IvmRuntime, view_id: &str) -> Option<String> {
 }
 
 #[test_log::test(tokio::test)]
+async fn partition_ttl_on_a_source_or_target_is_rejected() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("m3_ttl_src_{suffix}"),
+                table_path(&dir, "src"),
+                schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("m3_ttl_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                sum_count_mv_schema_for(&source.schema, &["g".to_string()], Some("v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let sql = format!(
+        "INSERT INTO m3_ttl_mv_{suffix} \
+         SELECT g, SUM(v), COUNT(*) FROM m3_ttl_src_{suffix} GROUP BY g"
+    );
+
+    runtime
+        .client()
+        .update_table_properties(&source.table_id, r#"{"partition.ttl": "1"}"#)
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let error = executor.execute(&sql).await.unwrap_err().to_string();
+    assert!(
+        error.contains("partition.ttl"),
+        "a source TTL must be rejected: {error}"
+    );
+
+    executor
+        .runtime()
+        .client()
+        .update_table_properties(&source.table_id, "{}")
+        .await
+        .unwrap();
+    executor
+        .runtime()
+        .client()
+        .update_table_properties(&mv.table_id, r#"{"partition.ttl": "1"}"#)
+        .await
+        .unwrap();
+    let error = executor.execute(&sql).await.unwrap_err().to_string();
+    assert!(
+        error.contains("partition.ttl"),
+        "a target TTL must be rejected: {error}"
+    );
+}
+
+#[test_log::test(tokio::test)]
 async fn insert_into_bootstraps_then_increments() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();

@@ -73,10 +73,21 @@
 //! * `cleanOldCompaction` deletes the files of older compaction versions;
 //! * `dataExpiredTime` drives the async discard/compaction cleanup.
 //!
-//! V1 therefore requires that tables consumed by an IVM view keep the default
-//! retention and are not configured with those TTLs. Cursor-aware garbage
-//! collection (checking `min(ivm.cursors.last_timestamp)` before deleting) is a
-//! follow-up.
+//! The SQL entry rejects a user-visible source or target that carries
+//! `partition.ttl` when a view is first registered, because the Flink TTL job
+//! drops a whole partition without a changelog event and an incremental view
+//! could keep its old rows. IVM-created internal tables never set
+//! `partition.ttl`; a property added later is ignored, as is a property added
+//! to an already registered view.
+//!
+//! The supported cleanup path is the Flink `NewCleanJob`: it keeps partition
+//! versions inside `dataExpiredTime` together with the files and
+//! `data_commit_info` rows referenced by those versions. A source or target
+//! must therefore be refreshed inside that retention window; older history can
+//! be removed and the view then rebuilds from the current state. The legacy
+//! Spark `CleanExpiredData` and `cleanOldCompaction` paths are not covered.
+//! Cursor-aware garbage collection (checking
+//! `min(ivm.cursors.last_timestamp)` before deleting) is not implemented.
 
 pub mod config;
 #[cfg(feature = "distributed")]

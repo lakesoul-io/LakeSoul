@@ -56,6 +56,7 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
     private final String pgUrl;
     private final String pgUserName;
     private final String pgPasswd;
+    private final long dataExpiredTime;
 
     private transient DataSource dataSource;
     private transient ExecutorService asyncExecutor;
@@ -66,10 +67,12 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
     /** Whether a flush timer is already registered, so one flush is not scheduled per record. */
     private transient ValueState<Boolean> flushScheduled;
 
-    public DiscardFileDeleteFunction(String pgUrl, String pgUserName, String pgPasswd) {
+    public DiscardFileDeleteFunction(
+            String pgUrl, String pgUserName, String pgPasswd, long dataExpiredTime) {
         this.pgUrl = pgUrl;
         this.pgUserName = pgUserName;
         this.pgPasswd = pgPasswd;
+        this.dataExpiredTime = dataExpiredTime;
     }
 
     @Override
@@ -188,13 +191,17 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         boolean allSucceeded = true;
         CleanUtils cleanUtils = new CleanUtils();
         try (Connection conn = dataSource.getConnection()) {
-            // Files referenced by a pinned (tagged read) data commit stay.
-            List<String> pinned = pinnedPaths(conn, batch);
+            // Files referenced by a pinned (tagged read) commit or by a snapshot that is still
+            // inside the retention window stay. The discard queue itself already waits for the
+            // retention window; this check covers snapshots that re-added the path after it was
+            // discarded (UpdateCommit and leveled compaction reuse paths).
+            List<String> pinned =
+                    protectedPaths(conn, batch, System.currentTimeMillis() - dataExpiredTime);
             List<String> candidates = batch;
             if (!pinned.isEmpty()) {
                 candidates = new ArrayList<>(batch);
                 candidates.removeAll(pinned);
-                log.info("skip {} pinned discard files", pinned.size());
+                log.info("skip {} protected discard files", pinned.size());
             }
             if (candidates.isEmpty()) {
                 return true;
@@ -251,7 +258,8 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         }
     }
 
-    private List<String> pinnedPaths(Connection conn, List<String> batch) throws SQLException {
+    static List<String> protectedPaths(Connection conn, List<String> batch, long retainedAfter)
+            throws SQLException {
         if (batch == null || batch.isEmpty()) {
             return new ArrayList<>();
         }
@@ -260,24 +268,43 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         // the (table_id, pinned) index instead of scanning every pinned commit.
         List<String> tableIds = singleOwnerTableIds(conn, paths);
         if (tableIds == null) {
-            return pinnedPathsGlobal(conn, paths);
+            return protectedPathsGlobal(conn, paths, retainedAfter);
         }
+        Array tableIdsArray = conn.createArrayOf("text", tableIds.toArray());
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "select distinct f.path from data_commit_info dci,"
                                 + " unnest(dci.file_ops) as f"
                                 + " where dci.pinned = true"
                                 + " and dci.table_id = any(?::text[])"
-                                + " and f.path = any(?::text[])")) {
-            ps.setArray(1, conn.createArrayOf("text", tableIds.toArray()));
+                                + " and f.path = any(?::text[])"
+                                + " union"
+                                + " select distinct f.path from partition_info pi"
+                                + " join data_commit_info dci"
+                                + "   on dci.table_id = pi.table_id"
+                                + "  and dci.partition_desc = pi.partition_desc"
+                                + "  and dci.commit_id = any(pi.snapshot)"
+                                + " cross join lateral unnest(dci.file_ops) as f"
+                                + " where pi.table_id = any(?::text[])"
+                                + "  and f.path = any(?::text[])"
+                                + "  and f.file_op = 'add'"
+                                + "  and (pi.timestamp >= ? or pi.pinned"
+                                + "       or pi.version = (select max(p2.version)"
+                                + "           from partition_info p2"
+                                + "          where p2.table_id = pi.table_id"
+                                + "            and p2.partition_desc = pi.partition_desc))")) {
+            ps.setArray(1, tableIdsArray);
             ps.setArray(2, paths);
-            List<String> pinned = new ArrayList<>();
+            ps.setArray(3, tableIdsArray);
+            ps.setArray(4, paths);
+            ps.setLong(5, retainedAfter);
+            List<String> protectedPaths = new ArrayList<>();
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    pinned.add(rs.getString(1));
+                    protectedPaths.add(rs.getString(1));
                 }
             }
-            return pinned;
+            return protectedPaths;
         }
     }
 
@@ -288,7 +315,8 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
      * path shared by several tables (or missing from {@code table_info}) could be pinned by another
      * table, so the caller falls back to scanning all pinned commits.
      */
-    private List<String> singleOwnerTableIds(Connection conn, Array paths) throws SQLException {
+    private static List<String> singleOwnerTableIds(Connection conn, Array paths)
+            throws SQLException {
         int distinctPaths;
         try (PreparedStatement ps =
                 conn.prepareStatement(
@@ -329,22 +357,36 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         return tableIds.size() == distinctPaths ? tableIds : null;
     }
 
-    /** Global pinned probe used when the owning tables are not unambiguous. */
-    private List<String> pinnedPathsGlobal(Connection conn, Array paths) throws SQLException {
+    /** Global protected-path probe used when the owning tables are not unambiguous. */
+    private static List<String> protectedPathsGlobal(
+            Connection conn, Array paths, long retainedAfter) throws SQLException {
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "SELECT p.path FROM unnest(?::text[]) AS p(path)"
                                 + " WHERE EXISTS (SELECT 1 FROM data_commit_info dci,"
                                 + " unnest(dci.file_ops) AS f WHERE dci.pinned = true"
-                                + " AND f.path = p.path)")) {
+                                + " AND f.path = p.path)"
+                                + " OR EXISTS (SELECT 1 FROM partition_info pi"
+                                + " JOIN data_commit_info dci"
+                                + "   ON dci.table_id = pi.table_id"
+                                + "  AND dci.partition_desc = pi.partition_desc"
+                                + "  AND dci.commit_id = ANY(pi.snapshot)"
+                                + " CROSS JOIN LATERAL unnest(dci.file_ops) AS f"
+                                + " WHERE f.path = p.path AND f.file_op = 'add'"
+                                + "   AND (pi.timestamp >= ? OR pi.pinned"
+                                + "        OR pi.version = (SELECT max(p2.version)"
+                                + "            FROM partition_info p2"
+                                + "           WHERE p2.table_id = pi.table_id"
+                                + "             AND p2.partition_desc = pi.partition_desc)))")) {
             ps.setArray(1, paths);
-            List<String> pinned = new ArrayList<>();
+            ps.setLong(2, retainedAfter);
+            List<String> protectedPaths = new ArrayList<>();
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    pinned.add(rs.getString(1));
+                    protectedPaths.add(rs.getString(1));
                 }
             }
-            return pinned;
+            return protectedPaths;
         }
     }
 

@@ -1265,6 +1265,26 @@ impl IvmSqlExecutor {
             tables.insert(name, table);
         }
 
+        // A source or target with `partition.ttl` can have its whole source
+        // partition dropped by the clean job without a changelog event; an
+        // incremental view cannot retract those rows. Reject the shape when a
+        // view is first registered, before any state table or definition is
+        // touched. A property added to an existing view later is ignored, as
+        // agreed: drop and recreate the view to re-check it. Internal IVM
+        // tables are skipped: their retention is managed by IVM itself.
+        if self
+            .runtime
+            .metadata()
+            .get_view_spec(&view_id)
+            .await?
+            .is_none()
+        {
+            self.runtime.ensure_default_retention(&mv, false).await?;
+            for table in tables.values() {
+                self.runtime.ensure_default_retention(table, true).await?;
+            }
+        }
+
         let plan = session
             .state()
             .create_logical_plan(&select_sql)

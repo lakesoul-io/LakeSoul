@@ -135,14 +135,17 @@ public class CleanUtils {
      *
      * <p>An UpdateCommit replaces the partition snapshot but re-adds unchanged files with their
      * original paths (see Spark {@code TransactionCommit.createDataCommitInfo}), and leveled
-     * compaction reuses paths as well. A file is therefore only removed when the latest partition
-     * version no longer references it.
+     * compaction reuses paths as well. A file is therefore only removed when no retained partition
+     * version (within the clean job's retention window), the latest version, or a pinned snapshot
+     * references it.
      *
      * <p>When the live file set cannot be resolved reliably (query failure, missing metadata), the
      * cleanup is aborted and both files and data_commit_info rows are kept, so a later run can
      * retry instead of losing the only reference to the files.
      *
      * @param oldCompaction whether files may be deleted; false deletes metadata only
+     * @param retainedAfter epoch millis; partition versions at or after this timestamp are still
+     *     readable and must keep their files and commit rows
      * @return true when the version was fully cleaned up and the caller may delete its
      *     partition_info row; false when cleanup was skipped or incomplete
      */
@@ -151,7 +154,8 @@ public class CleanUtils {
             String tableId,
             String partitionDesc,
             Connection connection,
-            Boolean oldCompaction) {
+            Boolean oldCompaction,
+            long retainedAfter) {
         // A table without a vector index keeps the original cleanup path: no
         // advisory locks, no fence writes and no per-file metadata round trips.
         try (DataFileReadLeaseGuard readers =
@@ -165,7 +169,13 @@ public class CleanUtils {
             }
             boolean complete =
                     deleteFileAndDataCommitInfoUnlocked(
-                            snapshot, tableId, partitionDesc, connection, oldCompaction, readers);
+                            snapshot,
+                            tableId,
+                            partitionDesc,
+                            connection,
+                            oldCompaction,
+                            retainedAfter,
+                            readers);
             if (readers != null) {
                 readers.commit();
             }
@@ -181,19 +191,21 @@ public class CleanUtils {
             String partitionDesc,
             Connection connection,
             Boolean oldCompaction,
+            long retainedAfter,
             DataFileReadLeaseGuard readers) {
         Set<String> livePaths = null;
         if (oldCompaction) {
             try {
-                if (hasMissingLiveCommit(connection, tableId, partitionDesc)) {
+                if (hasMissingLiveCommit(connection, tableId, partitionDesc, retainedAfter)) {
                     logger.error(
-                            "{}/{} latest snapshot has missing data_commit_info, abort cleanup to"
+                            "{}/{} retained snapshot has missing data_commit_info, abort cleanup to"
                                     + " keep metadata",
                             tableId,
                             partitionDesc);
                     return false;
                 }
-                livePaths = getLatestSnapshotPaths(connection, tableId, partitionDesc);
+                livePaths =
+                        getRetainedSnapshotPaths(connection, tableId, partitionDesc, retainedAfter);
                 if (livePaths.isEmpty()) {
                     logger.warn(
                             "no live file path resolved for {}/{}, abort cleanup to avoid deleting"
@@ -272,7 +284,7 @@ public class CleanUtils {
                 }
                 if (protectedCount > 0) {
                     logger.warn(
-                            "skip {} files of commit {} still referenced by the latest snapshot of"
+                            "skip {} files of commit {} still referenced by a retained snapshot of"
                                     + " {}/{}",
                             protectedCount,
                             commitId,
@@ -298,28 +310,39 @@ public class CleanUtils {
                 }
             }
 
-            deleteDataCommitInfo(connection, tableId, partitionDesc, commitId);
+            deleteDataCommitInfo(connection, tableId, partitionDesc, commitId, retainedAfter);
         }
         return complete;
     }
 
     private void deleteDataCommitInfo(
-            Connection connection, String tableId, String partitionDesc, String commitId) {
+            Connection connection,
+            String tableId,
+            String partitionDesc,
+            String commitId,
+            long retainedAfter) {
         String deleteDataCommitInfoSql =
-                "DELETE FROM data_commit_info \n"
-                        + "WHERE table_id = '"
-                        + tableId
-                        + "' \n"
-                        + "AND commit_id = '"
-                        + commitId
-                        + "' \n"
-                        + "AND partition_desc = '"
-                        + partitionDesc
-                        + "' \n"
-                        + "AND pinned = false";
+                "DELETE FROM data_commit_info d \n"
+                        + "WHERE d.table_id = ? \n"
+                        + "AND d.commit_id = ?::uuid \n"
+                        + "AND d.partition_desc = ? \n"
+                        + "AND d.pinned = false \n"
+                        + "AND NOT EXISTS ( \n"
+                        + "  SELECT 1 FROM partition_info p \n"
+                        + "  WHERE p.table_id = d.table_id \n"
+                        + "    AND p.partition_desc = d.partition_desc \n"
+                        + "    AND d.commit_id = ANY(p.snapshot) \n"
+                        + "    AND (p.timestamp >= ? OR p.pinned \n"
+                        + "         OR p.version = (SELECT max(version) FROM partition_info \n"
+                        + "                        WHERE table_id = ? AND partition_desc = ?)))";
         try (PreparedStatement preparedStatement =
                 connection.prepareStatement(deleteDataCommitInfoSql)) {
-            logger.info(deleteDataCommitInfoSql);
+            preparedStatement.setString(1, tableId);
+            preparedStatement.setObject(2, UUID.fromString(commitId));
+            preparedStatement.setString(3, partitionDesc);
+            preparedStatement.setLong(4, retainedAfter);
+            preparedStatement.setString(5, tableId);
+            preparedStatement.setString(6, partitionDesc);
             preparedStatement.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -327,11 +350,13 @@ public class CleanUtils {
     }
 
     /**
-     * All add paths referenced by the latest partition version. The union of adds is a conservative
-     * check: leaking a file is acceptable, deleting a referenced one is not.
+     * All add paths referenced by retained partition versions, the latest version, or a pinned
+     * snapshot. The union of adds is a conservative check: leaking a file is acceptable, deleting a
+     * referenced one is not.
      */
-    private Set<String> getLatestSnapshotPaths(
-            Connection connection, String tableId, String partitionDesc) throws SQLException {
+    private Set<String> getRetainedSnapshotPaths(
+            Connection connection, String tableId, String partitionDesc, long retainedAfter)
+            throws SQLException {
         String sql =
                 "SELECT DISTINCT file_op.path \n"
                         + "FROM partition_info p \n"
@@ -342,14 +367,16 @@ public class CleanUtils {
                         + "CROSS JOIN LATERAL unnest(d.file_ops) AS file_op \n"
                         + "WHERE p.table_id = ? \n"
                         + "  AND p.partition_desc = ? \n"
-                        + "  AND p.version = (SELECT max(version) FROM partition_info \n"
-                        + "                   WHERE table_id = ? AND partition_desc = ?) \n"
+                        + "  AND (p.timestamp >= ? OR p.pinned \n"
+                        + "       OR p.version = (SELECT max(version) FROM partition_info \n"
+                        + "                       WHERE table_id = ? AND partition_desc = ?)) \n"
                         + "  AND file_op.file_op = 'add'";
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, tableId);
             ps.setString(2, partitionDesc);
-            ps.setString(3, tableId);
-            ps.setString(4, partitionDesc);
+            ps.setLong(3, retainedAfter);
+            ps.setString(4, tableId);
+            ps.setString(5, partitionDesc);
             try (ResultSet rs = ps.executeQuery()) {
                 Set<String> paths = new HashSet<>();
                 while (rs.next()) {
@@ -361,18 +388,20 @@ public class CleanUtils {
     }
 
     /**
-     * Whether a commit of the latest snapshot has no data_commit_info row. Without the full live
-     * set file deletion is unsafe.
+     * Whether a commit of a retained/latest/pinned snapshot has no data_commit_info row. Without
+     * the full retained live set file deletion is unsafe.
      */
     private boolean hasMissingLiveCommit(
-            Connection connection, String tableId, String partitionDesc) throws SQLException {
+            Connection connection, String tableId, String partitionDesc, long retainedAfter)
+            throws SQLException {
         String sql =
                 "SELECT count(*) \n"
                         + "FROM partition_info p, unnest(p.snapshot) c \n"
                         + "WHERE p.table_id = ? \n"
                         + "  AND p.partition_desc = ? \n"
-                        + "  AND p.version = (SELECT max(version) FROM partition_info \n"
-                        + "                   WHERE table_id = ? AND partition_desc = ?) \n"
+                        + "  AND (p.timestamp >= ? OR p.pinned \n"
+                        + "       OR p.version = (SELECT max(version) FROM partition_info \n"
+                        + "                       WHERE table_id = ? AND partition_desc = ?)) \n"
                         + "  AND NOT EXISTS (SELECT 1 FROM data_commit_info d \n"
                         + "                  WHERE d.table_id = p.table_id \n"
                         + "                    AND d.partition_desc = p.partition_desc \n"
@@ -380,8 +409,9 @@ public class CleanUtils {
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, tableId);
             ps.setString(2, partitionDesc);
-            ps.setString(3, tableId);
-            ps.setString(4, partitionDesc);
+            ps.setLong(3, retainedAfter);
+            ps.setString(4, tableId);
+            ps.setString(5, partitionDesc);
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 return rs.getLong(1) > 0;
