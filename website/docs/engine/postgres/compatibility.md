@@ -28,7 +28,7 @@ covered today.
 | --- | --- |
 | Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
 | DDL | `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` schema evolution (add/widen columns, `SET`/`RESET` supported options), primary keys, `PARTITIONED BY`, `WITH (...)` |
-| Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
+| Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `COPY ... FROM STDIN` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
 | Catalog | `pg_catalog`, `information_schema`, `psql \d`, `pg_cursors`, `current_database()`, SQLAlchemy reflection through the `psycopg2` dialect |
@@ -40,9 +40,11 @@ covered today.
 
 These return SQLSTATE `0A000` rather than being silently ignored:
 
-- `DELETE`, `TRUNCATE`, `COPY`, `CREATE TABLE AS`, `CREATE TEMP TABLE`
-- Writes inside a multi-statement simple-query batch; DDL, `COPY`, IVM maintenance,
-  subscriptions and savepoints inside an explicit transaction block
+- `DELETE`, `TRUNCATE`, `CREATE TABLE AS`, `CREATE TEMP TABLE`
+- `COPY ... TO STDOUT`, `COPY ... FROM` a file or program, `COPY (query) ...`,
+  `FORMAT binary` and the COPY options listed in [COPY FROM STDIN](copy.md)
+- Writes and `COPY` inside a multi-statement simple-query batch; DDL, IVM
+  maintenance, subscriptions and savepoints inside an explicit transaction block
 - `UPDATE` on CDC tables, tables without a primary key, append-only tables,
   `UPDATE ... FROM`, and assignments to primary-key or partition columns
 - `ON CONFLICT` on range-partitioned tables; the general `DO UPDATE` form on CDC
@@ -62,6 +64,9 @@ These return SQLSTATE `0A000` rather than being silently ignored:
 | `25P02` | Current transaction is aborted |
 | `40001` | Serialization failure; retry |
 | `42601` | Syntax error or column-count mismatch |
+| `22P02` | Invalid text representation for a column type |
+| `22P04` | Malformed `COPY` stream or row |
+| `23502` | NOT NULL violation |
 | `42703` | Undefined column |
 | `42804` | Datatype mismatch |
 | `42P01` | Undefined table |
@@ -84,15 +89,17 @@ known boundaries.
 A real-driver baseline lives in
 `rust/postgres-lakesoul/client-compat/`. It currently runs psycopg2, psycopg3,
 SQLAlchemy and pgjdbc against a live endpoint and covers connect/`SELECT`,
-parameterized writes including `bytea`, batches, UPSERT, transactions,
-duplicate-key recovery, catalog discovery, SQLAlchemy reflection, forward-only
-named cursors, fetch-size cursors and Metabase-style startup statements.
+parameterized writes including `bytea`, `COPY ... FROM STDIN` (TEXT and CSV
+through psycopg2, psycopg3 and pgjdbc `CopyManager`), batches, UPSERT,
+transactions, duplicate-key recovery, catalog discovery, SQLAlchemy reflection,
+forward-only named cursors, fetch-size cursors and Metabase-style startup
+statements.
 
 The current baseline passes the core Python and JDBC workflows, including psql
 `\d`, `bytea` round-trips and SQLAlchemy reflection through the `psycopg2`
 dialect. Named cursors are forward-only and non-holdable; `WITH HOLD`,
 `SCROLL` and backward fetches are explicitly refused. Known gaps are kept
-visible rather than hidden: `COPY FROM STDIN` and `RETURNING` for
+visible rather than hidden: `COPY ... TO STDOUT` and `RETURNING` for
 `INSERT ... SELECT`/`ON CONFLICT`/`UPDATE`. SQLAlchemy's
 `psycopg3` dialect is not part of the baseline yet because its reflection
 starts nested transactions (`SAVEPOINT`), which LakeSoul does not support. See
@@ -111,5 +118,6 @@ Treat the tables above as the contract.
 
 - [DDL](ddl.md)
 - [Insert and upsert](insert-and-upsert.md)
+- [COPY FROM STDIN](copy.md)
 - [Transactions and catalog](transactions-and-catalog.md)
 - [SQL errors](../../reference/sql-errors.md)

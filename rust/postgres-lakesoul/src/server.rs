@@ -336,6 +336,10 @@ impl LakeSoulQueryRouter {
         // let an error after a `COMMIT` resurrect the ended transaction as
         // failed.
         let mut failed = false;
+        // A `COPY ... FROM STDIN` hands the connection to the copy
+        // sub-protocol; after its `CopyInResponse` the batch has no
+        // `ReadyForQuery` and no further statement runs.
+        let mut copy_started = false;
         let outcome: PgWireResult<()> = async {
             // `RESET TIME ZONE` is a multi-word PostgreSQL parameter name that
             // sqlparser cannot parse; a single-statement form is rewritten
@@ -350,6 +354,11 @@ impl LakeSoulQueryRouter {
             // single such statement to the internal sentinel SELECT its hook
             // claims; a mixed batch is rejected here.
             let query_text = rewrite_special_statements(&query_text)?;
+            // COPY takes over the connection until `CopyDone`; the rest of a
+            // batch would never run. The check runs on the text because the
+            // parser reads everything after `COPY ... FROM STDIN;` as inline
+            // copy data and would hide the statements that follow.
+            crate::copy_in::refuse_copy_in_batch(&query_text)?;
             let statements =
                 split_statements(&query_text).unwrap_or_else(|| vec![query_text.clone()]);
             if statements.is_empty() {
@@ -435,6 +444,7 @@ impl LakeSoulQueryRouter {
                 transaction_status = client.transaction_status();
                 for response in responses {
                     let response = guard_response(response, &execution);
+                    let is_copy_in = matches!(response, Response::CopyIn(_));
                     // The socket write is bounded as well: a client that stops
                     // reading must not keep the statement - and the execution
                     // behind its rows - alive behind a full send buffer.
@@ -453,6 +463,19 @@ impl LakeSoulQueryRouter {
                         state.cancellation.finish_execution(&execution);
                         return Err(error);
                     }
+                    if is_copy_in {
+                        // The client now streams CopyData; pgwire owns the
+                        // state transition and sends `ReadyForQuery` after
+                        // `CopyDone`.
+                        execution.end_after_send(StatementOutcome::Completed);
+                        state.cancellation.finish_execution(&execution);
+                        client.set_state(PgWireConnectionState::CopyInProgress(false));
+                        copy_started = true;
+                        break;
+                    }
+                }
+                if copy_started {
+                    break;
                 }
                 // The statement is over once its rows have been sent: a
                 // response that carried no row stream (a `SET`, a transaction
@@ -495,6 +518,11 @@ impl LakeSoulQueryRouter {
         }
         client.set_transaction_status(transaction_status);
         outcome?;
+        if copy_started {
+            // `send_response` already sent `CopyInResponse`; the protocol
+            // continues with CopyData frames, not another query.
+            return Ok(());
+        }
 
         client.set_state(PgWireConnectionState::ReadyForQuery);
         send_ready_for_query(client, transaction_status).await?;
@@ -510,7 +538,7 @@ impl LakeSoulQueryRouter {
 /// row wrapper too, which records what the result ended on - the rows running
 /// out, the result limit, a failing row - for the caller to report once the
 /// send is over.
-async fn run_under_limit<T, F>(
+pub(crate) async fn run_under_limit<T, F>(
     execution: &Arc<ExecutionState>,
     future: F,
 ) -> PgWireResult<T>
@@ -928,6 +956,9 @@ pub(crate) fn connection_statement_hooks(
     hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
     hooks.push(Arc::new(crate::ivm::IvmInsertHook));
     hooks.push(Arc::new(crate::insert::InsertStatementHook));
+    // COPY runs the copy sub-protocol: the hook answers the statement with
+    // `CopyInResponse` and the router's `CopyHandler` consumes the frames.
+    hooks.push(Arc::new(crate::copy_in::CopyStatementHook));
     if let Some(jobs) = factory.jobs() {
         hooks.push(Arc::new(crate::jobs::JobStatementHook::new(Arc::clone(
             jobs,
@@ -1759,6 +1790,10 @@ impl PgWireServerHandlers for LakeSoulHandlers {
 
     fn cancel_handler(&self) -> Arc<impl CancelHandler> {
         self.cancel_handler.clone()
+    }
+
+    fn copy_handler(&self) -> Arc<impl pgwire::api::copy::CopyHandler> {
+        self.router.clone()
     }
 }
 

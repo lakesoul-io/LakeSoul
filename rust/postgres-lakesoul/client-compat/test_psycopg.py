@@ -387,30 +387,153 @@ def test_pg_cursors_metadata(driver, connector, table_factory):
         connection.commit()
 
 
-def test_copy_from_stdin_is_explicitly_refused(driver, connector, table_factory):
+def test_copy_from_stdin_text_and_csv(driver, connector, table_factory):
+    """Both drivers load TEXT and CSV through COPY FROM STDIN, including NULL,
+    an escaped newline, a quoted comma and a quoted newline."""
     table = table_factory("id bigint primary key, name text", "client_copy")
     with closing(connector(driver)) as connection:
         with connection.cursor() as cursor:
-            try:
+            text = "COPY " + table + " (id, name) FROM STDIN"
+            if driver == "psycopg2":
+                cursor.copy_expert(
+                    text, io.StringIO("1\talice\n2\t\\N\n3\tline\\nnext\n")
+                )
+            else:
+                with cursor.copy(text) as copy:
+                    copy.write("1\talice\n")
+                    copy.write("2\t\\N\n")
+                    copy.write("3\tline\\nnext\n")
+            cursor.execute("SELECT id, name FROM " + table + " ORDER BY id")
+            assert rows(cursor) == [
+                (1, "alice"),
+                (2, None),
+                (3, "line\nnext"),
+            ]
+
+            csv = (
+                "COPY "
+                + table
+                + " (id, name) FROM STDIN WITH (FORMAT csv, HEADER true)"
+            )
+            data = 'id,name\n4,"bob, jr"\n5,"line\nnext"\n6,""\n'
+            if driver == "psycopg2":
+                cursor.copy_expert(csv, io.StringIO(data))
+            else:
+                with cursor.copy(csv) as copy:
+                    copy.write(data)
+            cursor.execute(
+                "SELECT id, name FROM " + table + " WHERE id >= 4 ORDER BY id"
+            )
+            assert rows(cursor) == [
+                (4, "bob, jr"),
+                (5, "line\nnext"),
+                (6, ""),
+            ]
+
+
+def test_copy_driver_encoders(driver, connector, table_factory):
+    """`copy_from` and `write_row` are the driver-side encoders import tools
+    use; they must produce TEXT COPY that the server decodes."""
+    table = table_factory("id bigint primary key, name text", "client_copy_api")
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            if driver == "psycopg2":
+                cursor.copy_from(
+                    io.StringIO("7\teve\n8\t\\N\n"),
+                    table,
+                    columns=("id", "name"),
+                )
+            else:
+                with cursor.copy("COPY " + table + " (id, name) FROM STDIN") as copy:
+                    copy.write_row((7, "eve"))
+                    copy.write_row((8, None))
+            cursor.execute("SELECT id, name FROM " + table + " ORDER BY id")
+            assert rows(cursor) == [(7, "eve"), (8, None)]
+
+
+def test_copy_from_stdin_is_atomic_and_transactional(driver, connector, table_factory):
+    """A failed COPY publishes none of its rows, and a successful COPY inside
+    a block is staged until COMMIT."""
+    table = table_factory("id bigint primary key, name text", "client_copy_tx")
+    with closing(connector(driver, autocommit=False)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO " + table + " (id, name) VALUES (1, 'existing')"
+            )
+            with pytest.raises(Exception) as info:
                 if driver == "psycopg2":
                     cursor.copy_expert(
-                        f"COPY {table} (id, name) FROM STDIN WITH (FORMAT csv)",
-                        io.StringIO("1,alice\n"),
+                        "COPY " + table + " (id, name) FROM STDIN",
+                        io.StringIO("2\tnew\n1\tduplicate\n"),
                     )
                 else:
                     with cursor.copy(
-                        f"COPY {table} (id, name) FROM STDIN WITH (FORMAT csv)"
+                        "COPY " + table + " (id, name) FROM STDIN"
                     ) as copy:
-                        copy.write("1,alice\n")
-            except Exception as error:
-                assert sqlstate(error) == "0A000"
-                cursor.execute("SELECT 1")
-                assert rows(cursor) == [(1,)]
-            else:
-                pytest.fail(
-                    "COPY FROM STDIN unexpectedly succeeded; update the "
-                    "compatibility baseline"
+                        copy.write("2\tnew\n1\tduplicate\n")
+            assert sqlstate(info.value) == "23505"
+            connection.rollback()
+            cursor.execute("SELECT count(*) FROM " + table)
+            assert rows(cursor) == [(0,)]
+
+            cursor.execute("INSERT INTO " + table + " (id, name) VALUES (10, 'ten')")
+            if driver == "psycopg2":
+                cursor.copy_expert(
+                    "COPY " + table + " (id, name) FROM STDIN",
+                    io.StringIO("11\televen\n"),
                 )
+            else:
+                with cursor.copy("COPY " + table + " (id, name) FROM STDIN") as copy:
+                    copy.write("11\televen\n")
+            connection.commit()
+            cursor.execute("SELECT id FROM " + table + " ORDER BY id")
+            assert rows(cursor) == [(10,), (11,)]
+
+
+def test_copy_aborted_by_client(connector, table_factory):
+    """psycopg3 sends CopyFail when its copy block raises. The server must
+    discard what was buffered, answer the failure, and keep the connection
+    usable; nothing is written."""
+    table = table_factory("id bigint primary key, name text", "client_copy_abort")
+    with closing(connector("psycopg3")) as connection:
+        observed = None
+        try:
+            with connection.cursor() as cursor:
+                with cursor.copy("COPY " + table + " (id, name) FROM STDIN") as copy:
+                    copy.write("1\tpartial\n")
+                    raise RuntimeError("abort the copy")
+        except RuntimeError:
+            pass
+        except Exception as error:  # the driver may surface the server error
+            observed = sqlstate(error)
+            if not connection.autocommit:
+                connection.rollback()
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM " + table)
+            assert rows(cursor) == [(0,)]
+            cursor.execute("SELECT 1")
+            assert rows(cursor) == [(1,)]
+        if observed is not None:
+            assert observed == "57014", observed
+
+
+def test_copy_from_stdin_must_be_alone(connector):
+    """A batch cannot hand the connection to the copy sub-protocol and then
+    run the statements after it; refuse it before anything executes."""
+    with closing(connector("psycopg2")) as connection:
+        with connection.cursor() as cursor:
+            with pytest.raises(Exception) as info:
+                cursor.execute("COPY client_copy_batch FROM STDIN; SELECT 1")
+            assert sqlstate(info.value) == "0A000"
+
+
+def test_copy_to_stdout_is_explicitly_refused(connector):
+    with closing(connector("psycopg2")) as connection:
+        with connection.cursor() as cursor:
+            with pytest.raises(Exception) as info:
+                cursor.copy_expert("COPY (SELECT 1) TO STDOUT", io.StringIO())
+            assert sqlstate(info.value) == "0A000"
 
 
 def test_insert_returning(driver, connector, table_factory):
