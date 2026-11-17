@@ -70,4 +70,4 @@ The tokenizer is fixed when the index is created.
 
 - [Text index management](index-management.md)
 - [Benchmarks](benchmarks.md)
-- [Vector search](../vector-search/overview.md)
+- [Vector search](../vector-search/quickstart.md)

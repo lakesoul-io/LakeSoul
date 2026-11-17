@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright 2026 LakeSoul Contributors
 
-//! Runnable end-to-end example for `python/examples/vector-search/docs/向量查询使用说明.md`.
+//! Runnable end-to-end example for `website/docs/engine/vector-search/api.md`.
 //!
 //! It builds the guide's demo table, writes rows, then runs both query entries:
 //! * single-query SQL (`order by array_distance(...) limit k`);

@@ -220,7 +220,7 @@ The index control plane shares the metadata database:
 Index data lives in object storage next to the table. Vector indexes are
 IVF + RaBitQ; text indexes are Tantivy BM25. Both are maintained after the data
 commit, and both are queried by the same engine that reads the table. See
-[Vector index management](vector-search/index-management.md) and
+[Vector index management](vector-search/api.md) and
 [Text index management](full-text-search/index-management.md).
 
 ## Incremental compute on the commit log
@@ -285,5 +285,5 @@ trade-offs, not omissions.
 - [Engine overview](overview.md)
 - [PostgreSQL front end](postgres/overview.md)
 - [Incremental SQL](incremental-sql/overview.md)
-- [Vector search](vector-search/overview.md)
+- [Vector search](vector-search/quickstart.md)
 - [Physical file formats](../operations/physical-file-formats.md)

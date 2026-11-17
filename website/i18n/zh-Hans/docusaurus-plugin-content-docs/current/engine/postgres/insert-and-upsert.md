@@ -96,4 +96,4 @@ SET day = EXCLUDED.day,
 
 - [事务与目录](transactions-and-catalog.md)
 - [增量 SQL](../incremental-sql/getting-started.md)
-- [向量检索](../vector-search/overview.md)
+- [向量检索](../vector-search/quickstart.md)

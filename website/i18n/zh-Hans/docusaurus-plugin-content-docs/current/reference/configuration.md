@@ -36,7 +36,7 @@ SPDX-License-Identifier: Apache-2.0
 | `AWS_SECRET_ACCESS_KEY` / `--s3-secret-key` | Secret key |
 | `AWS_S3_VIRTUAL_HOST_STYLE` / `--s3-virtual-host-style` | Virtual-hosted 请求 |
 
-Python SDK 构建索引时读取 `LAKESOUL_OBJECT_STORE_*`；见[向量索引管理](../engine/vector-search/index-management.md)。
+Python SDK 构建索引时读取 `LAKESOUL_OBJECT_STORE_*`；见[向量索引配置](../engine/vector-search/configuration.md)。
 
 ## 端点
 

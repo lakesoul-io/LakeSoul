@@ -92,7 +92,7 @@ SELECT region, sum(amount) FROM orders GROUP BY 1;
 - [写入与 Upsert](../engine/postgres/insert-and-upsert.md) —— `ON CONFLICT` 语义、重复键和写入路径。
 - [增量 SQL](../engine/incremental-sql/getting-started.md) —— 用 `INSERT ... SELECT` 基于 commit log 维护目标表。
 - [PostgreSQL 订阅](../engine/postgres/subscription.md) —— 把源 PostgreSQL publication 复制到 LakeSoul CDC 表。
-- [向量检索](../engine/vector-search/overview.md) —— 湖上 ANN 索引上的 兼容 pgvector 的 SQL。
+- [向量检索](../engine/vector-search/api.md) —— 湖上 ANN 索引上兼容 pgvector 的 SQL 与 Python API。
 
 ## 对象存储
 

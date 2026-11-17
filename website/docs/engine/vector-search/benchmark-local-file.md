@@ -1,7 +1,12 @@
+---
+sidebar_position: 5
+sidebar_label: "Benchmark: local file (SSD + memory)"
+---
+
 # Vector Index Benchmark (Local File)
 
 > This is the **Local File** (local filesystem) variant. The old upsert/rebuild results are retired.
-> This benchmark covers **build + index search only**; it does not test upserts. The MinIO (three-tier cache) variant is [MinIO benchmark](17-vector-index-benchmark-minio-large.md).
+> This benchmark covers **build + index search only**; it does not test upserts. The MinIO (three-tier cache) variant is [MinIO benchmark](/docs/engine/vector-search/benchmark-minio-large).
 
 ## 1. Summary
 
@@ -255,12 +260,12 @@ the short batch. Keep `hash_bucket_num × vector_search.parallelism` near the CP
 
 ## 10. Raw results
 
-- [raw/sift_query.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
-- [raw/glove.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
-- [raw/glove_target.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
-- [raw/glove_target_fix.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target_fix.jsonl)
-- [raw/gist.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
-- [raw/deep.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
+- [raw/sift_query.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
+- [raw/glove.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
+- [raw/glove_target.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
+- [raw/glove_target_fix.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target_fix.jsonl)
+- [raw/gist.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
+- [raw/deep.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
 
 ## Appendix A: full index-only parameter sweep
 

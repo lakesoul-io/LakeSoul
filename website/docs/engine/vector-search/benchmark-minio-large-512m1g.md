@@ -1,3 +1,8 @@
+---
+sidebar_position: 7
+sidebar_label: "Benchmark: MinIO L1 512 MiB / L2 1 GiB"
+---
+
 # Large-Scale MinIO Benchmark (L1 512MiB / L2 1GiB)
 
 > Same large-scale protocol as the 8GiB run, but **L1=512MiB, L2=1GiB**.

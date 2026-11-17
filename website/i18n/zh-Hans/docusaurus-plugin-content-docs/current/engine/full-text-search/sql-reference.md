@@ -68,4 +68,4 @@ WHERE text_match(body, 'lakehouse');
 
 - [索引管理](index-management.md)
 - [Benchmark](benchmarks.md)
-- [向量检索](../vector-search/overview.md)
+- [向量检索](../vector-search/quickstart.md)

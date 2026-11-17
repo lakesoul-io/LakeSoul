@@ -116,4 +116,4 @@ inserted rows are already committed and visible.
 
 - [Transactions and catalog](transactions-and-catalog.md)
 - [Incremental SQL](../incremental-sql/getting-started.md)
-- [Vector search](../vector-search/overview.md)
+- [Vector search](../vector-search/quickstart.md)

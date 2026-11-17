@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright 2026 LakeSoul Contributors
 
-//! End-to-end QPS check for the code in `python/examples/vector-search/docs/向量查询使用说明.md`.
+//! End-to-end QPS check for the code in `website/docs/engine/vector-search/api.md`.
 //!
 //! Runs the guide's two query entries against a real LakeSoul table:
 //! * single-query SQL — one `SessionContext::sql` statement per query,

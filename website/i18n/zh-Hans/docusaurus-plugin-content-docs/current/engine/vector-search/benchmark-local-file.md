@@ -1,7 +1,12 @@
+---
+sidebar_position: 5
+sidebar_label: "基准：本地文件"
+---
+
 # 向量索引基准测试（Local File）
 
 > 本文档是 **Local File（本地文件系统）** 版本。旧版 upsert/rebuild 结果已全部废弃。
-> 本轮只测试**构建和索引检索**，不测试 upsert/增量维护。MinIO 版本见 [MinIO 版本](17-vector-index-benchmark-minio-large.md)。
+> 本轮只测试**构建和索引检索**，不测试 upsert/增量维护。MinIO 版本见 [MinIO 版本](/docs/engine/vector-search/benchmark-minio-large)。
 
 ## 1. 结论摘要
 
@@ -252,12 +257,12 @@ native batch 已经按 bucket 并行探测；短 batch 再增加 `parallelism` �
 
 ## 10. 原始结果
 
-- [raw/sift_query.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
-- [raw/glove.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
-- [raw/glove_target.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
-- [raw/glove_target_fix.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target_fix.jsonl)
-- [raw/gist.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
-- [raw/deep.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
+- [raw/sift_query.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
+- [raw/glove.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
+- [raw/glove_target.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
+- [raw/glove_target_fix.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target_fix.jsonl)
+- [raw/gist.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
+- [raw/deep.jsonl](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
 
 ## 附录 A：完整 index-only 参数扫描
 

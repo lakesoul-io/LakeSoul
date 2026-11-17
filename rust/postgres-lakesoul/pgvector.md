@@ -30,7 +30,7 @@ ORDER BY query_id, rank;
 - `SET lakesoul_vector_batch.query_window='256'` 控制最多256个query的窗口，自动跨小Arrow输入batch填充；还可设置 `parallelism`、`io_concurrency`、`memory_bytes`。输入/工作/输出临时预算上限128MiB，单请求最多65536个query、有效输入64MiB。
 - 一个请求固定目标快照和可续租的 `index_read_lease`；逻辑drop阻止新batch使用该索引，物理清理等待已有读者。客户端取消或租约失效传递到实际工作，停止前保留保护。
 
-`EXPLAIN` 显示 `VectorBatchSearchExec`，`EXPLAIN ANALYZE` 提供window/query、cluster/block复用等指标。PG最终会话测试已验证1,000个query按 `[256,256,256,232]` 执行4个窗口；真实pgwire普通/扩展协议批查与小数据集基线一致。使用示例见 [Notebook](../../python/examples/vector-search/tutorial/native_batch_sql.ipynb)，验证范围见 [Validation](../../python/examples/vector-search/docs/native-batch-validation.md)。这是LakeSoul pgwire扩展，不是上游pgvector扩展的批查询功能，也不是逐query串行SQL循环。
+`EXPLAIN` 显示 `VectorBatchSearchExec`，`EXPLAIN ANALYZE` 提供window/query、cluster/block复用等指标。PG最终会话测试已验证1,000个query按 `[256,256,256,232]` 执行4个窗口；真实pgwire普通/扩展协议批查与小数据集基线一致。使用示例见 [Notebook](../../python/examples/vector-search/tutorial/native_batch_sql.ipynb)，验证范围见 [Vector SQL 与批量 API](../../website/docs/engine/vector-search/api.md)。这是LakeSoul pgwire扩展，不是上游pgvector扩展的批查询功能，也不是逐query串行SQL循环。
 
 ---
 
@@ -827,8 +827,8 @@ export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456
 
 服务启动时如果没有 `LAKESOUL_CACHE`，会打印 WARN：exact 查询仍正确，但会回退到
 reader 路径（明显更慢）。exact 的单查询/批量实测见
-[Warm Cache](../../python/examples/vector-search/docs/warm-cache.md) 和
-[Performance](../../python/examples/vector-search/docs/performance.md)。
+[Configuration](../../website/docs/engine/vector-search/configuration.md) 和
+[Benchmark](../../website/docs/engine/vector-search/benchmarks.md)。
 
 历史 R58 的 pgvector QPS 表（exact 261–598 QPS）是在已删除的整文件 payload 模式下
 测得的，不再代表当前版本；不要按那张表做容量规划。index-only（`rerank='index'`）
