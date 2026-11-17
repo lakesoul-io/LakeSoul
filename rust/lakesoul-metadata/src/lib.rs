@@ -45,6 +45,8 @@ pub mod index_catalog;
 mod metadata_client;
 mod metrics;
 mod pooled_client;
+mod transaction;
+pub use transaction::MetadataTransaction;
 pub mod rbac;
 pub mod utils;
 
@@ -1787,6 +1789,15 @@ pub async fn execute_insert(
             }
             let result = {
                 let transaction = client.transaction().await?;
+                let mut table_ids = publication
+                    .partitions
+                    .iter()
+                    .filter_map(|entry| entry.partition_info.as_ref())
+                    .map(|partition| partition.table_id.as_str())
+                    .collect::<Vec<_>>();
+                table_ids.sort_unstable();
+                table_ids.dedup();
+                lock_existing_tables(&transaction, table_ids).await?;
                 let transaction_insert_statement = match transaction
                     .prepare(
                         "insert into partition_info(
@@ -1920,6 +1931,13 @@ pub async fn execute_insert(
             let data_commit_info_list = wrapper.data_commit_info;
             let result = {
                 let transaction = client.transaction().await?;
+                let mut table_ids = data_commit_info_list
+                    .iter()
+                    .map(|info| info.table_id.as_str())
+                    .collect::<Vec<_>>();
+                table_ids.sort_unstable();
+                table_ids.dedup();
+                lock_existing_tables(&transaction, table_ids).await?;
                 let prepared = transaction
                     .prepare(
                         "insert into data_commit_info(
@@ -2116,7 +2134,7 @@ pub async fn execute_update(
     let span = tracing::Span::current();
     span.record("dao_type", dao_type_name.as_str());
     let mut request = MetadataRequestMetrics::start("update", dao_type_name);
-    let (client, statement) = get_prepared_statement(client, &update_type).await?;
+    let (mut client, statement) = get_prepared_statement(client, &update_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)
@@ -2163,14 +2181,16 @@ pub async fn execute_update(
         }
         // Dropping a table removes the whole index directory.
         DaoType::DeleteTableInfoByIdAndPath if params.len() == 2 => {
-            let result = client.execute(&statement, &[&params[0], &params[1]]).await;
-            log_index_cleanup(
-                crate::index_catalog::clean_for_table_path::<tokio_postgres::Client>(
-                    &client, &params[1],
-                )
-                .await,
-            );
-            result
+            let transaction = client.transaction().await?;
+            let count = transaction
+                .execute(&statement, &[&params[0], &params[1]])
+                .await?;
+            if count > 0 {
+                crate::index_catalog::clean_for_table_path(&transaction, &params[1])
+                    .await?;
+            }
+            transaction.commit().await?;
+            Ok(count)
         }
         // Dropping a partition removes its index shards.
         DaoType::DeletePartitionInfoByTableIdAndPartitionDesc if params.len() == 2 => {
@@ -2517,4 +2537,27 @@ mod tests {
 
         Ok(())
     }
+}
+
+/// Every transaction that inserts table-owned metadata must participate in the
+/// same parent-row protocol as DROP, including independent staging transactions.
+async fn lock_existing_tables(
+    transaction: &tokio_postgres::Transaction<'_>,
+    table_ids: Vec<&str>,
+) -> Result<()> {
+    for table_id in table_ids {
+        if transaction
+            .query_opt(
+                "select 1 from table_info where table_id = $1::TEXT for share",
+                &[&table_id],
+            )
+            .await?
+            .is_none()
+        {
+            return Err(LakeSoulMetaDataError::NotFound(format!(
+                "table {table_id} no longer exists"
+            )));
+        }
+    }
+    Ok(())
 }

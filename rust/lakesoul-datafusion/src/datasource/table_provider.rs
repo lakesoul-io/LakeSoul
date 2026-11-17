@@ -363,6 +363,17 @@ impl LakeSoulTableProvider {
         Ok(Arc::new(infos))
     }
 
+    async fn lock_transaction_table(&self) -> DFResult<()> {
+        if let Some(sink) = self
+            .deferred_commit
+            .as_ref()
+            .and_then(|handle| handle.get())
+        {
+            sink.lock_table(&self.client, &self.table_info).await?;
+        }
+        Ok(())
+    }
+
     fn needs_output_projection(
         target_schema: &SchemaRef,
         merged_schema: &SchemaRef,
@@ -2532,6 +2543,7 @@ impl TableProvider for LakeSoulTableProvider {
         limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         let scan_started = Instant::now();
+        self.lock_transaction_table().await?;
         let session_state = session_state
             .as_any()
             .downcast_ref::<SessionState>()

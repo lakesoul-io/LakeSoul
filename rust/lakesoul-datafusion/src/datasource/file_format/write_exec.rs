@@ -1649,6 +1649,7 @@ async fn commit_reports(
     };
     let result = wait_for_commit(
         metadata_client,
+        table_info,
         table_name,
         primary_keys,
         object_store_options,
@@ -1694,6 +1695,7 @@ enum CommitGuard {
 #[allow(clippy::too_many_arguments)]
 async fn wait_for_commit(
     client: MetaDataClientRef,
+    original_table: Arc<TableInfo>,
     table_name: String,
     primary_keys: Vec<String>,
     object_store_options: SecretMap,
@@ -1869,18 +1871,7 @@ async fn wait_for_commit(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|error| DataFusionError::Execution(error.to_string()))?
                 .as_millis() as i64;
-            let table_ref = TableReference::from(table_name.as_str());
-            let table_id = client
-                .get_table_info_by_table_name(
-                    table_ref.table(),
-                    table_ref.schema().unwrap_or("default"),
-                )
-                .await
-                .map_err(metadata_error)?
-                .ok_or_else(|| {
-                    DataFusionError::Execution(format!("table {table_name} not found"))
-                })?
-                .table_id;
+            let table_id = original_table.table_id.clone();
             publication_table = Some(table_id.clone());
             let mut commits =
                 Vec::with_capacity(partitioned_file_path_and_row_count.len());

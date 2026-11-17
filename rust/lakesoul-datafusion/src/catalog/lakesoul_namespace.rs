@@ -249,10 +249,16 @@ impl LakeSoulNamespace {
                         );
                         return Ok(None);
                     }
-                    client
-                        .delete_table_by_table_info_cascade(&table_info)
+                    let deleted = client
+                        .delete_table_by_table_id_cascade_if_exists(
+                            &table_info.table_id,
+                            &table_info.table_path,
+                        )
                         .await
                         .context("delete table info failed")?;
+                    if !deleted {
+                        return Ok(None);
+                    }
                     Ok(Some(table.as_provider(pushdown_filters).await?))
                 }
                 Err(report) => match report.current_context() {
@@ -325,6 +331,15 @@ impl SchemaProvider for LakeSoulNamespace {
                 return Ok(None);
             }
         };
+        if let Some(sink) = self
+            .provider_options
+            .deferred_commit
+            .as_ref()
+            .and_then(|handle| handle.get())
+        {
+            sink.lock_table(&self.metadata_client, &table.table_info())
+                .await?;
+        }
         info!(
             "found table: {}.{} table_id: {}",
             &self.namespace,

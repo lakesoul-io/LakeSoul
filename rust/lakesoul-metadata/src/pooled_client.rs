@@ -105,6 +105,11 @@ impl PooledClient {
         }
     }
 
+    pub(crate) async fn get_owned(&self) -> Result<PgConnection<'static>> {
+        self.record_pool_metrics();
+        self.pool.get_owned().await.map_err(Into::into)
+    }
+
     pub async fn get(&self, query_type: QueryType) -> Result<PgConnection<'_>> {
         self.record_pool_metrics();
         match query_type {
@@ -197,6 +202,7 @@ pub struct PgConnectionManager {
 pub struct PgConnWithStmtCache {
     /// The postgres client.
     client: Client,
+    discard_on_return: bool,
     /// The statement cache for the postgres database.
     statement_cache: Arc<StatementCache>,
 }
@@ -216,6 +222,10 @@ impl DerefMut for PgConnWithStmtCache {
 }
 
 impl PgConnWithStmtCache {
+    pub(crate) fn discard_on_return(&mut self) {
+        self.discard_on_return = true;
+    }
+
     pub async fn prepare_cached(&self, query: &str) -> Result<Statement> {
         self.statement_cache.prepare(&self.client, query).await
     }
@@ -250,6 +260,7 @@ impl bb8::ManageConnection for PgConnectionManager {
         }
         Ok(PgConnWithStmtCache {
             client,
+            discard_on_return: false,
             statement_cache: Arc::new(StatementCache::new()),
         })
     }
@@ -262,7 +273,7 @@ impl bb8::ManageConnection for PgConnectionManager {
     }
 
     fn has_broken(&self, conn: &mut Self::Connection) -> bool {
-        self.pg_conn.has_broken(&mut conn.client)
+        conn.discard_on_return || self.pg_conn.has_broken(&mut conn.client)
     }
 }
 

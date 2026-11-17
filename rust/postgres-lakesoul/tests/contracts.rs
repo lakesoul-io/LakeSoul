@@ -71,6 +71,9 @@ mod tpch_contract;
 #[path = "contracts/transaction_contract.rs"]
 mod transaction_contract;
 
+#[path = "contracts/transaction_lock_contract.rs"]
+mod transaction_lock_contract;
+
 #[path = "contracts/type_contract.rs"]
 mod type_contract;
 

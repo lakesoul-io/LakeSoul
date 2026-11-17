@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use datafusion::arrow::util::display::array_value_to_string;
@@ -15,6 +16,22 @@ use super::{
 };
 
 impl Harness {
+    /// Observe a real PostgreSQL lock waiter blocked by this backend. The
+    /// caller concurrently polls the statement expected to wait.
+    pub async fn wait_for_metadata_blocker(&self, pid: i32) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let blocked: bool = self.reference.query_one(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))",
+                    &[&pid],
+                ).await?.get(0);
+                if blocked { return Ok::<_, anyhow::Error>(()); }
+                tokio::task::yield_now().await;
+            }
+        }).await.context("expected a PostgreSQL lock waiter")??;
+        Ok(())
+    }
+
     /// Driver tasks remain owned by teardown, including on a suite error or panic.
     pub async fn connect_lake(&self) -> Result<Client> {
         self.connect_database(&self.lake_namespace).await
@@ -274,7 +291,11 @@ impl Harness {
         Ok(client)
     }
 
-    async fn connect_extra(&self, config: &Config, reference: bool) -> Result<Client> {
+    pub(super) async fn connect_extra(
+        &self,
+        config: &Config,
+        reference: bool,
+    ) -> Result<Client> {
         let (client, task) = connect_pg(config, "sql_compat_additional").await?;
         self.state.connections.lock().push(task);
         configure_session(&client).await?;

@@ -476,7 +476,7 @@ Widenings: `smallint -> integer | bigint`, `integer -> bigint`, `real -> double 
 | Refusal matrix, no side effects | `0A000`: `DROP COLUMN`, `RENAME COLUMN`, `RENAME TO`, `ADD COLUMN ... NOT NULL / DEFAULT / PRIMARY KEY / UNIQUE`, unsupported types; array primary keys/partition columns, `SET NOT NULL`, `SET/DROP DEFAULT`, `TYPE ... USING`, a non-widening type change, any change to a range-partition or CDC column, the layout options (`hash_bucket_num`, `file_format`, `append_only`, `use_cdc`, `lakesoul_cdc_change_column`) and unknown options, constraints, `OWNER TO`, `SET LOCATION`, a statement mixing a refused action with an accepted one. `42P16`: any change to a primary-key column. `42701`: duplicate column, compared like Spark compares names case-insensitively, Unicode included (`ä` next to `Ä`; with `IF NOT EXISTS` too, since the column asked for does not exist), and `ADD COLUMN IF NOT EXISTS` naming a column of another type; of the same name and type it is a `NOTICE` and a no-op. `42703`: unknown column. `42P01`: absent table (with `IF EXISTS` a `NOTICE`). `3F000`: a schema other than `public`. `22023`: an invalid option value. Each refusal leaves `table_info` byte-identical and the connection usable | `alter_refusal_matrix_changes_nothing` |
 | Owned tables | An IVM table (`lakesoul.ivm.*` properties) and the target of an existing subscription are `0A000`; the latter succeeds once the subscription is gone. A foreign (federation) table is `0A000` | `alter_owned_tables_are_refused` |
 | Commit boundary | Like `CREATE`/`DROP`: `0A000` inside `BEGIN` and in a multi-statement simple query | `alter_is_refused_in_a_batch_and_a_block` |
-| Concurrent redefinition | A transaction block that wrote against the old definition fails its `COMMIT` with `40001` after a peer's `ALTER`, publishing nothing; the retry commits. Two concurrent `ALTER`s on one table serialize on the row lock, and the second gets `40001` ("redefined concurrently; retry") | `alter_conflicts_with_a_block_written_against_the_old_definition` |
+| Concurrent redefinition | ALTER waits for a client transaction already using the table; its staged write commits before the new definition is published, and old rows remain readable with NULL in the added column | `alter_waits_for_a_block_using_the_definition` |
 | Prepared statements | A successful `ALTER` advances this connection's settings generation through the same path as `CREATE`/`DROP` (proven by `same_connection_ddl_replans_prepared_statements`); a peer's does not (cross-connection catalog binding boundary above). An `INSERT` resolves its target at `Execute`, so one prepared before the `ALTER` - on this connection or a peer - writes against the new definition (an `INSERT` of NULL into a column whose `NOT NULL` was dropped succeeds), as does a fresh statement | `alter_replans_prepared_statements` |
 | Result types of prepared statements | A replan must not change a result the client already described: after a same-connection `ALTER` widens a selected column (`int4` -> `int8`) or `SELECT *` gains a column, `Execute` of the earlier statement is `0A000` "cached plan must not change result type" (as PostgreSQL), on every later `Execute` too, instead of sending rows the client decodes with the old types; a statement whose result columns are unchanged is replanned and runs, and a fresh Prepare describes the new types. The comparison is on column names and PostgreSQL types as `Describe` reports them, so Arrow-only differences (`Utf8`/`Utf8View`, nullability) do not refuse a replan; it applies to every replan (`SET`, `DROP` + `CREATE`), not only `ALTER` | `alter_keeps_described_result_types` |
 
@@ -749,6 +749,38 @@ the process; a plaintext client is `28000` with `--require-tls`) and
 certificate and `--require-tls`, runs the full psycopg/pgjdbc baseline with
 `PGSSLMODE=require`, and asserts that `sslmode=disable` is refused. The
 psycopg tests are in `client-compat/test_tls.py`.
+
+### Transaction identity locks
+
+An explicit client transaction starts a metadata PostgreSQL transaction lazily,
+on its first access to a published LakeSoul table. The first access takes `FOR
+SHARE` on that table's `table_info` row and validates the definition before use.
+Extended Execute also locks the table references of the unoptimized plan,
+including subqueries and plans prepared before `BEGIN`. This keeps the lock
+even when optimization removes the scan. `READ COMMITTED` still allows later
+statements to see compatible peer commits and their own staged writes.
+
+`COMMIT` publishes staged DDL and data atomically on the same connection that
+holds the locks. A read-only `COMMIT` also ends the metadata transaction.
+`ROLLBACK` and disconnect release the locks. Statement failures release the
+locks if the block has no savepoint to recover to. `ROLLBACK TO SAVEPOINT`
+releases locks acquired after that point and preserves earlier ones. Cancelling
+a waiting table read also cancels its metadata lock request. Abandoned
+connections are discarded rather than returned to the pool while in a
+transaction. Detached publication preserves files if its commit outcome is
+unknown.
+
+Peer `DROP` and `ALTER` wait for transactions already using the table; a
+transaction that has only sent `BEGIN` does not block them. A dropped table
+cannot be rebound to a same-name replacement (`42P01`), and a changed definition
+is a conflict (`40001`). Each active locking transaction reserves a primary
+metadata pool connection; size `LAKESOUL_PG_POOL_SIZE` accordingly.
+
+The local and two-worker cases in
+`tests/contracts/transaction_lock_contract.rs` use PostgreSQL lock-state
+barriers. Run both with `cargo -q test --profile test-fast -p postgres-lakesoul
+--test contracts transaction_lock_contract`, setting `LAKESOUL_IO_USE_V2_MERGE`
+to `false` or `true` for the corresponding merge implementation.
 
 ### Authentication: LakeSoul JWT (`--jwt-auth`)
 
