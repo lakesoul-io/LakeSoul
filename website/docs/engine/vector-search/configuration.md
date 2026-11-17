@@ -78,7 +78,8 @@ Related table-level properties:
 
 ## Cache tiers
 
-The vector caches are **per process**, in three tiers:
+The vector caches are **per process**, in three tiers.  For the exact key layout, budgets,
+eviction order and invalidation rules see [Architecture and caching §5](architecture.md#5-caching).
 
 ```text
 L1  process memory

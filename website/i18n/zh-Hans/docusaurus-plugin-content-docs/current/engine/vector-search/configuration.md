@@ -45,6 +45,8 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 缓存层级
 
+缓存键、预算、淘汰与失效顺序见[架构与缓存 §5](architecture.md)（本页只列配置项）。
+
 向量缓存是**进程内**的，分三层：
 
 ```text

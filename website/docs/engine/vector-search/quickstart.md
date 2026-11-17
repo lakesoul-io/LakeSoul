@@ -202,6 +202,8 @@ catalog.drop_table("docs", if_exists=True)
 
 ## Next
 
+- [Architecture and caching](architecture.md) — how the index, query path and the three-tier cache fit together.
+
 - [API reference](api.md) — the complete Python, SQL, pgwire and Rust surface.
 - [Configuration](configuration.md) — index build parameters, cache tiers and
   runtime environment variables.

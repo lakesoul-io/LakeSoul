@@ -192,6 +192,8 @@ catalog = LakeSoulCatalog.from_env(namespace="default", object_store_options=OPT
 
 ## 下一步
 
+- [架构与缓存](architecture.md) — 索引、查询路径与三级缓存如何配合。
+
 - [API 参考](api.md)：Python / SQL / pgwire / Rust 的完整接口，索引构建、删除、GC 与读租约语义；
 - [配置](configuration.md)：索引构建参数与 L1/L2 缓存、block 调优、元数据 TTL；
 - [性能基准](benchmarks.md)：index-only 与 exact、单查与 batch 的实测数字；

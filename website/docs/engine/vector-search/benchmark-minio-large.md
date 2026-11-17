@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 7
 sidebar_label: "Benchmark: MinIO L1 8 GiB / L2 16 GiB"
 ---
 
