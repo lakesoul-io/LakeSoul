@@ -284,7 +284,12 @@ impl PgParameters {
         name: &str,
     ) -> Option<String> {
         let canonical = Self::canonical(name)?;
-        let key = canonical.to_ascii_lowercase();
+        // The upstream `SET statement_timeout` path stores milliseconds under
+        // its own key, not under the parameter name.
+        let key = match canonical {
+            "statement_timeout" => crate::cancel::STATEMENT_TIMEOUT_KEY.to_string(),
+            _ => canonical.to_ascii_lowercase(),
+        };
         let metadata = client.metadata().get(&key);
         match (canonical, metadata) {
             ("statement_timeout", Some(value)) => Some(if value == "0" {

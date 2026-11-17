@@ -43,8 +43,8 @@ use datafusion::arrow::array::{
     TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
     TimestampSecondArray,
 };
-use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::TableReference;
+use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema};
+use datafusion::common::{TableReference, ToDFSchema};
 use datafusion::error::DataFusionError;
 use datafusion::error::Result as DFResult;
 use datafusion::logical_expr::{
@@ -65,8 +65,11 @@ use datafusion_postgres::arrow_pg::encode_dataframe;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire::api::ClientInfo;
+use datafusion_postgres::pgwire::api::Type;
 use datafusion_postgres::pgwire::api::portal::Format;
-use datafusion_postgres::pgwire::api::results::Response;
+use datafusion_postgres::pgwire::api::results::{
+    FieldFormat, FieldInfo, QueryResponse, Response,
+};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::types::format::FormatOptions;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
@@ -1559,6 +1562,104 @@ impl QueryHook for CatalogProjectionHook {
         _client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         None
+    }
+}
+
+/// Answers psql's publication probe with an empty result.
+///
+/// psql 18 asks for a table's publication membership with
+/// `SELECT pubname, NULL, NULL FROM pg_publication ... UNION ALL ...` when it
+/// talks to a pre-15 server. DataFusion refuses the two unaliased `NULL`
+/// projections ("Projections require unique expression names"), which aborted
+/// `\d` before it could describe the table. LakeSoul has no publications, so
+/// the honest answer is the same three-column empty result.
+pub(crate) struct PgPublicationHook;
+
+fn is_publication_probe(statement: &Statement) -> bool {
+    let Statement::Query(_) = statement else {
+        return false;
+    };
+    let sql = statement.to_string().to_ascii_lowercase();
+    sql.contains("pg_publication") && sql.contains("union all")
+}
+
+fn publication_response() -> PgWireResult<Response> {
+    let fields = vec![
+        FieldInfo::new(
+            "pubname".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+        FieldInfo::new(
+            "pubinsert".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+        FieldInfo::new(
+            "pubupdate".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+    ];
+    let rows = futures::stream::empty();
+    Ok(Response::Query(QueryResponse::new(
+        Arc::new(fields),
+        Box::pin(rows),
+    )))
+}
+
+fn publication_plan() -> PgWireResult<LogicalPlan> {
+    let schema = Schema::new(vec![
+        Field::new("pubname", DataType::Utf8, true),
+        Field::new("pubinsert", DataType::Utf8, true),
+        Field::new("pubupdate", DataType::Utf8, true),
+    ]);
+    let schema = schema
+        .to_dfschema()
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    Ok(LogicalPlan::EmptyRelation(
+        datafusion::logical_expr::EmptyRelation {
+            produce_one_row: false,
+            schema: Arc::new(schema),
+        },
+    ))
+}
+
+#[async_trait]
+impl QueryHook for PgPublicationHook {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        is_publication_probe(statement).then(publication_response)
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
+        is_publication_probe(statement).then(publication_plan)
+    }
+
+    async fn handle_extended_query(
+        &self,
+        statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &datafusion::common::ParamValues,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        is_publication_probe(statement).then(publication_response)
     }
 }
 

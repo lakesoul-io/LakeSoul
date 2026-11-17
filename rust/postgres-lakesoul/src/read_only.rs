@@ -137,6 +137,9 @@ pub(crate) fn statement_hooks_with(
         // in their column queries, which the pinned planner cannot execute.
         // Claim those catalog queries and answer their equivalent shape.
         Arc::new(crate::pg_compat::CatalogProjectionHook) as Arc<dyn QueryHook>,
+        // psql 18's publication probe has two unaliased NULL projections,
+        // which DataFusion refuses; LakeSoul has no publications.
+        Arc::new(crate::pg_compat::PgPublicationHook) as Arc<dyn QueryHook>,
         // The upstream `pg_settings` view only knows one row; answer queries
         // over it from the connection's real parameter map.
         Arc::new(crate::pg_settings::PgSettingsHook) as Arc<dyn QueryHook>,

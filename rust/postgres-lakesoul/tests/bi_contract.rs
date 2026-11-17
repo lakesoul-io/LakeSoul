@@ -14,6 +14,7 @@ pub mod support;
 
 use anyhow::{Context, Result, ensure};
 use support::Harness;
+use tokio_postgres::SimpleQueryMessage;
 
 macro_rules! ensure_eq {
     ($left:expr, $right:expr $(, $($arg:tt)+)?) => {
@@ -26,6 +27,7 @@ async fn bi_metadata_contract() -> Result<()> {
     support::run_suite(|h| {
         Box::pin(async move {
             roles_and_session_identity(h).await?;
+            psql_publication_probe(h).await?;
             show_reports_postgres_values(h).await?;
             settings_are_readable_and_writable(h).await?;
             report_date_formatting(h).await?;
@@ -69,6 +71,49 @@ async fn roles_and_session_identity(h: &Harness) -> Result<()> {
         "session_user reports the connection user"
     );
     eprintln!("PASS case=bi-roles roles={roles} user={current}");
+    Ok(())
+}
+
+/// psql 18 asks a pre-15 server for a table's publications with two
+/// unaliased `NULL` projections in a `UNION ALL`. DataFusion refuses the
+/// duplicate expression names, so the server must answer the probe itself.
+async fn psql_publication_probe(h: &Harness) -> Result<()> {
+    let sql = "SELECT pubname, NULL, NULL FROM pg_catalog.pg_publication p \
+               JOIN pg_catalog.pg_publication_rel pr ON p.oid = pr.prpubid \
+               WHERE pr.prrelid = '0' \
+               UNION ALL \
+               SELECT pubname, NULL, NULL FROM pg_catalog.pg_publication p \
+               WHERE p.puballtables \
+                 AND pg_catalog.pg_relation_is_publishable('0') \
+               ORDER BY 1";
+    let statement = h
+        .lake
+        .prepare(sql)
+        .await
+        .context("prepare the psql publication probe")?;
+    ensure_eq!(
+        statement.columns().len(),
+        3,
+        "publication probe column count"
+    );
+    let rows = h
+        .lake
+        .query(&statement, &[])
+        .await
+        .context("execute the psql publication probe")?;
+    ensure_eq!(rows.len(), 0, "LakeSoul has no publications");
+    let messages = h
+        .lake
+        .simple_query(sql)
+        .await
+        .context("simple psql publication probe")?;
+    ensure!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, SimpleQueryMessage::Row(_))),
+        "the publication probe must return no rows"
+    );
+    eprintln!("PASS case=bi-psql-publication rows=0 columns=3");
     Ok(())
 }
 
