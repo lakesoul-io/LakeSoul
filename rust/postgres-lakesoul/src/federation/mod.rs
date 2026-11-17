@@ -7,7 +7,7 @@
 mod metadata;
 mod parser;
 
-pub(crate) use parser::{FederationStatementHook, rewrite};
+pub(crate) use parser::{FederationStatementHook, is_ddl_sentinel, rewrite};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

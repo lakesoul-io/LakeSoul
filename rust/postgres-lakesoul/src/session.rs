@@ -388,11 +388,13 @@ impl PgSessionFactory {
         self
     }
 
+    /// Installs the foreign-server runtime; `None` (`--no-federation`) leaves
+    /// foreign tables unresolved and foreign-data DDL refused.
     pub fn with_federation(
         mut self,
-        federation: Arc<crate::federation::FederationRuntime>,
+        federation: Option<Arc<crate::federation::FederationRuntime>>,
     ) -> Self {
-        self.federation = Some(federation);
+        self.federation = federation;
         self
     }
 
@@ -411,11 +413,13 @@ impl PgSessionFactory {
         self.jobs.as_ref()
     }
 
+    /// Installs the subscription supervisor; `None` (`--no-subscriptions`)
+    /// leaves subscription DDL refused.
     pub fn with_subscriptions(
         mut self,
-        subscriptions: Arc<crate::subscribe::supervisor::SubscriptionSupervisor>,
+        subscriptions: Option<Arc<crate::subscribe::supervisor::SubscriptionSupervisor>>,
     ) -> Self {
-        self.subscriptions = Some(subscriptions);
+        self.subscriptions = subscriptions;
         self
     }
 

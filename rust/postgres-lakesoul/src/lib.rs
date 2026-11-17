@@ -213,6 +213,16 @@ struct Cli {
     #[clap(long, env = "LAKESOUL_PG_SUBSCRIPTION_LOG_DIR")]
     subscription_log_dir: Option<PathBuf>,
 
+    /// Do not start the wire server's subscription supervisor or resume
+    /// subscriptions. `CREATE`/`ALTER`/`DROP SUBSCRIPTION` are refused.
+    #[clap(long, env = "LAKESOUL_PG_NO_SUBSCRIPTIONS")]
+    no_subscriptions: bool,
+
+    /// Do not load foreign servers or tables. Foreign-data DDL is refused,
+    /// foreign tables do not resolve, and federation metadata is not read.
+    #[clap(long, env = "LAKESOUL_PG_NO_FEDERATION")]
+    no_federation: bool,
+
     /// Maximum number of concurrent connections, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_CONNECTIONS", default_value_t = 0)]
     max_connections: usize,
@@ -392,6 +402,13 @@ impl Cli {
     fn is_subscriber(&self) -> bool {
         self.subscribe.subscribe || self.subscribe.subscription_id.is_some()
     }
+
+    fn subscription_log_dir(&self) -> PathBuf {
+        self.subscription_log_dir
+            .clone()
+            .or_else(|| std::env::var_os("LAKESOUL_LOG_DIR").map(PathBuf::from))
+            .unwrap_or_else(|| std::env::temp_dir().join("lakesoul-subscriptions"))
+    }
 }
 
 /// Starts the SQL subscription supervisor, resuming enabled subscriptions only
@@ -531,11 +548,6 @@ async fn main_inner(cli: Cli) -> Result<()> {
             PathBuf::new()
         }
     };
-    let log_dir = cli
-        .subscription_log_dir
-        .clone()
-        .or_else(|| std::env::var_os("LAKESOUL_LOG_DIR").map(PathBuf::from))
-        .unwrap_or_else(|| std::env::temp_dir().join("lakesoul-subscriptions"));
     if cli.subscription_runner {
         if cli.subscription_executor != subscribe::supervisor::SubscriptionMode::Local {
             rootcause::bail!(
@@ -552,15 +564,26 @@ async fn main_inner(cli: Cli) -> Result<()> {
         return subscribe::subscription_runner::run(
             Arc::clone(&meta_client),
             program,
-            log_dir,
+            cli.subscription_log_dir(),
             runner_id,
             std::time::Duration::from_millis(cli.runner_poll_ms),
         )
         .await;
     }
-    let index_program = program.clone();
-    let subscriptions =
-        start_subscription_supervisor(&cli, &meta_client, program, log_dir).await;
+    let subscriptions = if cli.no_subscriptions {
+        info!("subscriptions disabled (--no-subscriptions)");
+        None
+    } else {
+        Some(
+            start_subscription_supervisor(
+                &cli,
+                &meta_client,
+                program.clone(),
+                cli.subscription_log_dir(),
+            )
+            .await,
+        )
+    };
 
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;
@@ -570,7 +593,14 @@ async fn main_inner(cli: Cli) -> Result<()> {
         cli.memory_sampling
             .spawn(allocator::stats_reader(), move || pool.reserved())?;
     }
-    let federation = Arc::new(federation::FederationRuntime::new(&meta_client).await?);
+    let federation = if cli.no_federation {
+        info!("federation disabled (--no-federation)");
+        None
+    } else {
+        Some(Arc::new(
+            federation::FederationRuntime::new(&meta_client).await?,
+        ))
+    };
     if cli.rbac && !cli.jwt_auth {
         // clap enforces this for the flags; checked again so no other way
         // of setting them can turn domain enforcement on without tokens.
@@ -601,7 +631,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
         Arc::clone(&auth_manager),
         memory_pool,
     )?
-    .with_subscriptions(Arc::clone(&subscriptions))
+    .with_subscriptions(subscriptions.clone())
     .with_federation(federation)
     .with_auth(auth)
     .with_ivm_default(cli.ivm_default)
@@ -764,7 +794,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
                 "starting the local index maintenance child"
             );
             Some(index_runner::spawn_local_supervisor(
-                index_program,
+                program,
                 std::time::Duration::from_millis(cli.index_maintenance_poll_ms),
                 std::time::Duration::from_millis(cli.index_lease_ttl_ms),
             ))
@@ -790,7 +820,9 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // Children are separate processes. Stop them before this supervisor exits;
     // otherwise a graceful server shutdown would leave them holding
     // replication slots.
-    subscriptions.stop_all().await;
+    if let Some(subscriptions) = &subscriptions {
+        subscriptions.stop_all().await;
+    }
     if let Some(supervisor) = index_supervisor {
         supervisor.stop().await;
     }
