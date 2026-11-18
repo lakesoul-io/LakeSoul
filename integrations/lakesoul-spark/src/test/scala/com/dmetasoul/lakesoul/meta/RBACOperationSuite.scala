@@ -265,8 +265,14 @@ class RBACOperationSuite
     login(USER2, USER2_PASS, DOMAIN1)
     // user in same domain can read
     sql("select * from table1")
-    // user in same domain can write
-    sql("insert into table1 values(2, 'foo2', 'bar2')")
+    // user in the same domain is read-only by default (ACL owner-rw/others-ro)
+    val sameDomainWrite = intercept[Exception] {
+      sql("insert into table1 values(2, 'foo2', 'bar2')")
+    }
+    assert(
+      sameDomainWrite.getMessage.contains("row-level security policy"),
+      sameDomainWrite.getMessage
+    )
     // user in other domain cannot access
     login(ADMIN2, ADMIN2_PASS, DOMAIN2)
     val dir = new org.apache.hadoop.fs.Path(tablePath.toString)
