@@ -315,6 +315,65 @@ impl AclView {
         }))
     }
 
+    /// Resolve one table by path live, bypassing the cached view.
+    pub async fn load_table_by_path(
+        client: &MetaDataClient,
+        user: &str,
+        domains: &[String],
+        path: &str,
+    ) -> Result<Option<TableAccess>> {
+        let pooled = client.pooled_client();
+        let locked = pooled.lock().await;
+        let connection = locked.get(QueryType::RW).await?;
+        let row = connection
+            .query_opt(
+                "select ti.table_id, ti.table_namespace, ti.table_name, ti.domain,
+                        coalesce(ti.creator, ''),
+                        exists (select 1 from domain_admin da
+                                where da.domain = ti.domain and da.user_name = $1),
+                        (select a.privilege from table_acl a
+                         where a.table_id = ti.table_id
+                           and ((a.grantee_kind = 'user'
+                                 and a.grantee_domain = any($3)
+                                 and a.grantee = $1)
+                             or (a.grantee_kind = 'domain'
+                                 and a.grantee_domain = ti.domain
+                                 and ti.domain = any($3)))
+                         order by case a.grantee_kind when 'user' then 0 else 1 end
+                         limit 1)
+                 from table_path_id p
+                 join table_info ti on ti.table_id = p.table_id
+                 where p.table_path = $2::TEXT",
+                &[&user, &path, &domains],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let table_id: String = row.get(0);
+        let namespace: String = row.get(1);
+        let table: String = row.get(2);
+        let domain: String = row.get(3);
+        let creator: String = row.get(4);
+        let admin: bool = row.get(5);
+        let acl = row
+            .get::<_, Option<String>>(6)
+            .map(|v| Privilege::parse(&v));
+        let owner = !creator.is_empty() && creator == user;
+        let same_domain = domains.iter().any(|candidate| candidate == &domain);
+        let privilege = table_privilege(&domain, owner, admin, same_domain, acl);
+        Ok(Some(TableAccess {
+            table_id,
+            namespace,
+            table,
+            domain,
+            creator,
+            owner,
+            admin,
+            privilege,
+        }))
+    }
+
     pub fn namespace_access(&self, namespace: &str) -> Option<&NamespaceAccess> {
         self.namespaces.get(namespace)
     }
@@ -471,18 +530,11 @@ impl MetaDataClient {
         user: &str,
         domain: &str,
     ) -> Result<Option<Privilege>> {
-        let pooled = self.pooled_client();
-        let locked = pooled.lock().await;
-        let connection = locked.get(QueryType::RW).await?;
-        let row = connection
-            .query_opt(
-                "select lakesoul_table_privilege_by_path($1::TEXT, $2::TEXT, $3::TEXT)",
-                &[&path, &user, &domain],
-            )
-            .await?;
-        Ok(row
-            .and_then(|row| row.get::<_, Option<String>>(0))
-            .map(|value| Privilege::parse(&value)))
+        Ok(
+            AclView::load_table_by_path(self, user, &[domain.to_string()], path)
+                .await?
+                .map(|access| access.privilege),
+        )
     }
 
     /// Grant (`ro`/`rw`/`none`) one table privilege to a user.
