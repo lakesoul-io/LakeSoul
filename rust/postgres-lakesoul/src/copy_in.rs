@@ -12,8 +12,9 @@
 //! published by `COMMIT`, like every other write.
 //!
 //! Two formats are implemented: `text` (the default) and `csv`. Binary
-//! `COPY` is refused with `0A000`, as are `COPY TO` and `COPY ... FROM` a
-//! file or program: this endpoint only speaks stdio.
+//! `COPY` is refused with `0A000`, as is `COPY ... FROM` a file or program:
+//! this endpoint only speaks stdio. The export direction lives in
+//! [`crate::copy_out`] and shares [`CopyOptions`] with this module.
 //!
 //! The statement is claimed by [`CopyStatementHook`] before DataFusion sees
 //! it. The hook resolves the target table and column list, records the copy
@@ -80,9 +81,9 @@ const INVALID_PARAMETER: &str = "22023";
 /// `57014 query_canceled`, PostgreSQL's SQLSTATE for a client `CopyFail`.
 const QUERY_CANCELED: &str = "57014";
 
-/// The two text encodings `COPY FROM STDIN` supports.
+/// The two text encodings the copy sub-protocol supports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CopyFormat {
+pub(crate) enum CopyFormat {
     Text,
     Csv,
 }
@@ -90,18 +91,18 @@ enum CopyFormat {
 /// The options one `COPY` statement carries, already resolved against the
 /// format defaults.
 #[derive(Clone, Debug)]
-struct CopyOptions {
-    format: CopyFormat,
+pub(crate) struct CopyOptions {
+    pub(crate) format: CopyFormat,
     /// One-byte field separator.
-    delimiter: u8,
+    pub(crate) delimiter: u8,
     /// Bytes that represent NULL in an unquoted field.
-    null: Vec<u8>,
+    pub(crate) null: Vec<u8>,
     /// CSV quote character; unused by text format.
-    quote: u8,
+    pub(crate) quote: u8,
     /// CSV escape character; unused by text format.
-    escape: u8,
+    pub(crate) escape: u8,
     /// Skip the first record (CSV only).
-    header: bool,
+    pub(crate) header: bool,
 }
 
 /// A target column of the copy, in the order the client sends it.
@@ -222,6 +223,11 @@ impl QueryHook for CopyStatementHook {
         if !is_copy(statement) {
             return None;
         }
+        if is_copy_to(statement) {
+            return Some(
+                crate::copy_out::copy_out(statement, session_context, client, None).await,
+            );
+        }
         Some(begin_copy(statement, session_context, client).await)
     }
 
@@ -238,9 +244,14 @@ impl QueryHook for CopyStatementHook {
         // hand the planner a plan without columns: a prepared COPY has no
         // result to describe. The copy state is created at Execute, because
         // only then does the server start the copy sub-protocol.
+        let copy_to = is_copy_to(statement);
         Some(
             async {
-                plan_copy(statement, session_context, client).await?;
+                if copy_to {
+                    crate::copy_out::validate(statement, session_context, client).await?;
+                } else {
+                    plan_copy(statement, session_context, client).await?;
+                }
                 Ok(no_data_plan())
             }
             .await,
@@ -258,12 +269,27 @@ impl QueryHook for CopyStatementHook {
         if !is_copy(statement) {
             return None;
         }
+        if is_copy_to(statement) {
+            return Some(
+                crate::copy_out::copy_out(
+                    statement,
+                    session_context,
+                    client,
+                    Some(_params),
+                )
+                .await,
+            );
+        }
         Some(begin_copy(statement, session_context, client).await)
     }
 }
 
 fn is_copy(statement: &Statement) -> bool {
     matches!(statement, Statement::Copy { .. })
+}
+
+fn is_copy_to(statement: &Statement) -> bool {
+    matches!(statement, Statement::Copy { to: true, .. })
 }
 
 fn no_data_plan() -> LogicalPlan {
@@ -460,7 +486,7 @@ fn parse_copy(statement: &Statement) -> PgWireResult<CopyRequest> {
 }
 
 /// Merges modern and pre-9.0 `WITH` options into one resolved option set.
-fn parse_options(
+pub(crate) fn parse_options(
     options: &[CopyOption],
     legacy: &[CopyLegacyOption],
 ) -> PgWireResult<CopyOptions> {
@@ -1673,7 +1699,7 @@ pub(crate) fn refuse_copy_in_batch(sql: &str) -> PgWireResult<()> {
     });
     if starts_with_copy {
         return Err(feature_not_supported(
-            "COPY ... FROM STDIN must be the only statement in a query".to_string(),
+            "COPY must be the only statement in a query".to_string(),
         ));
     }
     Ok(())
@@ -1694,7 +1720,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("COPY ... FROM STDIN must be the only statement"),
+                    .contains("COPY must be the only statement"),
                 "{error}"
             );
         }

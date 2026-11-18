@@ -391,7 +391,7 @@ def test_session_parameters_and_catalog(driver, connector):
 
 
 def test_psql_metadata_commands(table_factory, pg_env):
-    """`\dt`, `\l` and `\dn` are the psql discovery commands BI users run
+    r"""`\dt`, `\l` and `\dn` are the psql discovery commands BI users run
     first; they must succeed and list the created table."""
     table = table_factory("id bigint primary key, name text", "client_psql_meta")
     if shutil.which("psql") is None:
@@ -465,6 +465,81 @@ def test_pg_cursors_metadata(driver, connector, table_factory):
                 assert plain.fetchall() == [("compat_meta_cursor", False, False, False)]
             assert cursor.fetchone() == (1,)
         connection.commit()
+
+
+def test_copy_to_stdout(driver, connector, table_factory):
+    """Both drivers export TEXT and CSV through COPY TO STDOUT, including a
+    NULL and a backslash that the TEXT format must escape."""
+    table = table_factory(
+        "id bigint primary key, name text, amount numeric(20,4)",
+        "client_copy_out",
+    )
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO " + table + " (id, name, amount) VALUES "
+                "(1, 'a\\tb', 12.3400), (2, NULL, -0.5000)"
+            )
+
+            text_sql = "COPY (SELECT id, name FROM " + table + " ORDER BY id) TO STDOUT"
+            if driver == "psycopg2":
+                text = io.StringIO()
+                cursor.copy_expert(text_sql, text)
+                assert cursor.rowcount == 2
+                assert text.getvalue() == "1\ta\\\\tb\n2\t\\N\n"
+            else:
+                with cursor.copy(text_sql) as copy:
+                    assert b"".join(copy) == b"1\ta\\\\tb\n2\t\\N\n"
+
+            csv_sql = (
+                "COPY (SELECT id, name FROM "
+                + table
+                + " ORDER BY id) TO STDOUT WITH (FORMAT csv, HEADER true)"
+            )
+            if driver == "psycopg2":
+                csv = io.StringIO()
+                cursor.copy_expert(csv_sql, csv)
+                assert csv.getvalue() == "id,name\n1,a\\tb\n2,\n"
+            else:
+                with cursor.copy(csv_sql) as copy:
+                    assert b"".join(copy) == b"id,name\n1,a\\tb\n2,\n"
+                with cursor.copy(
+                    "COPY (SELECT id, name FROM " + table + " WHERE id = %s) TO STDOUT",
+                    (1,),
+                ) as copy:
+                    assert b"".join(copy) == b"1\ta\\\\tb\n"
+
+
+def test_psql_copy_to(tmp_path, table_factory, pg_env, connector):
+    """psql \copy TO is the interactive export path; it must write the file
+    and report the row count."""
+    table = table_factory("id bigint primary key, name text", "client_psql_copy_out")
+    with closing(connector("psycopg2")) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO " + table + " (id, name) VALUES (1, 'alice'), (2, NULL)"
+            )
+    if shutil.which("psql") is None:
+        pytest.skip("psql is not installed")
+    path = tmp_path / "copy_out.csv"
+    result = subprocess.run(
+        [
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            f"\\copy {table} (id, name) TO '{path}' WITH (FORMAT csv, HEADER true)",
+        ],
+        env={**os.environ, **pg_env},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "COPY 2" in result.stdout, result.stdout
+    lines = path.read_text().splitlines()
+    assert lines[0] == "id,name"
+    assert sorted(lines[1:]) == ["1,alice", "2,"]
 
 
 def test_copy_from_stdin_text_and_csv(driver, connector, table_factory):
@@ -605,14 +680,6 @@ def test_copy_from_stdin_must_be_alone(connector):
         with connection.cursor() as cursor:
             with pytest.raises(Exception) as info:
                 cursor.execute("COPY client_copy_batch FROM STDIN; SELECT 1")
-            assert sqlstate(info.value) == "0A000"
-
-
-def test_copy_to_stdout_is_explicitly_refused(connector):
-    with closing(connector("psycopg2")) as connection:
-        with connection.cursor() as cursor:
-            with pytest.raises(Exception) as info:
-                cursor.copy_expert("COPY (SELECT 1) TO STDOUT", io.StringIO())
             assert sqlstate(info.value) == "0A000"
 
 

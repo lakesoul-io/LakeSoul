@@ -11,14 +11,14 @@ that ordinary PostgreSQL driver workflows can execute.
 
 | Client | Path |
 | --- | --- |
-| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, `COPY ... FROM STDIN` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `SHOW`/`SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`, `to_char`, `psql \d`/`\dt`/`\l`/`\dn`, named cursors |
+| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `SHOW`/`SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`, `to_char`, `psql \d`/`\dt`/`\l`/`\dn`, named cursors |
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
 
 The suite asserts **explicit refusal** for currently unsupported paths:
 
-- `COPY ... TO STDOUT` and `COPY ... FROM` a file: `0A000`
+- `COPY ... TO` a file or program and `COPY ... FROM` a file: `0A000`
 - a `COPY` that shares a multi-statement simple-query batch: `0A000`
 
 Named cursors are forward-only and non-holdable. `WITH HOLD`, `SCROLL`, binary
@@ -71,10 +71,11 @@ recorded gap. The tests already cover:
 - `SHOW`, `SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`
   and PostgreSQL `to_char` date patterns, including the psql `\dt`/`\l`/`\dn`
   metadata commands;
-- `COPY ... FROM STDIN` in TEXT and CSV, including NULL, escaped newlines, quoted
-  commas/newlines, a CSV header, an omitted column list, one-commit atomicity,
-  transaction rollback, driver-side encoders (`copy_from`, `write_row`,
-  `CopyManager.copyIn`) and CopyFail aborts;
+- `COPY ... FROM STDIN` and `COPY ... TO STDOUT` in TEXT and CSV, including
+  NULL, escaped newlines, quoted commas/newlines, a CSV header, an omitted
+  column list, one-commit atomicity, transaction rollback, driver-side
+  encoders (`copy_from`, `write_row`, `CopyManager.copyIn`/`copyOut`), psql
+  `\copy TO` and CopyFail aborts;
 - `INSERT ... VALUES ... RETURNING` for `*`, column references and aliases, including SQLAlchemy Core;
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
@@ -84,7 +85,8 @@ The remaining known gaps are:
 
 | Gap | Detail |
 | --- | --- |
-| `COPY ... TO STDOUT` | explicitly refused with `0A000`; `COPY FROM STDIN` is supported in TEXT and CSV |
+| `pg_dump --data-only` | still blocked by its REPEATABLE READ transaction and `OPERATOR(pg_catalog.=)` syntax; `COPY TO` itself is supported |
+| `COPY ... TO` a file/program | explicitly refused with `0A000`; use `COPY ... TO STDOUT` |
 | `psql \du` | the role list query uses `ARRAY(subquery)`, which the pinned planner cannot execute; `pg_roles` itself answers |
 | `current_user, session_user` | both work separately; one projection selecting both is limited by the parser's `current_user -> session_user` rewrite |
 | numeric `to_char` | explicit error; date/time patterns are implemented |

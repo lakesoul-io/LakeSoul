@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! `COPY ... FROM STDIN` contracts against the real server.
+//! `COPY` contracts (both directions) against the real server.
 //!
 //! Every case runs through the real PostgreSQL wire protocol against a fresh
 //! `postgres-lakesoul` child. `tokio-postgres` `copy_in` uses the extended
@@ -24,7 +24,7 @@ use std::pin::pin;
 
 use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt};
 use support::Harness;
 
 macro_rules! ensure_eq {
@@ -47,6 +47,7 @@ async fn copy_scenarios(h: &Harness) -> Result<()> {
     empty_copy_writes_nothing(h).await?;
     transaction_rollback(h).await?;
     failed_copy_leaves_no_rows(h).await?;
+    copy_out_round_trip(h).await?;
     refusal_matrix_changes_nothing(h).await?;
     Ok(())
 }
@@ -377,6 +378,129 @@ async fn transaction_rollback(h: &Harness) -> Result<()> {
     Ok(())
 }
 
+/// `COPY ... TO STDOUT` streams the plan's rows as TEXT and CSV, from a
+/// table and from a query, with the shared options.
+async fn copy_out_round_trip(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute(
+            "CREATE TABLE copy_export (\
+               id BIGINT NOT NULL PRIMARY KEY, label TEXT, amount NUMERIC(20,4)\
+             )",
+        )
+        .await
+        .context("create copy_export")?;
+    h.lake
+        .batch_execute(
+            "INSERT INTO copy_export (id, label, amount) VALUES \
+             (1, 'a\\tb', 12.3400), (2, NULL, -0.5000)",
+        )
+        .await
+        .context("insert copy_export rows")?;
+
+    let text = copy_out_bytes(
+        &h.lake,
+        "COPY (SELECT id, label, amount FROM copy_export ORDER BY id) TO STDOUT",
+    )
+    .await?;
+    ensure_eq!(
+        text,
+        b"1\ta\\\\tb\t12.3400\n2\t\\N\t-0.5000\n".to_vec(),
+        "TEXT copy-out"
+    );
+
+    let csv = copy_out_bytes(
+        &h.lake,
+        "COPY (SELECT id, label FROM copy_export ORDER BY id) TO STDOUT \
+         WITH (FORMAT csv, HEADER true)",
+    )
+    .await?;
+    ensure_eq!(csv, b"id,label\n1,a\\tb\n2,\n".to_vec(), "CSV copy-out");
+
+    let custom = copy_out_bytes(
+        &h.lake,
+        "COPY (SELECT id, label FROM copy_export ORDER BY id) TO STDOUT \
+         WITH (DELIMITER '|', NULL 'NULL')",
+    )
+    .await?;
+    ensure_eq!(
+        custom,
+        b"1|a\\\\tb\n2|NULL\n".to_vec(),
+        "custom-option copy-out"
+    );
+
+    // A table copy streams the same rows; the storage order is not part of
+    // the contract, so compare the set of lines.
+    let table = copy_out_bytes(&h.lake, "COPY copy_export (id, label) TO STDOUT").await?;
+    let mut lines = String::from_utf8(table)
+        .context("table copy-out is UTF-8")?
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    lines.sort();
+    ensure_eq!(
+        lines,
+        vec!["1\ta\\\\tb".to_string(), "2\t\\N".to_string()],
+        "table copy-out lines"
+    );
+
+    // Empty tables stream no rows; the tag is checked by the client suite.
+    let empty = copy_out_bytes(
+        &h.lake,
+        "COPY (SELECT id FROM copy_export WHERE id < 0) TO STDOUT",
+    )
+    .await?;
+    ensure_eq!(empty, Vec::<u8>::new(), "empty copy-out");
+
+    // A block's staged write is visible to its own COPY TO, and disappears
+    // with the rollback.
+    h.lake.batch_execute("BEGIN").await?;
+    h.lake
+        .batch_execute(
+            "INSERT INTO copy_export (id, label, amount) VALUES (3, 'staged', 1.0)",
+        )
+        .await
+        .context("stage a row for copy-out")?;
+    let staged = copy_out_bytes(
+        &h.lake,
+        "COPY (SELECT id FROM copy_export WHERE id = 3) TO STDOUT",
+    )
+    .await?;
+    ensure_eq!(staged, b"3\n".to_vec(), "staged copy-out");
+    h.lake.batch_execute("ROLLBACK").await?;
+    let after_rollback = copy_out_bytes(
+        &h.lake,
+        "COPY (SELECT id FROM copy_export WHERE id = 3) TO STDOUT",
+    )
+    .await?;
+    ensure_eq!(after_rollback, Vec::<u8>::new(), "copy-out after rollback");
+
+    eprintln!("PASS case=copy-out text=csv=query=table=empty=staged");
+    Ok(())
+}
+
+async fn copy_out_bytes(client: &tokio_postgres::Client, sql: &str) -> Result<Vec<u8>> {
+    let stream = client
+        .copy_out(sql)
+        .await
+        .with_context(|| format!("copy_out {sql}"))?;
+    let mut stream = pin!(stream);
+    let mut data = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        data.extend_from_slice(&chunk.with_context(|| format!("read copy_out {sql}"))?);
+    }
+    Ok(data)
+}
+
+async fn copy_out_error(
+    client: &tokio_postgres::Client,
+    sql: &str,
+) -> Result<tokio_postgres::Error> {
+    match client.copy_out(sql).await {
+        Ok(_) => bail!("COPY statement `{sql}` started a copy-out"),
+        Err(error) => Ok(error),
+    }
+}
+
 /// A copy is one commit: a duplicate key or a malformed value publishes
 /// nothing, not even the rows that preceded the failing one.
 async fn failed_copy_leaves_no_rows(h: &Harness) -> Result<()> {
@@ -492,7 +616,6 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
     let before = h.authoritative_snapshot().await?;
 
     for (sql, code, case) in [
-        ("COPY empty_items TO STDOUT", "0A000", "COPY TO STDOUT"),
         (
             "COPY empty_items (id, val) FROM STDIN WITH (FORMAT binary)",
             "0A000",
@@ -503,7 +626,6 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
             "0A000",
             "file source",
         ),
-        ("COPY (SELECT 1) TO STDOUT", "0A000", "query source"),
         (
             "COPY empty_items FROM STDIN WITH (FORCE_NOT_NULL (val))",
             "0A000",
@@ -535,13 +657,36 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
         ensure_sqlstate(&error, code, case)?;
     }
 
-    // `COPY TO` is served by a different response type; make sure the server
-    // did not start a copy-out either.
-    let error = match h.lake.copy_out("COPY empty_items TO STDOUT").await {
-        Ok(_) => bail!("COPY TO STDOUT started a copy-out"),
-        Err(error) => error,
-    };
-    ensure_sqlstate(&error, "0A000", "COPY TO STDOUT (copy_out)")?;
+    for (sql, code, case) in [
+        (
+            "COPY empty_items TO STDOUT WITH (FORMAT binary)",
+            "0A000",
+            "binary copy-out",
+        ),
+        (
+            "COPY empty_items TO '/tmp/items.csv'",
+            "0A000",
+            "copy-out to a file",
+        ),
+        (
+            "COPY empty_items TO PROGRAM 'cat'",
+            "0A000",
+            "copy-out to a program",
+        ),
+        (
+            "COPY missing_copy TO STDOUT",
+            "42P01",
+            "copy-out missing table",
+        ),
+        (
+            "COPY empty_items (missing) TO STDOUT",
+            "42703",
+            "copy-out missing column",
+        ),
+    ] {
+        let error = copy_out_error(&h.lake, sql).await?;
+        ensure_sqlstate(&error, code, case)?;
+    }
 
     let after = h.authoritative_snapshot().await?;
     ensure!(
