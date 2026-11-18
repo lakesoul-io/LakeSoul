@@ -68,9 +68,10 @@ LAKESOUL_SLT_FILTER=queries.slt cargo -q test --profile test-fast -p postgres-la
   INTEGER array tests use explicit element-type casts rather than claiming
   PostgreSQL-equivalent inference for untyped integer literals.
 - `tests/slt/lakesoul/`: LakeSoul extensions and deliberate refusals, run only
-  against LakeSoul; initially partitioned tables, `INSERT ... RETURNING`,
-  append multiplicity and unsupported `DELETE ... USING`, CTAS and `SET LOCAL`.
-  This is a separate contract, not PostgreSQL equivalence.
+  against LakeSoul; initially partitioned tables, `INSERT ... VALUES ...
+  RETURNING`, append multiplicity and unsupported `DELETE ... USING`,
+  `INSERT ... SELECT ... RETURNING`, CTAS and `SET LOCAL`. This is a separate
+  contract, not PostgreSQL equivalence.
   Multiple scalar projections use explicit aliases in the portable scripts:
   duplicate generated subquery column names currently fail LakeSoul planning
   with `XX000` (PostgreSQL accepts them), recorded separately in the LakeSoul file.

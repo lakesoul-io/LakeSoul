@@ -32,6 +32,10 @@ INSERT INTO slt_parts VALUES (1, 1, 99) ON CONFLICT (id) DO NOTHING
 statement error (0A000)
 DELETE FROM slt_parts USING slt_parts AS other WHERE slt_parts.id = other.id
 
+# VALUES ... RETURNING is supported; the INSERT SELECT form is not.
+statement error (0A000)
+INSERT INTO slt_parts SELECT 3, id, 40 FROM slt_parts WHERE part = 1 RETURNING id
+
 statement error (0A000)
 CREATE TABLE slt_ctas AS SELECT * FROM slt_parts
 
