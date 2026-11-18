@@ -85,7 +85,10 @@ pub fn binary(statement: &Statement, rows: &[Row]) -> Result<ResultSet> {
                     .map(|v| v.to_rfc3339()),
                 Type::INT4_ARRAY => row
                     .try_get::<_, Option<Vec<Option<i32>>>>(i)?
-                    .map(|values| render_int4_array(&values)),
+                    .map(|values| render_int_array(&values)),
+                Type::INT8_ARRAY => row
+                    .try_get::<_, Option<Vec<Option<i64>>>>(i)?
+                    .map(|values| render_int_array(&values)),
                 ref other => bail!(
                     "no binary result decoder for column {}: {other:?}",
                     column.name()
@@ -112,11 +115,11 @@ pub fn binary(statement: &Statement, rows: &[Row]) -> Result<ResultSet> {
     })
 }
 
-/// Canonical text form of a decoded `int4[]` value: `{1,NULL,3}` or `{}`.
+/// Canonical text form of a decoded integer array: `{1,NULL,3}` or `{}`.
 ///
 /// Both sides of a differential check go through this renderer, so an array
 /// comparison never depends on driver- or server-specific text formatting.
-fn render_int4_array(values: &[Option<i32>]) -> String {
+fn render_int_array<T: std::fmt::Display>(values: &[Option<T>]) -> String {
     let mut rendered = String::from("{");
     for (index, value) in values.iter().enumerate() {
         if index > 0 {

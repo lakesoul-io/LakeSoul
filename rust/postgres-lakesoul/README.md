@@ -108,9 +108,9 @@ LAKESOUL_SLT_FILTER=queries.slt cargo -q test --profile test-fast -p postgres-la
   there is no automatic answer-update mode. Both legacy/v2 CI compatibility
   commands explicitly include `--test sqllogic`.
 
-The standalone normal corpus has 9 files and 191 SQL records (102 query, 89
+The standalone normal corpus has 11 files and 203 SQL records (114 query, 89
 statement). Distributed mode runs those same files plus the 11-record remote-write
-script (10 files, 202 records total). Records include expected errors, not just successful
+script (12 files, 214 records total). Records include expected errors, not just successful
 commands; enabling worker discovery alone is not accepted as remote execution
 evidence.
 `tests/known_defects/simple_not_null.slt` is a separate strict reproduction:
@@ -134,13 +134,15 @@ record has original SQL/output line references. The first selection contains
 60 queries and 41 setup statements from `subselect.sql` and `join.sql`; SQL is
 unchanged and answers come from PostgreSQL's checked-in outputs. Of these,
 48 queries and all 41 setup statements enter `tests/slt/pg/upstream/` and the
-ordinary four protocol/execution runners. CI needs no source downloads.
+ordinary four protocol/execution runners. The second selection adds 22
+self-contained queries from `aggregates.sql` and `window.sql`: 12 pass the normal
+runners and 10 reproduce incompatibilities. CI needs no source downloads.
 
-The other 12 queries keep strict PostgreSQL answers in
-`tests/known_defects/upstream/`, with fixture copies. These expose USING column
-ordering/binding, FULL JOIN merged-key results, scalar UNION parsing, and two
-simple FLOAT text-format differences (`1.0` versus `1`; binary values agree).
-They are excluded from passing coverage and exercised by one additional named
+The 22 incompatible queries across both batches keep strict PostgreSQL answers
+in `tests/known_defects/upstream/`. They cover USING ordering/binding, FULL JOIN
+merged keys, scalar UNION parsing, simple FLOAT formatting, outer references in
+aggregate FILTER, scalar `generate_series` alias binding and sliding boolean
+aggregates. They do not count as passing coverage and are exercised by one named
 ignored test. It first validates the reference PostgreSQL answers, then checks
 every LakeSoul query in all four protocol/execution combinations and reports all
 failures; a fixture failure still stops that suite. Run it explicitly:
@@ -218,6 +220,14 @@ SQL/output line reference were checked; target-scoped Clippy and rustfmt passed.
 All 11 metadata/index/namespace/schema/connection residual counts were zero;
 the temporary PostgreSQL was stopped and its port and data directory reclaimed.
 Other test targets and GitHub Actions were not rerun for this import.
+
+The second import was verified on the current checkout against an isolated
+PostgreSQL 18.6 service. The full normal SLT target passed on legacy and v2
+(**6 passed / 2 ignored** each), including the new cases in both protocols and
+execution modes. The strict upstream runner verified all 22 answers on PostgreSQL
+in each configuration, then failed as intended on LakeSoul (22 simple / 20
+extended differences per execution mode). After all runs, the same 11 residual
+counts were zero and the temporary services and resources were reclaimed.
 
 ```text
 .slt SQL + expected rows → tokio-postgres → real PG socket → LakeSoul files

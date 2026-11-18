@@ -12,14 +12,16 @@ Tests use the checked-in SLT files and never fetch PostgreSQL at runtime.
 | --- | --- | --- | --- |
 | `subselect.sql` | Parentheses, scalar/array subqueries, IN/NOT IN, nested and correlated IN | 15 queries + 9 setup statements | 4 queries + a copy of the 9 setup statements |
 | `join.sql` | Table/column aliases, cross/inner/outer/natural joins, USING/ON, three-table and derived-table joins | 33 queries + 32 setup statements | 8 queries + a copy of the 32 setup statements |
+| `aggregates.sql` | Ordered and DISTINCT array aggregates, aggregate FILTER and outer references | 9 queries | 2 queries |
+| `window.sql` | ROWS boundaries and all-NULL frames, RANGE offsets, lag/lead, sliding boolean aggregates | 3 queries | 8 queries |
 
-The selection was made before running LakeSoul. Of its **60 queries and 41
-setup statements**, 48 queries enter `tests/slt/pg/upstream/`; the remaining 12
-keep PostgreSQL's correct answers in `tests/known_defects/upstream/`. No selected
-query is discarded or rewritten to avoid a failure. Fixture statements are
-copied into the defect files so it can run independently.
+Both selections were made before running LakeSoul. Of their **82 queries and
+41 setup statements**, 60 queries enter `tests/slt/pg/upstream/`; the remaining
+22 keep PostgreSQL's correct answers in `tests/known_defects/upstream/`. No
+selected query is discarded or rewritten to avoid a failure. Fixture statements
+are copied into the defect files so they can run independently.
 
-This is a first batch, not a port of either complete upstream regression test.
+These are two batches, not ports of entire upstream regression tests.
 Other source sections include shared regression fixtures (such as `tenk1`),
 EXPLAIN plans, psql commands, temporary tables/views, composite values and other
 features outside this selection. They are unported, not reported as passing or
@@ -36,9 +38,11 @@ as confirmed defects.
   Retain column position, duplicate rows and NULLs. Check the runner's cell
   encoding when importing new text values; psql output in general needs more
   handling than these selected tables.
-- Use I/R/T categories as required by the existing runner. These cases use
-  integers, text and FLOAT for `subselect.f3`; the categories do not certify
-  exact PostgreSQL OIDs or all implicit type inference.
+- Use I/R/T categories as required by the runner. Integer arrays are rendered
+  with their element order and NULL elements intact; `rowsort` cannot fix an
+  unspecified order inside an array. The unordered `array_agg(DISTINCT a)` at
+  `aggregates.sql:721–722` was not selected. Categories do not certify exact
+  PostgreSQL OIDs or all implicit type inference.
 - All imported query records use `rowsort`, even when the original SQL has
   ORDER BY. They assert result multisets, including multiplicity, rather than
   incidental ordering or unspecified ties. Existing handwritten SLTs retain
@@ -63,12 +67,15 @@ wrong answers:
 | `join.sql:125-127` | SELECT * with USING on a non-leading column returns the wrong column order. |
 | `join.sql:210-211` | An unqualified merged USING column in WHERE is incorrectly ambiguous. |
 | `join.sql:243`, `262-266`, `280-283`, `292-297`, `299-306`, `308-315` | FULL JOIN USING / NATURAL FULL JOIN fails to coalesce the unmatched right key; chained joins can also split rows that should match. |
+| `aggregates.sql:970–972`, `973–975` | A scalar subquery with an outer reference in the aggregate FILTER reaches physical planning as an unsupported scalar expression. |
+| `window.sql:157–158`, `572–588` | `FROM generate_series(...) x` exposes `x.value` rather than accepting bare `x` as the scalar result; planning fails before the window behavior can be evaluated. |
+| `window.sql:2041–2043` | A bounded sliding frame with boolean aggregates is rejected: `bool_and` has no `retract_batch` implementation. |
 
-The named ignored Rust test validates **all 12** answers on reference PostgreSQL
-first and reports all LakeSoul query failures for each of the four
-protocol/execution pairs, with normal resource cleanup and worker proof. There
-are 12 failed queries in each simple run and 10 in each extended run (the two
-FLOAT cases pass extended):
+The named ignored Rust test validates **all 22** answers on reference PostgreSQL
+and reports LakeSoul query failures for each of the four protocol/execution
+pairs, with normal resource cleanup and worker proof. There are 22 failed
+queries in each simple run and 20 in each extended run (the two FLOAT cases
+pass extended):
 
 ```sh
 cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic upstream_postgresql_known_defects -- --exact --ignored --nocapture
@@ -83,9 +90,9 @@ compatibility coverage.
 
 Make version updates in a separate reviewed change:
 
-1. Select an explicit full PostgreSQL commit. Replace the five original files
-   together, preserve `COPYRIGHT`, and update the tag/commit and hashes in
-   `SOURCE.toml`.
+1. Select an explicit full PostgreSQL commit. Replace all original SQL and
+   expected-output files together, retain the upstream `COPYRIGHT`, and update
+   the tag/commit and hashes in `SOURCE.toml`.
 2. Review the upstream SQL and `.out` diffs. Update selected ranges and per-record
    provenance. Derive answers from the new upstream outputs; keep intentional
    LakeSoul deviations separate and named.
