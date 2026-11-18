@@ -30,6 +30,26 @@ path = "sql/subselect.sql"
 upstream_path = "src/test/regress/sql/subselect.sql"
 sha256 = "3442c4351cce0a18003c2b4e7cc4f777502179f56357776395b275e24756e125"
 
+[[files]]
+path = "sql/aggregates.sql"
+upstream_path = "src/test/regress/sql/aggregates.sql"
+sha256 = "48fb78e1ee6539a8e6cb3392d0d740f1f6199d18af3321b6781c1415f6140772"
+
+[[files]]
+path = "expected/aggregates.out"
+upstream_path = "src/test/regress/expected/aggregates.out"
+sha256 = "a713790e44d75a57599fda32b5ee5465934e8ca5d82ea04b86ac1df18544df6e"
+
+[[files]]
+path = "sql/window.sql"
+upstream_path = "src/test/regress/sql/window.sql"
+sha256 = "eebc389dc528151d762ec7c0e75aa0bc58275b408f77c478ece9da2374ddc113"
+
+[[files]]
+path = "expected/window.out"
+upstream_path = "src/test/regress/expected/window.out"
+sha256 = "6cfe8b0ff6550e90c38c56834ce67f2c06cf055ecc8a998692cb9693f5856b9e"
+
 [[selection]]
 source = "sql/subselect.sql"
 expected = "expected/subselect.out"
@@ -84,5 +104,33 @@ known_defect_query_records = 8
 known_defects_slt = "../../known_defects/upstream/join.slt"
 known_defect_source_lines = [125, 210, 243, 262, 280, 292, 299, 308]
 statement_records = 32
+ordering = "rowsort"
+sql_changes = "none"
+
+[[selection]]
+source = "sql/aggregates.sql"
+expected = "expected/aggregates.out"
+slt = "../../slt/pg/upstream/aggregates.slt"
+ranges = [[712, 719], [723, 728], [964, 964], [967, 975]]
+selected_query_records = 11
+gate_query_records = 9
+known_defect_query_records = 2
+known_defects_slt = "../../known_defects/upstream/aggregates.slt"
+known_defect_source_lines = [970, 973]
+statement_records = 0
+ordering = "rowsort"
+sql_changes = "none"
+
+[[selection]]
+source = "sql/window.sql"
+expected = "expected/window.out"
+slt = "../../slt/pg/upstream/window.slt"
+ranges = [[157, 158], [572, 588], [2020, 2027], [2041, 2043]]
+selected_query_records = 11
+gate_query_records = 3
+known_defect_query_records = 8
+known_defects_slt = "../../known_defects/upstream/window.slt"
+known_defect_source_lines = [157, 572, 575, 578, 581, 584, 587, 2041]
+statement_records = 0
 ordering = "rowsort"
 sql_changes = "none"

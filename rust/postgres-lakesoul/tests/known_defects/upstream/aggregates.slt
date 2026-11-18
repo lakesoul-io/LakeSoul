@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: PostgreSQL
+# Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+# Portions Copyright (c) 1994, The Regents of the University of California
+# License: tests/upstream/postgresql/COPYRIGHT (the full upstream notice).
+# PostgreSQL REL_18_6 @ 724edf9bde9d356724ad384a2e196edc3c9f80f7
+# Original SQL and upstream answers; rowsort compares whole rows as a multiset.
+
+# upstream-sql: sql/aggregates.sql:970-972
+# upstream-expected: expected/aggregates.out:2405-2411
+query I rowsort
+select (select count(*) filter (where outer_c <> 0)
+        from (values (1)) t0(inner_c))
+from (values (2),(3)) t1(outer_c); -- outer query is aggregation query
+----
+2
+
+# upstream-sql: sql/aggregates.sql:973-975
+# upstream-expected: expected/aggregates.out:2413-2420
+query I rowsort
+select (select count(inner_c) filter (where outer_c <> 0)
+        from (values (1)) t0(inner_c))
+from (values (2),(3)) t1(outer_c); -- inner query is aggregation query
+----
+1
+1

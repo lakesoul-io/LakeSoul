@@ -189,7 +189,8 @@ fn column_type(ty: &Type) -> Result<Column> {
         | Type::DATE
         | Type::TIMESTAMP
         | Type::TIMESTAMPTZ
-        | Type::INT4_ARRAY => Column::Text,
+        | Type::INT4_ARRAY
+        | Type::INT8_ARRAY => Column::Text,
         _ => bail!("SLT has no result decoder/category for {ty:?}"),
     })
 }
@@ -449,7 +450,7 @@ async fn simple_literal_null_reports_not_null_sqlstate() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "known upstream PostgreSQL differences: USING/FULL JOIN, scalar UNION syntax, float text"]
+#[ignore = "known PostgreSQL differences; see tests/upstream/postgresql/README.md"]
 async fn upstream_postgresql_known_defects() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/known_defects/upstream");
     let scripts = files_in(&root)?
