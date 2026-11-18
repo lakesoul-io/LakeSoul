@@ -180,10 +180,116 @@ export default function Home() {
       </Section>
 
       <Section
+        title={t('homepage.federation.title', 'Federated query')}
+        subtitle={t(
+          'homepage.federation.subtitle',
+          'Query a remote database where it lives, join it with LakeSoul tables, and read or write it through the same PostgreSQL endpoint.'
+        )}>
+        <div className={styles.quickGrid}>
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.federation.code.title', 'Define a foreign table')}
+            </h3>
+            <CodeBlock language="sql">{`CREATE EXTENSION adbc_fdw;
+
+CREATE SERVER app_source
+FOREIGN DATA WRAPPER adbc_fdw
+OPTIONS (
+  driver 'postgresql',
+  uri 'postgresql://source:5432/app'
+);
+
+CREATE FOREIGN TABLE remote_orders (
+  id bigint, region text, amount numeric(20,4)
+)
+SERVER app_source
+OPTIONS (schema_name 'public', table_name 'orders');`}</CodeBlock>
+            <p className={styles.quickNote}>
+              <Link to="/docs/engine/postgres/federation">
+                {t(
+                  'homepage.federation.code.note',
+                  'Foreign tables, pushdown and writes'
+                )}
+              </Link>
+            </p>
+          </article>
+
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.federation.join.title', 'Join remote and local data')}
+            </h3>
+            <CodeBlock language="sql">{`SELECT u.id, u.name, sum(o.amount) AS total
+FROM local_users u
+JOIN remote_orders o USING (id)
+GROUP BY 1, 2;`}</CodeBlock>
+            <div className={styles.fitChips}>
+              <span>PostgreSQL</span>
+              <span>MySQL</span>
+              <span>SQLite</span>
+              <span>DuckDB</span>
+              <span>BigQuery</span>
+              <span>Snowflake</span>
+              <span>Trino</span>
+              <span>S3 files</span>
+            </div>
+          </article>
+        </div>
+      </Section>
+
+      <Section
+        tinted
+        title={t('homepage.incremental.title', 'Incremental SQL')}
+        subtitle={t(
+          'homepage.incremental.subtitle',
+          'Maintain a derived table from the source commit log. Each run reads only new commits and writes only the rows that changed; the result matches a full recompute.'
+        )}>
+        <div className={styles.quickGrid}>
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.incremental.code.title', 'Run it as INSERT ... SELECT')}
+            </h3>
+            <CodeBlock language="sql">{`SET lakesoul.ivm.enabled = on;
+
+INSERT INTO daily_revenue
+SELECT date_trunc('day', ts) AS day,
+       region,
+       sum(amount)
+FROM orders
+GROUP BY 1, 2;`}</CodeBlock>
+            <p className={styles.quickNote}>
+              <Link to="/docs/engine/incremental-sql/overview">
+                {t('homepage.incremental.code.note', 'How incremental SQL works')}
+              </Link>
+            </p>
+          </article>
+
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.incremental.state.title', 'Replay-safe state')}
+            </h3>
+            <p className={styles.pillarBody}>
+              {t(
+                'homepage.incremental.state.body',
+                'The engine keeps a cursor per target, folds the source commit log into the query, and writes target deltas. Retries replay the same window and skip rows already written.'
+              )}
+            </p>
+            <div className={styles.fitChips}>
+              <span>{t('homepage.incremental.chipCursor', 'commit-log cursor')}</span>
+              <span>{t('homepage.incremental.chipPartition', 'partition-aware')}</span>
+              <span>{t('homepage.incremental.chipReplay', 'replay-safe')}</span>
+              <span>
+                {t('homepage.incremental.chipShapes', 'joins, aggregates, windows')}
+              </span>
+            </div>
+          </article>
+        </div>
+      </Section>
+
+      <Section
         title={t('homepage.subscription.title', 'PostgreSQL subscriptions')}
         subtitle={t(
           'homepage.subscription.subtitle',
-          'Consume a PostgreSQL publication into a LakeSoul CDC table. The endpoint manages the snapshot, the changes and the local subscriber process.'
+          'Consume PostgreSQL or MySQL changes into a LakeSoul CDC table. The endpoint manages the snapshot, the changes and the subscriber process.'
         )}>
         <div className={styles.quickGrid}>
           <article className={styles.quickCard}>
@@ -215,7 +321,7 @@ WITH (
             <p className={styles.pillarBody}>
               {t(
                 'homepage.subscription.managed.body',
-                'The endpoint validates the publication and the CDC target, takes a managed snapshot with one atomic handoff, then streams changes in batches. ENABLE, DISABLE and DROP control the supervised local process.'
+                'The endpoint validates the source and the CDC target, takes a managed snapshot with one atomic handoff, then streams changes in batches. ENABLE, DISABLE and DROP control the supervised local process.'
               )}
             </p>
             <div className={styles.fitChips}>
@@ -223,6 +329,51 @@ WITH (
               <span>{t('homepage.subscription.chipChanges', 'logical replication')}</span>
               <span>{t('homepage.subscription.chipAtomic', 'atomic handoff')}</span>
               <span>{t('homepage.subscription.chipLifecycle', 'supervised process')}</span>
+            </div>
+          </article>
+        </div>
+      </Section>
+
+      <Section
+        title={t('homepage.auth.title', 'Authentication and Permissions')}
+        subtitle={t(
+          'homepage.auth.subtitle',
+          'Clients connect with a username and password. Each connection is scoped to the permissions granted to that user, so teams and agents see only the data they are allowed to use.'
+        )}>
+        <div className={styles.quickGrid}>
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.auth.connect.title', 'Connect as a user')}
+            </h3>
+            <CodeBlock language="bash">{`export PGPASSWORD=******
+psql -h lakesoul.example.com \
+  -p 5432 -U alice -d default`}</CodeBlock>
+            <p className={styles.quickNote}>
+              <Link to="/docs/engine/postgres/authentication">
+                {t(
+                  'homepage.auth.connect.note',
+                  'Authentication and Permissions'
+                )}
+              </Link>
+            </p>
+          </article>
+
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.auth.scope.title', 'Scope each workload')}
+            </h3>
+            <p className={styles.pillarBody}>
+              {t(
+                'homepage.auth.scope.body',
+                'Run separate compute clusters for different teams or agents against the same catalog. A connection sees only the namespaces and tables granted to its user.'
+              )}
+            </p>
+            <div className={styles.fitChips}>
+              <span>{t('homepage.auth.chipUser', 'username / password')}</span>
+              <span>
+                {t('homepage.auth.chipPermissions', 'per-user permissions')}
+              </span>
+              <span>{t('homepage.auth.chipIsolation', 'workload isolation')}</span>
             </div>
           </article>
         </div>
@@ -271,12 +422,12 @@ WITH (
         title={t('homepage.arch.title', 'Architecture')}
         subtitle={t(
           'homepage.arch.subtitle',
-          'Clients on top, one engine in the middle, your storage at the bottom.'
+          'Clients on top, multiple compute clusters in the middle, your storage at the bottom.'
         )}>
         <div className={styles.arch}>
           <div className={styles.archRow}>
             <span className={styles.archBox}>
-              {t('homepage.arch.clientsSql', 'psql · JDBC · BI tools')}
+              {t('homepage.arch.clientsSql', 'psycopg · JDBC · RAG')}
             </span>
             <span className={styles.archBox}>
               {t('homepage.arch.clientsPython', 'Python SDK · Daft · Ray · PyTorch')}
@@ -285,14 +436,34 @@ WITH (
           <div className={styles.archArrow} aria-hidden="true">
             ↓
           </div>
-          <div className={styles.archEngine}>
-            <strong>{t('homepage.arch.engine', 'LakeSoul engine')}</strong>
-            <div className={styles.archChips}>
-              <span>{t('homepage.arch.chipPostgres', 'PostgreSQL front end')}</span>
-              <span>{t('homepage.arch.chipIncremental', 'Incremental SQL')}</span>
-              <span>{t('homepage.arch.chipIndex', 'Vector + full-text indexes')}</span>
-              <span>{t('homepage.arch.chipIo', 'Native IO · merge-on-read')}</span>
-            </div>
+          <div className={styles.archClusters}>
+            <article className={styles.archCluster}>
+              <strong>{t('homepage.arch.clusterA', 'Compute cluster A')}</strong>
+              <span>
+                {t(
+                  'homepage.arch.clusterAWorkload',
+                  'Subscriptions · FDW'
+                )}
+              </span>
+            </article>
+            <article className={styles.archCluster}>
+              <strong>{t('homepage.arch.clusterB', 'Compute cluster B')}</strong>
+              <span>
+                {t(
+                  'homepage.arch.clusterBWorkload',
+                  'Incremental SQL'
+                )}
+              </span>
+            </article>
+            <article className={styles.archCluster}>
+              <strong>{t('homepage.arch.clusterC', 'Compute cluster C')}</strong>
+              <span>
+                {t(
+                  'homepage.arch.clusterCWorkload',
+                  'BI Query · ANN'
+                )}
+              </span>
+            </article>
           </div>
           <div className={styles.archArrow} aria-hidden="true">
             ↓

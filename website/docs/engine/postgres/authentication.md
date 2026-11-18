@@ -2,7 +2,7 @@
 sidebar_position: 9
 ---
 
-# Authentication and domains
+# Authentication and Permissions
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors

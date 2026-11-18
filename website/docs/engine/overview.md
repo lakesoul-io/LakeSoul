@@ -11,14 +11,18 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-One engine provides four capabilities over the same tables and the same snapshot.
+One engine provides these capabilities over the same tables and the same
+snapshot.
 
 | Capability | What it gives you | Start here |
 | --- | --- | --- |
-| **PostgreSQL front end** | `psql`, JDBC, `pgx`, `pg_catalog`, DDL, `INSERT`, upserts and queries executed by the engine | [PostgreSQL](postgres/overview.md) |
+| **PostgreSQL front end** | `psql`, JDBC, `pgx`, `pg_catalog`, DDL, DML, transactions, upserts and queries executed by the engine | [PostgreSQL](postgres/overview.md) |
+| **Federated query** | ADBC foreign tables and S3 external files, joined with local tables in one plan | [Foreign tables](postgres/federation.md) |
+| **CDC subscriptions** | PostgreSQL logical replication and MySQL binlog into LakeSoul CDC tables | [Subscriptions](postgres/subscription.md) |
 | **Incremental SQL** | `INSERT ... SELECT` that reads only new commits and writes only changed rows | [Incremental SQL](incremental-sql/overview.md) |
 | **Vector search** | pgvector-compatible SQL over lake-resident IVF + RaBitQ indexes | [Vector search](vector-search/quickstart.md) |
 | **Full-text search** | BM25 ranking over Tantivy indexes in the same engine | [Full-text search](full-text-search/overview.md) |
+| **Distributed execution** | A coordinator plans across `lakesoul-worker` processes; the same tables scale to a PB-scale cluster | [Operations](postgres/operations.md) |
 
 ## One snapshot, several readers
 

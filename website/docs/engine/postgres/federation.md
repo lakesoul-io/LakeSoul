@@ -306,7 +306,7 @@ Parquet files may omit declared columns (they are read as NULL) and compatible
 types are coerced. CSV columns are read positionally, so the declared order
 must match the files; `has_header` only skips the header row. JSON fields are
 matched by name. Nested Parquet/JSON types and Hive partition columns are not
-supported in P0.
+supported.
 
 A directory may contain several formats, but each foreign table selects one
 `format`/extension; create one foreign table per format. The table accepts
@@ -321,13 +321,13 @@ between the coordinator and workers, and do not log plans at a level that prints
 the payload. Coordinator and workers must run a build with the same distributed
 protocol version.
 
-Each foreign scan is one distributed task in P0; file-level parallel scanning is
-a later optimization. The same S3 bucket may be used by several servers, but
+Each foreign scan is one distributed task; file-level parallel scanning is not
+implemented. The same S3 bucket may be used by several servers, but
 the object store registry is keyed by bucket, so two servers pointing at the
 same bucket with different credentials overwrite each other. Keep one credential
 set per bucket for now.
 
-Other P0 limits:
+Current limits:
 
 - S3 and S3-compatible stores only; local files and HDFS are not exposed.
 - `IMPORT FOREIGN SCHEMA` and `ALTER FOREIGN TABLE` are not implemented; use an
@@ -369,5 +369,5 @@ register the store at execution time. The credentials-in-plan trade-off and the
 same-bucket credential limitation described above apply to writes as well.
 
 The target must use an unpartitioned directory; Hive-style partition columns are
-not written in P0/P1. An INSERT does not create a LakeSoul commit, so there is no
+not written. An INSERT does not create a LakeSoul commit, so there is no
 snapshot, time travel or atomic visibility across the appended files.

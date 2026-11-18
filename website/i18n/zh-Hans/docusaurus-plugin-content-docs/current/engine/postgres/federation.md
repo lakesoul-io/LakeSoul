@@ -227,7 +227,7 @@ OPTIONS (
 
 列定义就是 schema contract，不会从文件自动推断。Parquet 缺失的声明列读为
 NULL，兼容类型会做转换；CSV 按列位置解析，因此声明顺序必须和文件一致，
-`has_header` 只负责跳过表头；JSON 按字段名匹配。P0 不支持嵌套 Parquet/JSON
+`has_header` 只负责跳过表头；JSON 按字段名匹配。不支持嵌套 Parquet/JSON
 类型和 Hive partition 列。
 
 同一目录可以包含多种格式，但一个 foreign table 只能选择一种 `format`/扩展名，
@@ -240,11 +240,11 @@ worker 在执行前注册 object store，不需要在启动时加载 federation 
 并避免把 plan payload 打到日志里。coordinator 和 worker 必须使用相同的分布式
 协议版本。
 
-P0 每个外部扫描是一个分布式 task；文件级并行扫描是后续优化。多个 server 可以
+每个外部扫描是一个分布式 task；文件级并行扫描尚未实现。多个 server 可以
 指向同一个 bucket，但 object store registry 按 bucket 记录，同 bucket 使用不同
 凭据会互相覆盖；目前应保证一个 bucket 只有一套凭据。
 
-其他 P0 限制：
+当前限制：
 
 - 只支持 S3 / S3-compatible；不暴露本地文件和 HDFS。
 - 未实现 `IMPORT FOREIGN SCHEMA` 和 `ALTER FOREIGN TABLE`；使用显式列定义，
@@ -282,5 +282,5 @@ JSON 输出是 newline-delimited。write plan 会携带和 scan 相同的 server
 S3 store 配置，worker 在执行时注册 object store。凭据进入 plan 的安全权衡，以及
 同 bucket 多套凭据互相覆盖的限制，同样适用于写入。
 
-目标必须是非分区目录；P0/P1 不写 Hive-style partition 列。INSERT 不会产生
+目标必须是非分区目录；不写 Hive-style partition 列。INSERT 不会产生
 LakeSoul commit，因此没有 snapshot、time travel，也没有跨文件的原子可见性。

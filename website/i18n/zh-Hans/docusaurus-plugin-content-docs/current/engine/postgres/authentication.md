@@ -1,9 +1,9 @@
 ---
 sidebar_position: 9
-sidebar_label: 认证与域隔离
+sidebar_label: 认证与权限
 ---
 
-# 认证与域隔离
+# 认证与权限
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors

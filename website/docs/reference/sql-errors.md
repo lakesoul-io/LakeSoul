@@ -17,7 +17,7 @@ maps cleanly, and documents the boundaries where it does not.
 
 | SQLSTATE | Name | Typical cause |
 | --- | --- | --- |
-| `0A000` | feature_not_supported | `UPDATE`, `DELETE`, `COPY`, `RETURNING`, unsupported DDL clause, write in a transaction block |
+| `0A000` | feature_not_supported | `DELETE`, `COPY ... TO STDOUT`, `CREATE TABLE AS`, `TRUNCATE`, non-`READ COMMITTED` isolation, unsupported DDL clause |
 | `21000` | cardinality_violation | A scalar subquery returned more than one row |
 | `22007` | invalid_datetime_format | A timestamp or date literal could not be parsed |
 | `22023` | invalid_parameter_value | Invalid `SET` value or table option |

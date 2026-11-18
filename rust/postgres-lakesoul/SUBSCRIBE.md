@@ -1,4 +1,4 @@
-# PostgreSQL logical-replication subscriber (P0)
+# PostgreSQL logical-replication subscriber
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -7,13 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 `postgres-lakesoul --subscribe` consumes a PostgreSQL publication and writes
-the changes into a LakeSoul CDC table. This is a P0 for validating the
-WAL → Arrow → LakeSoul batch path and its replay semantics, not a complete
+the changes into a LakeSoul CDC table. It validates the
+WAL → Arrow → LakeSoul batch path and its replay semantics; it is not a complete
 PostgreSQL subscription implementation.
 
 ## Scope
 
-| Dimension | P0 behaviour |
+| Dimension | Behaviour |
 | --- | --- |
 | Process | One subscriber process per subscription; a subscription maps one or more source tables |
 | Source | PostgreSQL 14, `public` schema only |
@@ -376,7 +376,7 @@ child without repeating the command line.
   slot's current position. The managed snapshot uses `EXPORT_SNAPSHOT` as
   described above.
 
-## Verified P0 behaviour
+## Verified behaviour
 
 The local PostgreSQL 14 smoke test covered:
 

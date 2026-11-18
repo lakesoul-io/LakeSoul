@@ -321,7 +321,7 @@ WITH (
 
 MySQL 没有 replication slot。如果订阅恢复前 binlog 已被 purge，订阅会停止并要求重新 snapshot。数据按 batch 提交到 LakeSoul，没有跨 worker task 的全局事务。
 
-支持的源类型包括有符号/无符号整数、`DECIMAL(p<=38)`、`FLOAT`/`DOUBLE`、`DATE`、`DATETIME`、`TIMESTAMP`、`TIME`（存为 Int64 微秒）、`YEAR`、字符/文本、binary/varbinary/blob、`BIT`（存为 Binary）、`ENUM`、`SET` 和 `JSON`。P0 拒绝 `GEOMETRY`、`VECTOR`、超过 38 位的 `DECIMAL`、按声明字符集无法解码的文本和 zero date。`ALTER TABLE` 支持 `ADD COLUMN`、安全数值放宽和放宽 `NOT NULL`；拒绝 `DROP`/`RENAME`/`TRUNCATE` 和类型收窄。
+支持的源类型包括有符号/无符号整数、`DECIMAL(p<=38)`、`FLOAT`/`DOUBLE`、`DATE`、`DATETIME`、`TIMESTAMP`、`TIME`（存为 Int64 微秒）、`YEAR`、字符/文本、binary/varbinary/blob、`BIT`（存为 Binary）、`ENUM`、`SET` 和 `JSON`。不支持的源类型包括 `GEOMETRY`、`VECTOR`、超过 38 位的 `DECIMAL`、按声明字符集无法解码的文本和 zero date。`ALTER TABLE` 支持 `ADD COLUMN`、安全数值放宽和放宽 `NOT NULL`；拒绝 `DROP`/`RENAME`/`TRUNCATE` 和类型收窄。
 
 ## 下一步
 
