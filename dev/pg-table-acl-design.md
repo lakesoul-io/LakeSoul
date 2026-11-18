@@ -1,6 +1,6 @@
 # PostgreSQL 表级 ACL 设计
 
-Status: implementation in progress.
+Status: implemented in PR #1316; this note records the model and the decisions behind it.
 
 ## 1. 目标
 
