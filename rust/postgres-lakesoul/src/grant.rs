@@ -138,12 +138,14 @@ impl AclStatementHook {
         // A table created by another engine since the last refresh may not be
         // in the connection's ACL view yet. A grant/revoke is rare enough to
         // refresh once before resolving targets.
-        if let Some(session) = client.session_extensions().get::<ConnectionSession>() {
-            let _ = session
+        if let Some(session) = client.session_extensions().get::<ConnectionSession>()
+            && session
                 .session
                 .refresh_acl_now()
                 .await
-                .map_err(acl_refresh_error)?;
+                .map_err(acl_refresh_error)?
+        {
+            session.settings.bump();
         }
 
         let acl = pg_acl(session_context).expect("validated --rbac");
@@ -161,13 +163,15 @@ impl AclStatementHook {
         // and the S3 proxy, pick it up within their five-second ACL TTL. The
         // grants are already committed; a failed refresh must not turn a
         // successful GRANT/REVOKE into a client error.
-        if let Some(session) = client.session_extensions().get::<ConnectionSession>()
-            && let Err(error) = session.session.refresh_acl_now().await
-        {
-            tracing::warn!(
-                "refreshing table ACLs after {} failed: {error}",
-                parsed.verb()
-            );
+        if let Some(session) = client.session_extensions().get::<ConnectionSession>() {
+            match session.session.refresh_acl_now().await {
+                Ok(true) => session.settings.bump(),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    "refreshing table ACLs after {} failed: {error}",
+                    parsed.verb()
+                ),
+            }
         }
 
         Ok(Response::Execution(Tag::new(parsed.verb())))

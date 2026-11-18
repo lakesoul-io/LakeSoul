@@ -60,8 +60,9 @@ REVOKE ALL ON t FROM bob;
 - `PUBLIC` 写入空间级授权（`grantee_kind = 'domain'`）。`REVOKE ALL ... FROM PUBLIC` 会让表只对 owner 和空间管理员可见。
 - `REVOKE` 写权限会降为 `ro`；`REVOKE SELECT`/`ALL` 会给同空间用户写显式 `none`，从而隐藏该表。
 - owner 或空间管理员才能授权。不可见的表返回 `42P01`；可见但无管理权返回 `42501`；public 表不接受 ACL。
+- grantee 名字按原样保存；LakeSoul 没有全局用户目录做存在性校验，因此可以先授权、后建用户。
 - `ON ALL TABLES IN SCHEMA public` 只覆盖当前 database（即当前 namespace）中的表。
-- `GRANT`/`REVOKE` 立即提交，和 DDL 一样不支持在事务块内执行。当前连接立即生效；其他连接和 S3 proxy 在 5 秒 ACL 缓存内生效。
+- `GRANT`/`REVOKE` 立即提交，和 DDL 一样不支持在事务块内执行。当前连接立即生效；其他连接和 S3 proxy 在 5 秒 ACL 缓存内生效。ACL 视图刷新后如果可见权限发生变化，连接上的 prepared statement 会在执行前重新 plan，避免 revoke 后旧 plan 继续读表。
 - 角色成员、列级权限、`WITH GRANT OPTION`、group ACL，以及 `information_schema` / `psql \dp` 反射暂不支持。
 
 ## 启用多工作空间和角色权限控制功能

@@ -198,13 +198,28 @@ impl PgSession {
 
     /// Refresh the ACL view immediately after a DDL statement changed the
     /// table set, so the same connection can write the new table.
-    pub(crate) async fn refresh_acl_now(&self) -> Result<()> {
+    ///
+    /// Returns whether the visible privileges changed.
+    pub(crate) async fn refresh_acl_now(&self) -> Result<bool> {
         let Some(acl) = &self.acl else {
-            return Ok(());
+            return Ok(false);
         };
-        acl.refresh().await?;
+        let changed = acl.refresh().await?;
         self.replace_visible_databases(acl.view().visible_namespaces());
-        Ok(())
+        Ok(changed)
+    }
+
+    /// Refresh the ACL view when its TTL expired. Returns whether the visible
+    /// privileges changed.
+    pub(crate) async fn refresh_acl_if_stale(&self) -> Result<bool> {
+        let Some(acl) = &self.acl else {
+            return Ok(false);
+        };
+        let changed = acl.refresh_if_stale().await?;
+        if changed {
+            self.replace_visible_databases(acl.view().visible_namespaces());
+        }
+        Ok(changed)
     }
 
     /// The metadata view backing this connection's catalog listings.

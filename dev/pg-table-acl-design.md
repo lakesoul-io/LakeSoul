@@ -1,6 +1,7 @@
 # PostgreSQL 表级 ACL 设计
 
-Status: implemented in PR #1316; this note records the model and the decisions behind it.
+Status: implemented in PR #1316; table-level SQL `GRANT` / `REVOKE` added in
+PR #1317. This note records the model and the decisions behind it.
 
 ## 1. 目标
 
@@ -249,12 +250,15 @@ REVOKE { SELECT | INSERT | UPDATE | DELETE | TRUNCATE | ALL }
 - `REVOKE` 写权限把 `rw` 降为 `ro`；`REVOKE SELECT`/`ALL` 对同 domain 用户
   写显式 `none`，对跨 domain 用户删除 ACL 行。
 - owner 或 domain admin 才能执行；不可见表返回 `42P01`，可见但无管理权返回
-  `42501`；public 表不接受 ACL。
+  `42501`；public 表不接受 ACL。grantee 名字按原样保存，没有全局用户目录做
+  存在性校验，允许先授权、后建用户。
 - `ON ALL TABLES IN SCHEMA public` 枚举当前 namespace 的表，public 表跳过；
   任一非 public 表不可管理则整条语句失败。
 - 语句在 metadata 中单事务提交，但 pg-wire 事务块内不支持（与 DDL 一致）。
 - 不支持角色成员、列级权限、`WITH GRANT OPTION`、group ACL；ACL 变更当前
   连接立即生效，其他连接和 S3 proxy 在 5 秒 TTL 内生效。
+- ACL 视图刷新后如果可见权限发生变化，连接会 bump prepared-plan generation；
+  `Execute` 前重新 plan，避免 revoke 之后旧 plan 继续读表。
 - `information_schema` / `pg_class.relacl` / `psql \dp` 暂不反射 ACL。
 
 实现位于 `rust/postgres-lakesoul/src/grant.rs`，ACL 写入通过

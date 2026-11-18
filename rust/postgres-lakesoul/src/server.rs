@@ -1086,6 +1086,23 @@ impl LakeSoulQueryRouter {
         >,
     {
         let statement = &portal.statement;
+        // This runs before the generation check: a REVOKE or GRANT made in
+        // another session may have changed this connection's visibility since
+        // the portal was planned. Refresh first, then make a changed view
+        // invalidate that plan.
+        if state
+            .session
+            .refresh_acl_if_stale()
+            .await
+            .map_err(|error| {
+                crate::ddl::user_error(
+                    "XX000",
+                    format!("refreshing table ACLs failed: {error}"),
+                )
+            })?
+        {
+            state.settings.bump();
+        }
         if !state.settings.needs_replan(&statement.id) {
             return Ok(());
         }

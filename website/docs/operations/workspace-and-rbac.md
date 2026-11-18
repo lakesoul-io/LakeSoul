@@ -61,8 +61,9 @@ REVOKE ALL ON t FROM bob;
 - `PUBLIC` writes the workspace-wide grant (`grantee_kind = 'domain'`). `REVOKE ALL ... FROM PUBLIC` makes the table private to its owner and space administrators.
 - `REVOKE` of a write privilege leaves `ro`; revoking read/all hides the table from a same-workspace user with an explicit `none`.
 - The owner or a space administrator may grant. A hidden table is `42P01`; a visible table the user does not own is `42501`; public tables take no ACL.
+- Grantee names are stored as written; there is no global user directory to validate them against, so a grant may be created before that user first connects.
 - `ON ALL TABLES IN SCHEMA public` covers the tables of the current database (workspace) only.
-- `GRANT`/`REVOKE` commit immediately and are refused inside a transaction block, like DDL. They take effect at once for the current connection and within the five-second ACL cache for other sessions and the S3 proxy.
+- `GRANT`/`REVOKE` commit immediately and are refused inside a transaction block, like DDL. They take effect at once for the current connection and within the five-second ACL cache for other sessions and the S3 proxy. When a refresh changes visibility, prepared statements on that connection are replanned before execution, so a revoke cannot be bypassed by an old plan.
 - Role membership, column privileges, `WITH GRANT OPTION`, group ACLs and `information_schema`/`psql \dp` reflection are not implemented.
 
 ## Enable Multi-Tenancy and Role Permission Control

@@ -21,7 +21,9 @@
 //!   domain users may create tables. A cross-domain namespace is visible ro
 //!   only when at least one of its tables is visible.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::metadata_client::MetaDataClient;
@@ -507,6 +509,52 @@ impl AclView {
 
     pub fn tables(&self) -> impl Iterator<Item = &TableAccess> {
         self.tables.values()
+    }
+
+    /// A deterministic fingerprint of every namespace and table privilege in
+    /// this view. The pg-wire server uses it to notice that a background ACL
+    /// refresh changed what the connection may see, so plans prepared under
+    /// the old view are replanned before they execute.
+    pub fn fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        let mut namespaces: Vec<&NamespaceAccess> = self
+            .namespaces
+            .values()
+            .filter(|access| access.privilege.can_read())
+            .collect();
+        namespaces.sort_by(|left, right| left.namespace.cmp(&right.namespace));
+        for access in namespaces {
+            access.namespace.hash(&mut hasher);
+            access.domain.hash(&mut hasher);
+            access.creator.hash(&mut hasher);
+            access.owner.hash(&mut hasher);
+            access.admin.hash(&mut hasher);
+            access.privilege.as_str().hash(&mut hasher);
+        }
+
+        // Only visible tables affect a plan. An invisible table is invisible
+        // whether or not it exists, so a table created in another tenant does
+        // not force this connection to replan.
+        let mut tables: Vec<&TableAccess> = self
+            .tables
+            .values()
+            .filter(|access| access.privilege.can_read())
+            .collect();
+        tables.sort_by(|left, right| {
+            (left.namespace.as_str(), left.table.as_str())
+                .cmp(&(right.namespace.as_str(), right.table.as_str()))
+        });
+        for access in tables {
+            access.table_id.hash(&mut hasher);
+            access.namespace.hash(&mut hasher);
+            access.table.hash(&mut hasher);
+            access.domain.hash(&mut hasher);
+            access.creator.hash(&mut hasher);
+            access.owner.hash(&mut hasher);
+            access.admin.hash(&mut hasher);
+            access.privilege.as_str().hash(&mut hasher);
+        }
+        hasher.finish()
     }
 }
 

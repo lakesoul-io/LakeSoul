@@ -777,3 +777,61 @@ async fn all_tables_grant_contract() -> Result<()> {
     })
     .await
 }
+
+/// A plan prepared before a revoke must not keep reading the table. The ACL
+/// refresh marks the view changed and the Execute path replans before running
+/// the stale portal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoked_prepared_statement_replans() -> Result<()> {
+    support::run_rbac_suite(|h| {
+        Box::pin(async move {
+            let alice_token = h.token("alice", RBAC_TEAM_A)?;
+            let bob_token = h.token("bob", RBAC_TEAM_A)?;
+            let namespace = h.lake_namespace.clone();
+            let table = unique("replan");
+
+            let alice =
+                connect_as(h, "replan-alice", &namespace, "alice", &alice_token).await?;
+            alice
+                .batch_execute(&format!(
+                    "CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY, val BIGINT)"
+                ))
+                .await?;
+            alice
+                .batch_execute(&format!("INSERT INTO {table} VALUES (1, 10)"))
+                .await?;
+            alice
+                .batch_execute(&format!("GRANT SELECT ON {table} TO bob"))
+                .await?;
+
+            let bob = connect_as(h, "replan-bob", &namespace, "bob", &bob_token).await?;
+            let prepared = bob
+                .prepare(&format!("SELECT count(*) FROM {table}"))
+                .await
+                .context("replan: prepare as bob")?;
+            let count: i64 = bob
+                .query_one(&prepared, &[])
+                .await
+                .context("replan: initial execute")?
+                .get(0);
+            ensure!(count == 1, "bob saw {count} rows, expected 1");
+
+            alice
+                .batch_execute(&format!("REVOKE ALL ON {table} FROM bob"))
+                .await
+                .context("replan: revoke bob")?;
+
+            // The session refreshes its ACL view every five seconds. Wait for
+            // the stale plan to become invalid before executing it again.
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            ensure!(
+                bob.query_one(&prepared, &[]).await.is_err(),
+                "a prepared statement must not keep reading after its grant is revoked"
+            );
+
+            alice.batch_execute(&format!("DROP TABLE {table}")).await?;
+            Ok(())
+        })
+    })
+    .await
+}
