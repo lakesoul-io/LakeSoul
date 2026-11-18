@@ -41,7 +41,7 @@ PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
 
 The first script adds the ACL objects and grants same-workspace rw to pre-existing tables; the second installs the ACL-aware RLS functions and policies. Fresh deployments get the latest schema from `script/meta_init.sql`.
 
-A shared pg-wire cluster can fix its write workspace with `--rbac-domain` (or `LAKESOUL_PG_RBAC_DOMAIN`); clients from other workspaces can only read granted tables. The S3 proxy enforces the same table ACL for direct Spark/Flink/Python access to object storage, which is required because metadata RLS alone cannot stop arbitrary code from reading files.
+A shared pg-wire cluster can fix its write workspace with `--rbac-domain` (or `LAKESOUL_PG_RBAC_DOMAIN`); clients from other workspaces can only read granted tables. The cluster's metadata account is a trusted catalog reader with access to metadata/ACL across workspaces; clients never receive its credentials, and the application enforces each client's ACL. The S3 proxy enforces the same table ACL for direct Spark/Flink/Python access to object storage, which is required because metadata RLS alone cannot stop arbitrary code from reading files; its sidecar needs a catalog-reader metadata account for cross-workspace grants.
 
 ## Enable Multi-Tenancy and Role Permission Control
 By default, LakeSoul does not enable this feature. This feature can be enabled by executing `script/meta_rbac_init.sql`:

@@ -40,7 +40,7 @@ PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
 
 第一个脚本创建 ACL 对象并给存量表补同空间 rw；第二个脚本安装 ACL 版 RLS 函数和策略。全新部署直接使用 `script/meta_init.sql` 的最新 schema。
 
-共享 pg-wire cluster 可以用 `--rbac-domain`（或 `LAKESOUL_PG_RBAC_DOMAIN`）固定写入空间；其他空间的客户端只能读取被授权的表。S3 proxy 对直接访问对象存储的 Spark/Flink/Python 作业执行同一套表 ACL，因为仅靠元数据 RLS 无法阻止任意代码直接读取文件。
+共享 pg-wire cluster 可以用 `--rbac-domain`（或 `LAKESOUL_PG_RBAC_DOMAIN`）固定写入空间；其他空间的客户端只能读取被授权的表。cluster 的 metadata 账号是受信任的 catalog reader，可读取所有空间的元数据/ACL；客户端拿不到该账号，应用层按每个客户端的 ACL 执行。S3 proxy 对直接访问对象存储的 Spark/Flink/Python 作业执行同一套表 ACL，因为仅靠元数据 RLS 无法阻止任意代码直接读取文件；跨空间授权时 sidecar 也需要 catalog-reader 的 metadata 账号。
 
 ## 启用多工作空间和角色权限控制功能
 默认情况下，LakeSoul 并不会开启该功能。可以通过执行 `script/meta_rbac_init.sql` 启用该功能：

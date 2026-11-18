@@ -530,6 +530,43 @@ impl MetaDataClient {
         user: &str,
         domain: &str,
     ) -> Result<Option<Privilege>> {
+        // The SQL resolver is SECURITY DEFINER, so a sidecar whose metadata
+        // account is confined to one domain can still resolve a cross-domain
+        // read grant. Fall back to the direct join on deployments that have
+        // the ACL tables but have not installed meta_rbac_init.sql yet.
+        let function_result = {
+            let pooled = self.pooled_client();
+            let locked = pooled.lock().await;
+            let connection = locked.get(QueryType::RW).await?;
+            let installed: bool = connection
+                .query_one(
+                    "select to_regprocedure(
+                        'lakesoul_table_privilege_by_path(text,text,text)'
+                     ) is not null",
+                    &[],
+                )
+                .await?
+                .get(0);
+            if installed {
+                let row = connection
+                    .query_opt(
+                        "select lakesoul_table_privilege_by_path(
+                            $1::TEXT, $2::TEXT, $3::TEXT
+                         )",
+                        &[&path, &user, &domain],
+                    )
+                    .await?;
+                Some(
+                    row.and_then(|row| row.get::<_, Option<String>>(0))
+                        .map(|value| Privilege::parse(&value)),
+                )
+            } else {
+                None
+            }
+        };
+        if let Some(privilege) = function_result {
+            return Ok(privilege);
+        }
         Ok(
             AclView::load_table_by_path(self, user, &[domain.to_string()], path)
                 .await?

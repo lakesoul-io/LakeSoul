@@ -205,8 +205,10 @@ DB 用户。因此：
 - 客户端权限不能超过 cluster 权限：`effective = cluster 权限 ∩ 客户端 ACL`。
 - 建表 domain = cluster domain；`creator` = 客户端 JWT 用户。
 - 跨 domain 只读：客户端通过 ACL 解析，不依赖连接的是哪个 cluster；cluster
-  metadata 账号必须能读到跨 domain 的 metadata/ACL（只读元数据），或通过
-  `SECURITY DEFINER` catalog 函数解析。应用层仍是最终闸门。
+  metadata 账号必须能读到跨 domain 的 metadata/ACL（catalog reader / owner），
+  这些账号是受信任的服务账号，客户端不会拿到它们的凭据。应用层仍是最终闸门。
+  S3 proxy sidecar 的 metadata 账号同理，或使用 ACL 函数（函数存在时 Rust
+  解析器优先调用）。
 - 跨 domain 读写请求：写直接 `42501`；`public` 表例外，public 完全开放。
 - 未配置 `--rbac` 时保持现有行为，不启用 ACL。
 
