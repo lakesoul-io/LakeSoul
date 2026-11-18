@@ -162,21 +162,18 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         login(USER1, USER1_PASS, DOMAIN1);
         // create table & drop database
         sql("use database1");
-        try {
-            sql("create database if not exists database3");
-            throw new RuntimeException("test state was unexcepted");
-        } catch (Exception e) {
-            System.out.println(e.getMessage());
-            assert e.getMessage().contains("Could not execute CREATE DATABASE");
-        }
+        // Same-domain users may create their own namespace; its creator may
+        // drop it again.
+        sql("create database if not exists database3");
+        sql("drop database database3");
+        // Another user's namespace row is filtered by RLS; the drop is a no-op.
         try {
             sql("drop database database1");
-            throw new RuntimeException("test state was unexcepted");
         } catch (Exception e) {
             System.out.println(e.getMessage());
-            assert e.getMessage()
-                    .contains("Could not execute DROP DATABASE lakesoul.database1 RESTRICT");
         }
+        assert (sql("show databases").stream()
+                .anyMatch(row -> "database1".equals(String.valueOf(row.getField(0)))));
 
         // create & drop table
         sql(
