@@ -134,7 +134,7 @@ async fn table_acl_contract() -> Result<()> {
                 "cross-domain write without a grant must look missing"
             );
             ensure!(
-                sqlstate(&carol, &format!("SELECT * FROM {table}")).await.is_ok(),
+                carol.simple_query(&format!("SELECT * FROM {table}")).await.is_err(),
                 "cross-domain SELECT without a grant must fail"
             );
             ensure!(
@@ -359,6 +359,419 @@ async fn private_namespace_is_visible_after_a_table_grant() -> Result<()> {
             );
 
             alice.batch_execute(&format!("DROP TABLE {table}")).await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// SQL GRANT/REVOKE maps PostgreSQL privileges onto the table ACL model,
+/// including the collapsed REVOKE semantics and the domain.user extension.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grant_revoke_contract() -> Result<()> {
+    support::run_rbac_suite(|h| {
+        Box::pin(async move {
+            let alice_token = h.token("alice", RBAC_TEAM_A)?;
+            let bob_token = h.token("bob", RBAC_TEAM_A)?;
+            let carol_token = h.token("carol", RBAC_TEAM_B)?;
+            let frank_token = h.token("frank", RBAC_TEAM_A)?;
+            let namespace = h.lake_namespace.clone();
+            let table = unique("grant");
+            let public_table = unique("grant_public");
+
+            let alice =
+                connect_as(h, "grant-alice", &namespace, "alice", &alice_token).await?;
+            alice
+                .batch_execute(&format!(
+                    "CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY, val BIGINT)"
+                ))
+                .await
+                .context("grant: create table")?;
+            alice
+                .batch_execute(&format!("INSERT INTO {table} VALUES (1, 10), (2, 20)"))
+                .await
+                .context("grant: insert rows")?;
+
+            // Same-domain SELECT makes the table read-only.
+            alice
+                .batch_execute(&format!("GRANT SELECT ON {table} TO bob"))
+                .await
+                .context("grant: SELECT to bob")?;
+            let bob =
+                connect_as(h, "grant-bob-read", &namespace, "bob", &bob_token).await?;
+            let count: i64 = bob
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .await?
+                .get(0);
+            ensure!(count == 2, "bob saw {count} rows, expected 2");
+            ensure!(
+                sqlstate(&bob, &format!("INSERT INTO {table} VALUES (3, 30)")).await?
+                    == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                "SELECT only must not permit writes"
+            );
+
+            // Granting a write privilege upgrades to rw.
+            alice
+                .batch_execute(&format!("GRANT INSERT, UPDATE ON {table} TO bob"))
+                .await
+                .context("grant: INSERT, UPDATE to bob")?;
+            let bob =
+                connect_as(h, "grant-bob-write", &namespace, "bob", &bob_token).await?;
+            bob.batch_execute(&format!("INSERT INTO {table} VALUES (3, 30)"))
+                .await
+                .context("grant: bob inserts")?;
+            ensure!(
+                alice
+                    .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                    .await?
+                    .get::<_, i64>(0)
+                    == 3,
+                "the granted insert must be visible"
+            );
+
+            // Revoking a write privilege downgrades to ro, not none.
+            alice
+                .batch_execute(&format!("REVOKE INSERT ON {table} FROM bob"))
+                .await
+                .context("grant: revoke INSERT")?;
+            let bob =
+                connect_as(h, "grant-bob-revoked-write", &namespace, "bob", &bob_token)
+                    .await?;
+            ensure!(
+                sqlstate(&bob, &format!("INSERT INTO {table} VALUES (4, 40)")).await?
+                    == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                "revoking INSERT must leave the table read-only"
+            );
+            let count: i64 = bob
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .await?
+                .get(0);
+            ensure!(count == 3, "bob still reads after the write revoke");
+
+            // Revoking read hides the table from a same-domain user.
+            alice
+                .batch_execute(&format!("REVOKE ALL ON {table} FROM bob"))
+                .await
+                .context("grant: revoke all from bob")?;
+            let bob =
+                connect_as(h, "grant-bob-none", &namespace, "bob", &bob_token).await?;
+            ensure!(
+                sqlstate(&bob, &format!("INSERT INTO {table} VALUES (4, 40)")).await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "revoke all must hide a same-domain table"
+            );
+            ensure!(
+                bob.simple_query(&format!("SELECT * FROM {table}"))
+                    .await
+                    .is_err(),
+                "revoke all must hide a same-domain table from SELECT"
+            );
+
+            // GRANT restores access after an explicit none.
+            alice
+                .batch_execute(&format!("GRANT ALL ON {table} TO bob"))
+                .await
+                .context("grant: ALL to bob")?;
+            let bob =
+                connect_as(h, "grant-bob-all", &namespace, "bob", &bob_token).await?;
+            bob.batch_execute(&format!("INSERT INTO {table} VALUES (5, 50)"))
+                .await
+                .context("grant: bob inserts after ALL")?;
+
+            // A user with rw but not ownership cannot grant.
+            ensure!(
+                sqlstate(&bob, &format!("GRANT SELECT ON {table} TO carol")).await?
+                    == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                "a non-owner must not grant"
+            );
+
+            // Cross-domain grants are read-only. The grantee is written as
+            // `domain.user`; the domain is the token's group.
+            let cross_domain = format!("{RBAC_TEAM_B}.carol");
+            alice
+                .batch_execute(&format!("GRANT SELECT ON {table} TO {cross_domain}"))
+                .await
+                .context("grant: cross-domain SELECT")?;
+            let carol =
+                connect_as(h, "grant-carol-read", &namespace, "carol", &carol_token)
+                    .await?;
+            let count: i64 = carol
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .await?
+                .get(0);
+            ensure!(count >= 2, "carol saw {count} rows");
+            ensure!(
+                sqlstate(&carol, &format!("INSERT INTO {table} VALUES (6, 60)")).await?
+                    == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                "a cross-domain grant must be read-only"
+            );
+            ensure!(
+                sqlstate(&alice, &format!("GRANT ALL ON {table} TO {cross_domain}"))
+                    .await?
+                    == "0A000",
+                "a cross-domain write grant must be refused"
+            );
+
+            // PUBLIC maps to the domain-wide grant.
+            alice
+                .batch_execute(&format!("GRANT SELECT ON {table} TO PUBLIC"))
+                .await
+                .context("grant: SELECT to PUBLIC")?;
+            let frank =
+                connect_as(h, "grant-frank-read", &namespace, "frank", &frank_token)
+                    .await?;
+            let count: i64 = frank
+                .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                .await?
+                .get(0);
+            ensure!(count >= 2, "frank saw {count} rows through PUBLIC");
+            ensure!(
+                sqlstate(&frank, &format!("INSERT INTO {table} VALUES (7, 70)")).await?
+                    == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                "PUBLIC SELECT must be read-only"
+            );
+            alice
+                .batch_execute(&format!("GRANT ALL ON {table} TO PUBLIC"))
+                .await
+                .context("grant: ALL to PUBLIC")?;
+            let frank =
+                connect_as(h, "grant-frank-write", &namespace, "frank", &frank_token)
+                    .await?;
+            frank
+                .batch_execute(&format!("INSERT INTO {table} VALUES (8, 80)"))
+                .await
+                .context("grant: frank inserts through PUBLIC")?;
+            alice
+                .batch_execute(&format!(
+                    "REVOKE INSERT, UPDATE, DELETE ON {table} FROM PUBLIC"
+                ))
+                .await
+                .context("grant: revoke writes from PUBLIC")?;
+            let frank =
+                connect_as(h, "grant-frank-ro", &namespace, "frank", &frank_token)
+                    .await?;
+            ensure!(
+                sqlstate(&frank, &format!("INSERT INTO {table} VALUES (9, 90)")).await?
+                    == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                "revoking PUBLIC writes must leave read-only"
+            );
+            ensure!(
+                frank
+                    .simple_query(&format!("SELECT * FROM {table}"))
+                    .await
+                    .is_ok(),
+                "revoking PUBLIC writes must keep SELECT"
+            );
+            alice
+                .batch_execute(&format!("REVOKE ALL ON {table} FROM PUBLIC"))
+                .await
+                .context("grant: revoke all from PUBLIC")?;
+            let frank =
+                connect_as(h, "grant-frank-none", &namespace, "frank", &frank_token)
+                    .await?;
+            ensure!(
+                sqlstate(&frank, &format!("INSERT INTO {table} VALUES (9, 90)")).await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "revoking all from PUBLIC must hide the table"
+            );
+            ensure!(
+                frank
+                    .simple_query(&format!("SELECT * FROM {table}"))
+                    .await
+                    .is_err(),
+                "revoking all from PUBLIC must hide the table from SELECT"
+            );
+
+            // Public tables take no ACL.
+            h.create_table_out_of_band(&public_table, "public", "alice")
+                .await?;
+            ensure!(
+                sqlstate(&alice, &format!("GRANT SELECT ON {public_table} TO bob"))
+                    .await?
+                    == "0A000",
+                "public tables must not take ACL rows"
+            );
+
+            // Unknown tables look missing.
+            ensure!(
+                sqlstate(&alice, "GRANT SELECT ON acl_no_such_table TO bob").await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "an unknown table must be 42P01"
+            );
+
+            // A domain administrator can manage any table in the domain.
+            let admin_user = unique("admin");
+            let admin_token = h.token(&admin_user, RBAC_TEAM_A)?;
+            let reference = h.connect_reference().await?;
+            reference
+                .execute(
+                    "INSERT INTO public.domain_admin(domain, user_name)
+                     VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    &[&RBAC_TEAM_A, &admin_user],
+                )
+                .await?;
+            let admin =
+                connect_as(h, "grant-admin", &namespace, &admin_user, &admin_token)
+                    .await?;
+            admin
+                .batch_execute(&format!("GRANT SELECT ON {table} TO bob"))
+                .await
+                .context("grant: domain admin grants")?;
+            reference
+                .execute(
+                    "DELETE FROM public.domain_admin
+                     WHERE domain = $1 AND user_name = $2",
+                    &[&RBAC_TEAM_A, &admin_user],
+                )
+                .await?;
+
+            // Extended protocol: Parse/Describe must accept the statement and
+            // Execute must perform it.
+            let prepared = alice
+                .prepare(&format!("GRANT SELECT ON {table} TO frank"))
+                .await
+                .context("grant: prepare")?;
+            alice
+                .execute(&prepared, &[])
+                .await
+                .context("grant: execute prepared")?;
+
+            // The metadata commits immediately, so a transaction block is
+            // refused like DDL.
+            alice.batch_execute("BEGIN").await?;
+            ensure!(
+                sqlstate(&alice, &format!("GRANT SELECT ON {table} TO bob")).await?
+                    == "0A000",
+                "GRANT inside a transaction must be refused"
+            );
+            alice.batch_execute("ROLLBACK").await?;
+
+            // A revoke removes the cross-domain grant.
+            alice
+                .batch_execute(&format!("REVOKE ALL ON {table} FROM {cross_domain}"))
+                .await
+                .context("grant: revoke cross-domain")?;
+            let carol =
+                connect_as(h, "grant-carol-revoked", &namespace, "carol", &carol_token)
+                    .await?;
+            ensure!(
+                sqlstate(&carol, &format!("INSERT INTO {table} VALUES (6, 60)")).await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "a revoked cross-domain grant must hide the table"
+            );
+            ensure!(
+                carol
+                    .simple_query(&format!("SELECT * FROM {table}"))
+                    .await
+                    .is_err(),
+                "a revoked cross-domain grant must hide the table from SELECT"
+            );
+
+            alice
+                .batch_execute(&format!("DROP TABLE {table}"))
+                .await
+                .context("grant: drop table")?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// `ALL TABLES IN SCHEMA public` grants every non-public table in the current
+/// namespace, and a cross-domain grant makes the private namespace visible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_tables_grant_contract() -> Result<()> {
+    support::run_rbac_suite(|h| {
+        Box::pin(async move {
+            let alice_token = h.token("alice", RBAC_TEAM_A)?;
+            let carol_token = h.token("carol", RBAC_TEAM_B)?;
+            let namespace = h.namespace_of(RBAC_TEAM_A)?.to_string();
+            let first = unique("all_first");
+            let second = unique("all_second");
+
+            let alice = connect_as(h, "grant-all-alice", &namespace, "alice", &alice_token)
+                .await?;
+            for (table, value) in [(&first, 1), (&second, 2)] {
+                alice
+                    .batch_execute(&format!(
+                        "CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY, val BIGINT)"
+                    ))
+                    .await
+                    .with_context(|| format!("create {table}"))?;
+                alice
+                    .batch_execute(&format!(
+                        "INSERT INTO {table} VALUES ({value}, {value})"
+                    ))
+                    .await
+                    .with_context(|| format!("insert {table}"))?;
+            }
+
+            let cross_domain = format!("{RBAC_TEAM_B}.carol");
+            alice
+                .batch_execute(&format!(
+                    "GRANT SELECT ON ALL TABLES IN SCHEMA public TO {cross_domain}"
+                ))
+                .await
+                .context("grant: all tables cross-domain")?;
+
+            let carol = connect_as(
+                h,
+                "grant-all-carol",
+                &namespace,
+                "carol",
+                &carol_token,
+            )
+            .await?;
+            for table in [&first, &second] {
+                let count: i64 = carol
+                    .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                    .await
+                    .with_context(|| format!("carol reads {table}"))?
+                    .get(0);
+                ensure!(count == 1, "carol saw {count} rows in {table}");
+                ensure!(
+                    sqlstate(&carol, &format!("INSERT INTO {table} VALUES (9, 9)"))
+                        .await?
+                        == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                    "an ALL TABLES grant must be read-only across domains"
+                );
+            }
+
+            alice
+                .batch_execute(&format!(
+                    "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {cross_domain}"
+                ))
+                .await
+                .context("grant: revoke all tables")?;
+            // With the table grants gone, the private namespace itself is no
+            // longer visible, so the same-domain database disappears from
+            // `pg_database` and a startup connection fails like a missing one.
+            let carol = connect_as(
+                h,
+                "grant-all-carol-revoked",
+                &h.lake_namespace,
+                "carol",
+                &carol_token,
+            )
+            .await?;
+            let listed: i64 = carol
+                .query_one(
+                    "SELECT count(*) FROM pg_catalog.pg_database WHERE datname = $1",
+                    &[&namespace],
+                )
+                .await?
+                .get(0);
+            ensure!(
+                listed == 0,
+                "the revoked private namespace must not be listed"
+            );
+
+            alice
+                .batch_execute(&format!("DROP TABLE {first}"))
+                .await?;
+            alice
+                .batch_execute(&format!("DROP TABLE {second}"))
+                .await?;
             Ok(())
         })
     })

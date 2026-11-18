@@ -90,6 +90,21 @@ token 通过之前不会创建会话，也不会占用连接名额。
 
 token 的域在启动时确定，`SET`/`RESET` 无法修改。共享 cluster 的写入域由 `--rbac-domain` 固定；其他域的客户端可以读取被授权的表，但不能写入或创建私有表。表 ACL 规则与 `script/meta_rbac_init.sql` 一致，见[工作空间与 RBAC](../../operations/workspace-and-rbac.md)。
 
+### 通过 SQL 授权
+
+服务接受 PostgreSQL `GRANT` / `REVOKE` 的表级子集：
+
+```sql
+GRANT SELECT ON t TO bob;
+GRANT INSERT, UPDATE ON t TO bob;
+GRANT SELECT ON t TO team_b.carol;          -- 跨域，只读
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO bob;
+REVOKE INSERT ON t FROM bob;
+REVOKE ALL ON t FROM bob;
+```
+
+`SELECT` 映射为 `ro`；写权限映射为 `rw`，并隐含读权限。裸用户名属于表所在域；`domain.user` 是 LakeSoul 的跨域只读授权扩展。`PUBLIC` 写入域级授权。只有建表者或空间管理员可以授权；`GRANT`/`REVOKE` 立即提交，因此不支持在事务块内执行。当前连接立即生效，其他连接和 S3 proxy 在 5 秒 ACL 缓存内生效。角色成员、列级权限、`WITH GRANT OPTION` 以及 ACL 的 catalog 反射暂不实现。
+
 `--rbac` 会把域写进每个后台查询（`job.queries.domain`），`job_key` 的唯一索引也包含域。已有的 4.x 元数据库必须先迁移，服务端才能提交作业：
 
 ```sh

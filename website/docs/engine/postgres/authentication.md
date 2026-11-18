@@ -115,6 +115,28 @@ domains may read granted tables but cannot write or create private tables.
 Table ACLs follow the same rules as `script/meta_rbac_init.sql`; see
 [Workspace and RBAC](../../operations/workspace-and-rbac.md).
 
+### Granting table access
+
+The server accepts a table-level subset of PostgreSQL `GRANT` / `REVOKE`:
+
+```sql
+GRANT SELECT ON t TO bob;
+GRANT INSERT, UPDATE ON t TO bob;
+GRANT SELECT ON t TO team_b.carol;          -- cross-domain: read-only
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO bob;
+REVOKE INSERT ON t FROM bob;
+REVOKE ALL ON t FROM bob;
+```
+
+`SELECT` maps to `ro`; write privileges map to `rw` and imply read. A bare
+grantee belongs to the table's domain; `domain.user` is the LakeSoul extension
+for a cross-domain read-only grant. `PUBLIC` writes the domain-wide grant.
+Only the creator or a space administrator may grant, and `GRANT`/`REVOKE`
+commit immediately, so they are refused inside a transaction block. They take
+effect at once for the current connection and within the five-second ACL cache
+for other sessions and the S3 proxy. Role membership, column privileges,
+`WITH GRANT OPTION` and catalog reflection of grants are not implemented.
+
 `--rbac` stores a domain on every detached job, in `job.queries.domain`, and the
 `job_key` unique index includes the domain. An existing 4.x metadata database
 must be migrated before the server starts jobs:
