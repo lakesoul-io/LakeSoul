@@ -140,11 +140,8 @@ class RBACOperationSuite
       )
     )
 
-    val err11 = intercept[Exception] {
-      spark.sql("drop database database1").collect()
-    }
-    println(err11.getMessage)
-    assert(err11.isInstanceOf[NoSuchNamespaceException])
+    // The namespace row is filtered by RLS, so the drop is a no-op.
+    spark.sql("drop database if exists database1")
 
     // create table & drop table
     val err2 = intercept[Exception] {
@@ -188,6 +185,7 @@ class RBACOperationSuite
 
     // clear test
     login(ADMIN1, ADMIN1_PASS, DOMAIN1)
+    assert(spark.sql("show databases").toDF().count() == 2)
     spark.sql("drop table table1")
   }
 
@@ -199,17 +197,12 @@ class RBACOperationSuite
     login(USER1, USER1_PASS, DOMAIN1)
     // create table & drop database
     spark.sql("use database1;")
-    val err1 = intercept[Exception] {
-      spark.sql("create database if not exists database3")
-    }
-    println(err1.getMessage)
-    assert(err1.getMessage.contains("permission denied for table namespace"))
+    // same-domain users may create a namespace; its creator may drop it
+    spark.sql("create database if not exists database3")
+    spark.sql("drop database database3")
 
-    val err2 = intercept[Exception] {
-      spark.sql("drop database database1").collect()
-    }
-    println(err2.getMessage)
-    assert(err2.getMessage.contains("permission denied for table namespace"))
+    // Another user's namespace row is filtered by RLS; the drop is a no-op.
+    spark.sql("drop database if exists database1")
 
     assert(spark.sql("show databases").toDF().count() == 2)
 
@@ -265,8 +258,12 @@ class RBACOperationSuite
     login(USER2, USER2_PASS, DOMAIN1)
     // user in same domain can read
     sql("select * from table1")
-    // user in same domain can write
-    sql("insert into table1 values(2, 'foo2', 'bar2')")
+    // user in the same domain is read-only by default (ACL owner-rw/others-ro)
+    intercept[Exception] {
+      sql("insert into table1 values(2, 'foo2', 'bar2')")
+    }
+    // The refused write must not publish a row.
+    assert(sql("select * from table1").toDF().count() == 1)
     // user in other domain cannot access
     login(ADMIN2, ADMIN2_PASS, DOMAIN2)
     val dir = new org.apache.hadoop.fs.Path(tablePath.toString)

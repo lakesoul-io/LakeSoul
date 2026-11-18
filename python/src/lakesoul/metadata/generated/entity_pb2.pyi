@@ -37,7 +37,7 @@ class MetaInfo(_message.Message):
     def __init__(self, list_partition: _Optional[_Iterable[_Union[PartitionInfo, _Mapping]]] = ..., table_info: _Optional[_Union[TableInfo, _Mapping]] = ..., read_partition_info: _Optional[_Iterable[_Union[PartitionInfo, _Mapping]]] = ...) -> None: ...
 
 class TableInfo(_message.Message):
-    __slots__ = ("table_id", "table_namespace", "table_name", "table_path", "table_schema", "table_schema_arrow_ipc", "table_schema_arrow_ipc_json_hash", "properties", "partitions", "domain")
+    __slots__ = ("table_id", "table_namespace", "table_name", "table_path", "table_schema", "table_schema_arrow_ipc", "table_schema_arrow_ipc_json_hash", "properties", "partitions", "domain", "creator")
     TABLE_ID_FIELD_NUMBER: _ClassVar[int]
     TABLE_NAMESPACE_FIELD_NUMBER: _ClassVar[int]
     TABLE_NAME_FIELD_NUMBER: _ClassVar[int]
@@ -48,6 +48,7 @@ class TableInfo(_message.Message):
     PROPERTIES_FIELD_NUMBER: _ClassVar[int]
     PARTITIONS_FIELD_NUMBER: _ClassVar[int]
     DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    CREATOR_FIELD_NUMBER: _ClassVar[int]
     table_id: str
     table_namespace: str
     table_name: str
@@ -58,7 +59,8 @@ class TableInfo(_message.Message):
     properties: str
     partitions: str
     domain: str
-    def __init__(self, table_id: _Optional[str] = ..., table_namespace: _Optional[str] = ..., table_name: _Optional[str] = ..., table_path: _Optional[str] = ..., table_schema: _Optional[str] = ..., table_schema_arrow_ipc: _Optional[bytes] = ..., table_schema_arrow_ipc_json_hash: _Optional[str] = ..., properties: _Optional[str] = ..., partitions: _Optional[str] = ..., domain: _Optional[str] = ...) -> None: ...
+    creator: str
+    def __init__(self, table_id: _Optional[str] = ..., table_namespace: _Optional[str] = ..., table_name: _Optional[str] = ..., table_path: _Optional[str] = ..., table_schema: _Optional[str] = ..., table_schema_arrow_ipc: _Optional[bytes] = ..., table_schema_arrow_ipc_json_hash: _Optional[str] = ..., properties: _Optional[str] = ..., partitions: _Optional[str] = ..., domain: _Optional[str] = ..., creator: _Optional[str] = ...) -> None: ...
 
 class PartitionInfo(_message.Message):
     __slots__ = ("table_id", "partition_desc", "version", "commit_op", "timestamp", "snapshot", "expression", "domain", "pinned")
@@ -83,16 +85,18 @@ class PartitionInfo(_message.Message):
     def __init__(self, table_id: _Optional[str] = ..., partition_desc: _Optional[str] = ..., version: _Optional[int] = ..., commit_op: _Optional[_Union[CommitOp, str]] = ..., timestamp: _Optional[int] = ..., snapshot: _Optional[_Iterable[_Union[Uuid, _Mapping]]] = ..., expression: _Optional[str] = ..., domain: _Optional[str] = ..., pinned: bool = ...) -> None: ...
 
 class Namespace(_message.Message):
-    __slots__ = ("namespace", "properties", "comment", "domain")
+    __slots__ = ("namespace", "properties", "comment", "domain", "creator")
     NAMESPACE_FIELD_NUMBER: _ClassVar[int]
     PROPERTIES_FIELD_NUMBER: _ClassVar[int]
     COMMENT_FIELD_NUMBER: _ClassVar[int]
     DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    CREATOR_FIELD_NUMBER: _ClassVar[int]
     namespace: str
     properties: str
     comment: str
     domain: str
-    def __init__(self, namespace: _Optional[str] = ..., properties: _Optional[str] = ..., comment: _Optional[str] = ..., domain: _Optional[str] = ...) -> None: ...
+    creator: str
+    def __init__(self, namespace: _Optional[str] = ..., properties: _Optional[str] = ..., comment: _Optional[str] = ..., domain: _Optional[str] = ..., creator: _Optional[str] = ...) -> None: ...
 
 class DataFileOp(_message.Message):
     __slots__ = ("path", "file_op", "size", "file_exist_cols")

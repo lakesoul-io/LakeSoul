@@ -18,6 +18,7 @@ that:
 | --- | --- | --- |
 | `--jwt-auth` | `LAKESOUL_PG_JWT_AUTH` | Ask every connection for a cleartext password and accept only a LakeSoul JWT |
 | `--rbac` | `LAKESOUL_PG_RBAC` | Confine each connection to the domain in its token's `group`; requires `--jwt-auth` |
+| `--rbac-domain` | `LAKESOUL_PG_RBAC_DOMAIN` | Fix the domain a shared cluster writes in; requires `--rbac` |
 
 Without either flag, startup and visibility behave as before.
 
@@ -93,20 +94,26 @@ With `--rbac`, the token's `group` becomes the connection's domain. The rule is
 the one `script/meta_rbac_init.sql` applies to the JVM engines, without role
 inheritance: a token carries exactly one group.
 
-A connection sees its own domain plus `public` and `lake-public`. Everything
-else does not exist for it:
+A connection sees its own domain plus `public` and `lake-public`. A table-level
+ACL may also grant read-only access across a domain boundary; no grant means
+the table does not exist for it:
 
 | Path | Behaviour |
 | --- | --- |
-| Connecting to another domain's namespace | Startup fails with `database "…" does not exist` |
-| `SELECT`, `INSERT`, `UPDATE`, `ALTER`, `DROP` on another domain's table | `42P01`, also inside a shared namespace |
+| Connecting to another domain's namespace | Startup fails with `database "…" does not exist`; a table grant makes the namespace visible read-only |
+| `SELECT` / `COPY TO` on another domain's granted table | Allowed; without a grant the table is `42P01` |
+| `INSERT` / `UPDATE` / `COPY FROM` on a read-only table | `42501` |
+| `ALTER` / `DROP` outside owner/space admin | `42501` |
 | `pg_class`, `pg_tables`, `pg_database` | Only visible objects are listed |
-| `CREATE TABLE` | The table's metadata rows carry the creator's domain |
+| `CREATE TABLE` | The table's domain is the cluster write domain (`--rbac-domain` or the token group); `creator` is the connecting user |
 | Detached jobs | Run in and are stored with the submitter's domain |
 | Subscriptions, IVM-maintained `INSERT ... SELECT` | Refused with `42501`; they write past the domain filter |
 
-The domain is fixed at startup and `SET`/`RESET` cannot change it. A user who
-needs several domains opens one connection per token.
+The token's domain is fixed at startup and `SET`/`RESET` cannot change it. A
+shared cluster's write domain is fixed by `--rbac-domain`; clients from other
+domains may read granted tables but cannot write or create private tables.
+Table ACLs follow the same rules as `script/meta_rbac_init.sql`; see
+[Workspace and RBAC](../../operations/workspace-and-rbac.md).
 
 `--rbac` stores a domain on every detached job, in `job.queries.domain`, and the
 `job_key` unique index includes the domain. An existing 4.x metadata database

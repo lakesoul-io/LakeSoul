@@ -37,34 +37,46 @@ pub async fn verify_permission_by_table_name(
     Ok(())
 }
 
+/// Verify that `user`/`group` may read or write the table at `path`.
+///
+/// The ACL resolver reads the table's effective privilege (owner/admin,
+/// public, same-domain default, explicit user grant, cross-domain read-only
+/// grant). A path that is not a table is `NotFound`, preserving the S3 proxy's
+/// existing "unknown path" handling. The short cache bounds revocation
+/// latency to a few seconds.
 #[cached(
     size = 1000,
-    time = 600,
+    time = 5,
     result = true,
     sync_writes = true,
     time_refresh = true,
     key = "String",
-    convert = r##"{ format!("{}/{}@{}", user, group, path) }"##
+    convert = r##"{ format!("{}/{}@{}:{}", user, group, path, write) }"##
 )]
 #[instrument(skip(meta_data_client))]
 pub async fn verify_permission_by_table_path(
     user: &str,
     group: &str,
     path: &str,
+    write: bool,
     meta_data_client: MetaDataClientRef,
 ) -> crate::Result<()> {
-    // jwt token verification has ensured user belongs to the group
-    // we only need to verify this table path belongs to the group
-    let table_path_id = meta_data_client
-        .as_ref()
-        .get_table_path_id_by_table_path(path)
+    let privilege = meta_data_client
+        .table_privilege_by_path(path, user, group)
         .await?
-        .ok_or(LakeSoulMetaDataError::NotFound(format!(
-            "Path is not a LakeSoul table {}, user {}, group {}",
-            path, user, group
-        )))?;
-    debug!("table {} in domain {}", path, table_path_id.domain);
-    Ok(())
+        .ok_or_else(|| {
+            LakeSoulMetaDataError::NotFound(format!(
+                "Path is not a LakeSoul table {path}, user {user}, group {group}"
+            ))
+        })?;
+    if (write && privilege.can_write()) || (!write && privilege.can_read()) {
+        Ok(())
+    } else {
+        Err(LakeSoulMetaDataError::PermissionDenied(format!(
+            "user {user} in group {group} may not {} table {path}",
+            if write { "write" } else { "read" }
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -93,6 +105,7 @@ mod tests {
             properties: "{}".to_string(),
             partitions: "id;range".to_string(),
             domain: domain.to_string(),
+            creator: String::new(),
         };
         meta_data_client.create_table(ti).await?;
         Ok(table_id)
@@ -159,6 +172,7 @@ mod tests {
             "lake-iam-001",
             "lake-czads",
             table_path,
+            false,
             metadata_client.clone(),
         )
         .await;

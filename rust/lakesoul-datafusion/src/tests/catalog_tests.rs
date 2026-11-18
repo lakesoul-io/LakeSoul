@@ -57,6 +57,7 @@ fn random_namespace(prefix: &str, hash_bucket_num: usize) -> Vec<Namespace> {
             .unwrap(),
             comment: "this is comment".to_string(),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .collect()
 }
@@ -106,6 +107,7 @@ fn random_tables(
                 properties: np.properties.clone(),
                 partitions: ";range,hash".to_string(),
                 domain: np.domain.clone(),
+                creator: String::new(),
             })
         }
         ret.push((np, v));
@@ -858,6 +860,7 @@ fn vortex_write_layout_properties_reach_the_io_config() {
                 .unwrap(),
                 partitions: ";id".to_string(),
                 domain: "public".to_string(),
+                creator: String::new(),
             })
             .await
             .unwrap();

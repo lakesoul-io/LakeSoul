@@ -254,10 +254,12 @@ impl S3ProxyHandle {
                     );
                     return Ok(());
                 }
+                let need_write = !matches!(headers.method, Method::GET | Method::HEAD);
                 match verify_permission_by_table_path(
                     self.user.as_str(),
                     self.group.as_str(),
                     path.as_str(),
+                    need_write,
                     client.clone(),
                 )
                 .await
@@ -865,6 +867,7 @@ mod tests {
         table_name: &str,
         path: &str,
         domain: &str,
+        creator: &str,
         record_batch: RecordBatch,
         meta_data_client: MetaDataClientRef,
     ) -> Result<(String, String), anyhow::Error> {
@@ -883,6 +886,7 @@ mod tests {
             properties: "{}".to_string(),
             partitions: ";".to_string(),
             domain: domain.to_string(),
+            creator: creator.to_string(),
         };
         meta_data_client.create_table(ti).await?;
         let table = LakeSoulTable::for_namespace_and_name(
@@ -1002,6 +1006,7 @@ mod tests {
 
     async fn create_table_and_write_suffix(
         suffix: &str,
+        creator: &str,
         metadata_client: MetaDataClientRef,
     ) -> Result<(String, String), anyhow::Error> {
         let table_name = table_name_for_suffix(suffix);
@@ -1013,6 +1018,7 @@ mod tests {
             table_name.as_str(),
             table_path.as_str(),
             domain.as_str(),
+            creator,
             record_batch.clone(),
             metadata_client.clone(),
         )
@@ -1083,20 +1089,46 @@ mod tests {
         cleanup_table_for_suffix("dwd", metadata_client.clone()).await?;
 
         let test_result = async {
-            create_table_and_write_suffix("ads", metadata_client.clone()).await?;
-            create_table_and_write_suffix("dwd", metadata_client.clone()).await?;
+            let (ads_id, _) = create_table_and_write_suffix(
+                "ads",
+                "lake-iam-001",
+                metadata_client.clone(),
+            )
+            .await?;
+            let (dwd_id, _) = create_table_and_write_suffix(
+                "dwd",
+                "someone-else",
+                metadata_client.clone(),
+            )
+            .await?;
+            // The proxy user owns ads; dwd is a cross-domain read-only grant.
+            metadata_client
+                .grant_table_privilege(
+                    &dwd_id,
+                    "lake-czads",
+                    "lake-iam-001",
+                    lakesoul_metadata::acl::Privilege::Read,
+                    "someone-else",
+                )
+                .await?;
+            let _ads_id = ads_id;
             let _thread_handle = run_server();
             if !wait_for_proxy(Duration::from_secs(60)).await {
                 return Err(anyhow!("s3 proxy did not become ready on 127.0.0.1:6188"));
             }
             change_s3_to_proxy();
 
-            // verify read/write table in ads domain success
+            // The owner writes and reads its own table through the proxy.
             insert_table("ads", metadata_client.clone()).await?;
             read_table("ads", metadata_client.clone()).await?;
 
-            insert_table("dwd", metadata_client.clone()).await?;
+            // dwd is cross-domain read-only: reading works, writing is 403.
             read_table("dwd", metadata_client.clone()).await?;
+            if insert_table("dwd", metadata_client.clone()).await.is_ok() {
+                return Err(anyhow!(
+                    "a cross-domain read-only grant must not permit writes"
+                ));
+            }
 
             Ok::<(), anyhow::Error>(())
         }

@@ -31,6 +31,7 @@ use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
 use tracing::{info, instrument};
 
+use crate::acl::{AclCache, AclEntry};
 use crate::catalog::{
     PUBLIC_SCHEMA, PgDatabaseCatalogList, pg_lakesoul_catalog_with_federation,
 };
@@ -137,6 +138,12 @@ pub struct PgSession {
     /// snapshot, i.e. one refresher per process rather than one per
     /// connection.
     catalog_snapshot: Arc<CatalogSnapshot>,
+    /// The connection's ACL view; `None` when `--rbac` is off.
+    acl: Option<Arc<AclEntry>>,
+    /// The connection-level database list, updated when the ACL view refreshes.
+    catalog_list: Arc<PgDatabaseCatalogList>,
+    /// The domain new tables are created in under a shared cluster.
+    cluster_domain: Option<String>,
 }
 
 impl PgSession {
@@ -146,6 +153,9 @@ impl PgSession {
         settings: SessionSettings,
         parameters: Arc<PgParameters>,
         catalog_snapshot: Arc<CatalogSnapshot>,
+        acl: Option<Arc<AclEntry>>,
+        catalog_list: Arc<PgDatabaseCatalogList>,
+        cluster_domain: Option<String>,
         distributed: bool,
     ) -> Result<Self> {
         let actor =
@@ -164,7 +174,37 @@ impl PgSession {
             ivm: None,
             distributed,
             catalog_snapshot,
+            acl,
+            catalog_list,
+            cluster_domain,
         })
+    }
+
+    pub(crate) fn acl(&self) -> Option<&Arc<AclEntry>> {
+        self.acl.as_ref()
+    }
+
+    pub(crate) fn cluster_domain(&self) -> Option<&str> {
+        self.cluster_domain.as_deref()
+    }
+
+    /// Replace the databases visible in `pg_database` after an ACL refresh.
+    pub(crate) fn replace_visible_databases(
+        &self,
+        namespaces: std::collections::BTreeSet<String>,
+    ) {
+        self.catalog_list.replace_visible_databases(namespaces);
+    }
+
+    /// Refresh the ACL view immediately after a DDL statement changed the
+    /// table set, so the same connection can write the new table.
+    pub(crate) async fn refresh_acl_now(&self) -> Result<()> {
+        let Some(acl) = &self.acl else {
+            return Ok(());
+        };
+        acl.refresh().await?;
+        self.replace_visible_databases(acl.view().visible_namespaces());
+        Ok(())
     }
 
     /// The metadata view backing this connection's catalog listings.
@@ -222,6 +262,11 @@ pub struct PgSessionFactory {
     jobs: Option<Arc<crate::jobs::JobService>>,
     /// How connections authenticate; the default authenticates nobody.
     auth: crate::auth::AuthSettings,
+    /// Per-user ACL views under `--rbac`.
+    acl_cache: Arc<AclCache>,
+    /// The domain this cluster creates tables in and permits writes to.
+    /// `None` falls back to each token's domain.
+    cluster_domain: Option<String>,
 }
 
 impl PgSessionFactory {
@@ -252,6 +297,7 @@ impl PgSessionFactory {
             args,
             memory_pool,
         )?;
+        let acl_cache = Arc::new(AclCache::new(Arc::clone(&meta_client)));
         Ok(Self {
             meta_client,
             base,
@@ -266,6 +312,8 @@ impl PgSessionFactory {
             federation: None,
             jobs: None,
             auth: crate::auth::AuthSettings::default(),
+            acl_cache,
+            cluster_domain: None,
         })
     }
 
@@ -277,6 +325,13 @@ impl PgSessionFactory {
 
     pub fn auth(&self) -> &crate::auth::AuthSettings {
         &self.auth
+    }
+
+    /// Fix the domain this cluster writes in. Requires `--rbac`; when unset,
+    /// each connection writes in its token's domain (pre-cluster behaviour).
+    pub fn with_cluster_domain(mut self, domain: Option<String>) -> Self {
+        self.cluster_domain = domain;
+        self
     }
 
     pub fn with_federation(
@@ -386,20 +441,45 @@ impl PgSessionFactory {
                 identity.user
             );
         }
+        let token_domain = identity
+            .access
+            .as_ref()
+            .map(|access| access.domain().to_string());
+        let cluster_domain = if self.auth.rbac {
+            Some(
+                self.cluster_domain
+                    .clone()
+                    .or_else(|| token_domain.clone())
+                    .expect("--rbac sessions carry a domain"),
+            )
+        } else {
+            None
+        };
+        let acl = if self.auth.rbac {
+            let domains: Vec<String> = token_domain.clone().into_iter().collect();
+            Some(self.acl_cache.get_or_load(&identity.user, &domains).await?)
+        } else {
+            None
+        };
         // Namespace visibility is snapshotted once per connection; the sync
-        // catalog interfaces later read this snapshot without blocking. A
-        // namespace outside the connection's domain does not exist for it.
-        let namespaces = self.meta_client.get_all_namespace().await?;
-        let visible_databases: BTreeSet<String> = namespaces
-            .into_iter()
-            .filter(|namespace| {
-                identity
-                    .access
-                    .as_ref()
-                    .is_none_or(|access| access.allows(&namespace.domain))
-            })
-            .map(|namespace| namespace.namespace)
-            .collect();
+        // catalog interfaces later read this snapshot without blocking. Under
+        // --rbac the ACL view decides visible namespaces (including
+        // cross-domain grants); otherwise only the token's domain applies.
+        let visible_databases: BTreeSet<String> = if let Some(entry) = &acl {
+            entry.view().visible_namespaces()
+        } else {
+            let namespaces = self.meta_client.get_all_namespace().await?;
+            namespaces
+                .into_iter()
+                .filter(|namespace| {
+                    identity
+                        .access
+                        .as_ref()
+                        .is_none_or(|access| access.allows(&namespace.domain))
+                })
+                .map(|namespace| namespace.namespace)
+                .collect()
+        };
         if !visible_databases.contains(&identity.database) {
             bail!("database \"{}\" does not exist", identity.database);
         }
@@ -452,6 +532,12 @@ impl PgSessionFactory {
                 .as_ref()
                 .map(|access| access.domain().to_string()),
         });
+        if let Some(acl) = &acl {
+            config.set_extension(Arc::new(crate::acl::PgAclSession {
+                acl: Arc::clone(acl),
+                cluster_domain: cluster_domain.clone(),
+            }));
+        }
         // How the next statement treats a key that is already present. The
         // INSERT hook sets it before every write; the sink reads it while
         // planning, so `ON CONFLICT DO NOTHING` drops rows instead of failing.
@@ -482,15 +568,19 @@ impl PgSessionFactory {
             self.federation.clone(),
             &identity.user,
             identity.access.clone(),
+            acl.clone(),
         );
-        let catalog_list = Arc::new(PgDatabaseCatalogList::new(
-            identity.database.clone(),
-            visible_databases,
-            catalog,
-        ));
+        let catalog_list: Arc<PgDatabaseCatalogList> =
+            Arc::new(PgDatabaseCatalogList::new(
+                identity.database.clone(),
+                visible_databases,
+                catalog,
+            ));
+        let catalog_list_for_context: Arc<dyn datafusion::catalog::CatalogProviderList> =
+            catalog_list.clone();
         let context = Arc::new(SessionContext::new_with_state(
             SessionStateBuilder::new_from_existing(state)
-                .with_catalog_list(catalog_list)
+                .with_catalog_list(catalog_list_for_context)
                 .build(),
         ));
 
@@ -551,6 +641,9 @@ impl PgSessionFactory {
             settings.clone(),
             parameters,
             Arc::clone(self.base.catalog_snapshot()),
+            acl,
+            Arc::clone(&catalog_list),
+            cluster_domain,
             self.distributed,
         )?;
         session.ivm = self.ivm.clone();

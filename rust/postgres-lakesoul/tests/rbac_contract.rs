@@ -108,7 +108,8 @@ async fn stale_drop_cannot_reach_a_replacement(
         .batch_execute(&format!("CREATE TABLE {REPLACED} (id BIGINT, val BIGINT)"))
         .await
         .context("rbac-stale-drop: create as team A")?;
-    h.replace_table_out_of_band(REPLACED, RBAC_TEAM_B).await?;
+    h.replace_table_out_of_band(REPLACED, RBAC_TEAM_B, "bob")
+        .await?;
     // No wait: the snapshot still says team A (a refresh in between would
     // only hide the name from alice, with the same outcome).
     let (code, message) = server_error(alice, &format!("DROP TABLE {REPLACED}")).await?;
@@ -458,7 +459,8 @@ async fn unfiltered_paths_are_refused(alice: &Client) -> Result<()> {
 /// A table another engine creates in team A is resolved for alice at once,
 /// listed for her after the next catalog refresh, and never seen by bob.
 async fn cross_process_creation(h: &Harness, alice: &Client, bob: &Client) -> Result<()> {
-    h.create_table_out_of_band(EXTERNAL, RBAC_TEAM_A).await?;
+    h.create_table_out_of_band(EXTERNAL, RBAC_TEAM_A, "alice")
+        .await?;
     let count: i64 = alice
         .query_one(&format!("SELECT count(*) FROM {EXTERNAL}"), &[])
         .await

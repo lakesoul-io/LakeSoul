@@ -172,8 +172,9 @@ async fn prepare_with(
     database: &str,
     mode: SnapshotMode,
 ) -> PgWireResult<PlannedUpdate> {
-    let (table_ref, _table_name) =
+    let (table_ref, table_name) =
         target_reference(&table_object(&update.table)?, database)?;
+    crate::acl::require_table_write(session_context, database, &table_name).await?;
     plan_update(session_context, update, table_ref, mode)
         .await
         .map_err(plan_error)

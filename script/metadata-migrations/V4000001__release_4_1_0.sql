@@ -545,3 +545,105 @@ create table if not exists ivm.view_partitions
     updated_at     bigint not null,
     primary key (view_id, partition_desc)
 );
+
+-- ---------------------------------------------------------------------------
+-- Table/namespace ACL
+-- ---------------------------------------------------------------------------
+-- `creator` is the logical owner. When the column is new, existing rows are
+-- assigned to the domain admin; when it already exists (an older RBAC install
+-- added it), values are left untouched. The one-off data migration that grants
+-- existing tables domain rw lives in script/migrate_acl.sql.
+do
+$$
+    begin
+        if not exists (
+            select 1 from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'table_info'
+              and column_name = 'creator'
+        ) then
+            alter table table_info add column creator text;
+            update table_info set creator = domain || '_admins';
+            alter table table_info alter column creator set default current_user;
+        end if;
+        if not exists (
+            select 1 from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'namespace'
+              and column_name = 'creator'
+        ) then
+            alter table namespace add column creator text;
+            update namespace set creator = domain || '_admins';
+            alter table namespace alter column creator set default current_user;
+        end if;
+    end
+$$;
+
+create table if not exists table_acl
+(
+    table_id       text not null references table_info (table_id) on delete cascade,
+    grantee_domain text not null,
+    grantee_kind   text not null,
+    grantee        text not null,
+    privilege      text not null,
+    granted_by     text not null,
+    updated_at     timestamptz not null default now(),
+    primary key (table_id, grantee_domain, grantee_kind, grantee),
+    constraint table_acl_privilege_check check (privilege in ('ro', 'rw', 'none')),
+    constraint table_acl_grantee_kind_check check (grantee_kind in ('user', 'group', 'domain'))
+);
+
+create index if not exists table_acl_grantee_index
+    on table_acl (grantee_domain, grantee_kind, grantee, privilege, table_id);
+
+create table if not exists namespace_acl
+(
+    namespace      text not null references namespace (namespace) on delete cascade,
+    grantee_domain text not null,
+    grantee_kind   text not null,
+    grantee        text not null,
+    privilege      text not null,
+    granted_by     text not null,
+    updated_at     timestamptz not null default now(),
+    primary key (namespace, grantee_domain, grantee_kind, grantee),
+    constraint namespace_acl_privilege_check check (privilege in ('ro', 'rw', 'none')),
+    constraint namespace_acl_grantee_kind_check check (grantee_kind in ('user', 'group', 'domain'))
+);
+
+create index if not exists namespace_acl_grantee_index
+    on namespace_acl (grantee_domain, grantee_kind, grantee, privilege, namespace);
+
+create table if not exists domain_admin
+(
+    domain    text not null,
+    user_name text not null,
+    primary key (domain, user_name)
+);
+
+create index if not exists domain_admin_user_index
+    on domain_admin (user_name, domain);
+
+-- The domain is the tenant boundary and cannot be changed on an existing
+-- namespace or table, even by the space administrator.
+CREATE OR REPLACE FUNCTION lakesoul_prevent_domain_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.domain IS DISTINCT FROM OLD.domain THEN
+        RAISE EXCEPTION 'domain cannot be changed'
+            USING ERRCODE = '42501';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS namespace_domain_immutable ON namespace;
+CREATE TRIGGER namespace_domain_immutable
+    BEFORE UPDATE OF domain ON namespace
+    FOR EACH ROW EXECUTE FUNCTION lakesoul_prevent_domain_change();
+
+DROP TRIGGER IF EXISTS table_info_domain_immutable ON table_info;
+CREATE TRIGGER table_info_domain_immutable
+    BEFORE UPDATE OF domain ON table_info
+    FOR EACH ROW EXECUTE FUNCTION lakesoul_prevent_domain_change();

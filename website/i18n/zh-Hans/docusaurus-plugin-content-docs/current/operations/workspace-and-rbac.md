@@ -16,7 +16,31 @@ LakeSoul 支持多个工作空间划分，每个空间可以有多个用户，�
 **值得一提的是，LakeSoul 的权限隔离，对于提交到集群上的 SQL/Java/Scala/Python 作业均是有效的，用户无法通过代码访问到其他空间的元数据和物理数据。而传统上 Hadoop 体系的 Ranger ，仅能够对提交到 HiveServer 的请求实现元数据隔离，而很难防止用户通过提交代码到集群上直接访问到 Hive 元数据。**
 
 ## 工作空间，默认角色和库表的关系
-每个工作空间中，都会有管理员（admins）角色和普通用户（users）角色。其中仅有管理员可以创建、删除 namespace(database)。而管理员、用户均可在该空间下的 namespace 中创建并读写表。每个 namespace 在创建时，当前操作的管理员所属的空间，就是该 namespace 所属的空间。namespace 和表所属的工作空间，创建后不可修改。
+每个工作空间中，都会有管理员（admins）角色和普通用户（users）角色。空间管理员可以创建/删除 namespace，并对空间内所有表有读写权限；普通用户可以在已有 namespace 中建表。每个 namespace 在创建时，当前操作的管理员所属的空间，就是该 namespace 所属的空间。namespace 和表所属的工作空间，创建后不可修改。
+
+## 表级 ACL
+
+在空间边界之上，每张表还有 owner（`table_info.creator`）和可选的表级授权：
+
+- 建表者是 owner，可以读写、修改、删除该表。
+- 空间管理员可以读写空间内所有表。
+- 同空间的其他用户默认只读。
+- 跨空间 `ro` 授权让表对该用户可见但只读；`rw` 只允许同空间。
+- 显式 `none` 对该用户隐藏该表。
+- `domain` 为 `public` / `lake-public` 的表完全开放，忽略 ACL。
+
+新表默认 owner 可读写、同空间其他人只读。存量表通过一次性数据迁移保持旧的可读写行为：
+
+```shell
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/migrate_acl.sql lakesoul_test
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/meta_rbac_init.sql lakesoul_test
+```
+
+第一个脚本创建 ACL 对象并给存量表补同空间 rw；第二个脚本安装 ACL 版 RLS 函数和策略。全新部署直接使用 `script/meta_init.sql` 的最新 schema。
+
+共享 pg-wire cluster 可以用 `--rbac-domain`（或 `LAKESOUL_PG_RBAC_DOMAIN`）固定写入空间；其他空间的客户端只能读取被授权的表。cluster 的 metadata 账号是受信任的 catalog reader，可读取所有空间的元数据/ACL；客户端拿不到该账号，应用层按每个客户端的 ACL 执行。S3 proxy 对直接访问对象存储的 Spark/Flink/Python 作业执行同一套表 ACL，因为仅靠元数据 RLS 无法阻止任意代码直接读取文件；跨空间授权时 sidecar 也需要 catalog-reader 的 metadata 账号。
 
 ## 启用多工作空间和角色权限控制功能
 默认情况下，LakeSoul 并不会开启该功能。可以通过执行 `script/meta_rbac_init.sql` 启用该功能：

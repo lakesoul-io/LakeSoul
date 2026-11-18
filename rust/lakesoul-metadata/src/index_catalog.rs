@@ -35,7 +35,7 @@ use std::time::Duration;
 use lakesoul_common::IndexKind;
 use postgres_types::Json;
 use serde::Serialize;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::MetaDataClient;

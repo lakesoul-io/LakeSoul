@@ -40,6 +40,7 @@ use crate::metrics::MetadataRequestMetrics;
 use crate::pooled_client::QueryType::{RO, RW};
 pub use jwt::{Claims, JwtServer};
 
+pub mod acl;
 pub mod index_catalog;
 mod metadata_client;
 mod metrics;
@@ -362,14 +363,14 @@ async fn get_prepared_statement<'a>(
     let statement = match dao_type {
         // Select Namespace
         DaoType::SelectNamespaceByNamespace =>
-            "select namespace, properties, comment, domain
+            "select namespace, properties, comment, domain, creator
             from namespace
             where namespace = $1::TEXT",
         DaoType::ListNamespaces =>
-            "select namespace, properties, comment, domain
+            "select namespace, properties, comment, domain, creator
             from namespace",
         DaoType::ListNamespacesByDomain =>
-            "select namespace, properties, comment, domain
+            "select namespace, properties, comment, domain, creator
             from namespace
             where domain = $1::TEXT",
 
@@ -418,19 +419,19 @@ async fn get_prepared_statement<'a>(
 
         // Select TableInfo
         DaoType::SelectTableInfoByTableId =>
-                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain, creator
                     from table_info
                     where table_id = $1::TEXT",
                 DaoType::SelectTableInfoByTableNameAndNameSpace =>
-                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain, creator
                     from table_info
                     where table_name = $1::TEXT and table_namespace=$2::TEXT",
                 DaoType::SelectTableInfoByTablePath =>
-                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain, creator
                     from table_info
                     where table_path = $1::TEXT",
                 DaoType::SelectTableInfoByIdAndTablePath =>
-                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain
+                    "select table_id, table_name, table_path, table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, properties, partitions, table_namespace, domain, creator
                     from table_info
                     where table_id = $1::TEXT and table_path=$2::TEXT",
 
@@ -649,8 +650,10 @@ async fn get_prepared_statement<'a>(
                 namespace,
                 properties,
                 comment,
-                domain)
-            values($1::TEXT, $2::JSON, $3::TEXT, $4::TEXT)",
+                domain,
+                creator)
+            values($1::TEXT, $2::JSON, $3::TEXT, $4::TEXT,
+                   coalesce(nullif($5::TEXT, ''), current_user))",
         DaoType::InsertTableInfo =>
             "insert into table_info(
                 table_id,
@@ -662,8 +665,10 @@ async fn get_prepared_statement<'a>(
                 properties,
                 partitions,
                 table_namespace,
-                domain)
-            values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT, $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT)",
+                domain,
+                creator)
+            values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT, $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT,
+                   coalesce(nullif($11::TEXT, ''), current_user))",
         DaoType::InsertTableNameId =>
             "insert into table_name_id(
                 table_id,
@@ -691,9 +696,10 @@ async fn get_prepared_statement<'a>(
             insert into table_info(
                 table_id, table_name, table_path, table_schema,
                 table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash,
-                properties, partitions, table_namespace, domain)
+                properties, partitions, table_namespace, domain, creator)
             select $1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT,
-                   $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT
+                   $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT,
+                   coalesce(nullif($11::TEXT, ''), current_user)
             from inserted_path",
         DaoType::InsertTableIfNotExistsAtomic =>
             "with inserted_name as (
@@ -709,9 +715,10 @@ async fn get_prepared_statement<'a>(
             insert into table_info(
                 table_id, table_name, table_path, table_schema,
                 table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash,
-                properties, partitions, table_namespace, domain)
+                properties, partitions, table_namespace, domain, creator)
             select $1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT,
-                   $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT
+                   $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT,
+                   coalesce(nullif($11::TEXT, ''), current_user)
             from inserted_path",
         DaoType::InsertPartitionInfo =>
             "insert into partition_info(
@@ -1382,6 +1389,7 @@ pub async fn execute_query(
                     properties: row.get::<_, serde_json::Value>(1).to_string(),
                     comment: row.get::<_, Option<String>>(2).unwrap_or(String::from("")),
                     domain: row.get(3),
+                    creator: row.get::<_, Option<String>>(4).unwrap_or_default(),
                 })
                 .collect();
             entity::JniWrapper {
@@ -1407,6 +1415,7 @@ pub async fn execute_query(
                     partitions: row.get(7),
                     table_namespace: row.get(8),
                     domain: row.get(9),
+                    creator: row.get::<_, Option<String>>(10).unwrap_or_default(),
                 })
                 .collect();
             entity::JniWrapper {
@@ -1604,6 +1613,7 @@ pub async fn execute_insert(
                         &properties,
                         &namespace.comment,
                         &namespace.domain,
+                        &namespace.creator,
                     ],
                 )
                 .await
@@ -1636,6 +1646,7 @@ pub async fn execute_insert(
                         &table_info.partitions,
                         &table_info.table_namespace,
                         &table_info.domain,
+                        &table_info.creator,
                     ],
                 )
                 .await
@@ -2420,6 +2431,7 @@ mod tests {
             properties: "{}".to_owned(),
             comment: "".to_owned(),
             domain: "public".to_owned(),
+            creator: String::new(),
         };
         println!("{:?}", namespace);
         println!("{:?}", entity::Namespace::default());
@@ -2435,6 +2447,7 @@ mod tests {
             properties: "{}".to_owned(),
             partitions: "".to_owned(),
             domain: "public".to_owned(),
+            creator: String::new(),
         };
         println!("{:?}", table_info);
         println!("{:?}", table_info.encode_to_vec());

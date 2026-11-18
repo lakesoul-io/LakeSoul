@@ -17,7 +17,31 @@ In the case of multi-tenancy, each user is assigned a PG user. Through the contr
 **It is worth mentioning that LakeSoul's permission isolation is effective for SQL/Java/Scala/Python jobs submitted to the cluster. Users cannot access metadata and physical data in other workspaces programmatically. Traditionally, Ranger in the Hadoop system can only implement metadata isolation for requests submitted to HiveServer, and it is difficult to prevent users from directly accessing Hive metadata by submitting code to the cluster.**
 
 ## The Relationship Between Workspace, Default Roles and Databases/Tables
-In each workspace, there will be administrators (admins) roles and ordinary users (users) roles. Only administrators can create and delete namespace (database). Administrators and users can create and read and write tables in the namespace under this workspace. When each namespace is created, the workspace to which the currently operating administrator belongs is the workspace to which the namespace belongs. The namespace and the workspace to which the table belongs cannot be modified after creation.
+In each workspace, there will be administrators (admins) roles and ordinary users (users) roles. Space administrators can create/delete namespaces and have read/write access to every table in the workspace; ordinary users can create tables in an existing namespace. When each namespace is created, the workspace to which the currently operating administrator belongs is the workspace to which the namespace belongs. The namespace and the workspace to which the table belongs cannot be modified after creation.
+
+## Table-level ACL
+
+On top of the workspace boundary, every table has an owner (`table_info.creator`) and optional table-level grants:
+
+- The creator owns the table and can read, write, alter and drop it.
+- A space administrator can read and write every table in the workspace.
+- Other users in the same workspace are **read-only by default**.
+- A `ro` grant makes a cross-workspace table visible read-only; `rw` grants are only allowed inside the same workspace.
+- An explicit `none` grant hides the table from that user.
+- Tables whose `domain` is `public` or `lake-public` are fully open and ignore ACLs.
+
+New tables use owner-rw / same-workspace-ro. Existing tables keep their old read-write behaviour through a one-off data migration:
+
+```shell
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/migrate_acl.sql lakesoul_test
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/meta_rbac_init.sql lakesoul_test
+```
+
+The first script adds the ACL objects and grants same-workspace rw to pre-existing tables; the second installs the ACL-aware RLS functions and policies. Fresh deployments get the latest schema from `script/meta_init.sql`.
+
+A shared pg-wire cluster can fix its write workspace with `--rbac-domain` (or `LAKESOUL_PG_RBAC_DOMAIN`); clients from other workspaces can only read granted tables. The cluster's metadata account is a trusted catalog reader with access to metadata/ACL across workspaces; clients never receive its credentials, and the application enforces each client's ACL. The S3 proxy enforces the same table ACL for direct Spark/Flink/Python access to object storage, which is required because metadata RLS alone cannot stop arbitrary code from reading files; its sidecar needs a catalog-reader metadata account for cross-workspace grants.
 
 ## Enable Multi-Tenancy and Role Permission Control
 By default, LakeSoul does not enable this feature. This feature can be enabled by executing `script/meta_rbac_init.sql`:

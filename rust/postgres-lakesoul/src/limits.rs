@@ -447,6 +447,7 @@ impl StatementOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
 
     fn limits(
         max_connections: usize,
@@ -560,18 +561,22 @@ mod tests {
     fn only_one_of_many_racing_connections_gets_the_last_slot() {
         let server = limits(1, 0, 0);
         let granted = Arc::new(AtomicUsize::new(0));
+        let attempted = Arc::new(Barrier::new(16));
         std::thread::scope(|scope| {
             for _ in 0..16 {
                 let server = Arc::clone(&server);
                 let granted = Arc::clone(&granted);
+                let attempted = Arc::clone(&attempted);
                 scope.spawn(move || {
-                    if let Ok(permit) = server.admit_connection() {
+                    let permit = server.admit_connection().ok();
+                    if permit.is_some() {
                         granted.fetch_add(1, Ordering::Relaxed);
-                        // Held until the thread is joined, like a live
-                        // connection.
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                        drop(permit);
                     }
+                    // Hold a granted permit until every thread has tried, so
+                    // a fast release cannot hand the same slot to a later
+                    // thread and make the assertion non-deterministic.
+                    attempted.wait();
+                    drop(permit);
                 });
             }
         });
@@ -650,16 +655,19 @@ mod tests {
     fn only_one_of_many_racing_statements_gets_the_last_server_slot() {
         let server = concurrent(0, 1);
         let granted = Arc::new(AtomicUsize::new(0));
+        let attempted = Arc::new(Barrier::new(16));
         std::thread::scope(|scope| {
             for user in 0..16 {
                 let server = Arc::clone(&server);
                 let granted = Arc::clone(&granted);
+                let attempted = Arc::clone(&attempted);
                 scope.spawn(move || {
-                    if let Ok(permit) = server.admit_statement(&format!("user_{user}")) {
+                    let permit = server.admit_statement(&format!("user_{user}")).ok();
+                    if permit.is_some() {
                         granted.fetch_add(1, Ordering::Relaxed);
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                        drop(permit);
                     }
+                    attempted.wait();
+                    drop(permit);
                 });
             }
         });

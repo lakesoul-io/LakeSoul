@@ -40,7 +40,7 @@ use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_common::schema_evolution::column_names_collide;
 use lakesoul_datafusion::datasource::table_provider::{
-    DOMAIN_OPTION, LakeSoulTableProvider,
+    CREATOR_OPTION, DOMAIN_OPTION, LakeSoulTableProvider,
 };
 use lakesoul_metadata::MetaDataClientRef;
 use pgwire::api::ClientInfo;
@@ -82,6 +82,8 @@ pub struct DdlStatementHook {
     /// The domain new tables are created in under domain enforcement;
     /// `None` keeps the `public` default.
     domain: Option<String>,
+    /// The connecting user, written as the new table's logical owner.
+    user: String,
 }
 
 impl DdlStatementHook {
@@ -90,12 +92,14 @@ impl DdlStatementHook {
         database: String,
         warehouse: Option<String>,
         domain: Option<String>,
+        user: String,
     ) -> Self {
         Self {
             client,
             database,
             warehouse,
             domain,
+            user,
         }
     }
 
@@ -160,6 +164,7 @@ impl DdlStatementHook {
         context: &SessionContext,
     ) -> PgWireResult<Response> {
         reject_unsupported_create(create)?;
+        crate::acl::require_namespace_write(context, &self.database)?;
         let warehouse = self.warehouse.as_deref().ok_or_else(|| {
             feature_not_supported(
                 "CREATE TABLE needs a configured warehouse: start the server with \
@@ -187,6 +192,7 @@ impl DdlStatementHook {
         if let Some(domain) = &self.domain {
             location_options.insert(DOMAIN_OPTION.to_string(), domain.clone());
         }
+        location_options.insert(CREATOR_OPTION.to_string(), self.user.clone());
 
         let mut constraints = Constraints::default();
         if let Some(indices) = primary_key {
@@ -271,6 +277,11 @@ impl DdlStatementHook {
             }
         }
         for table in &targets {
+            if schema_provider.table_exist(table) {
+                crate::acl::require_table_ddl(context, &self.database, table)?;
+            }
+        }
+        for table in &targets {
             let dropped = schema_provider
                 .deregister_table(table)
                 .map_err(|error| PgWireError::ApiError(Box::new(error)))?
@@ -339,6 +350,7 @@ impl DdlStatementHook {
                  whose definition belongs to its remote server"
             )));
         };
+        crate::acl::require_table_ddl(context, &self.database, &table)?;
         // The definition the change is validated against, read from the
         // primary: the publication below requires the stored row to still be
         // exactly this one.
@@ -464,6 +476,25 @@ impl DdlStatementHook {
             }
             return Some(Err(error));
         }
+        // DROP/ALTER resolve a name that another engine may have created after
+        // this session's last ACL refresh; refresh first so the ACL view and
+        // the catalog agree on whether it exists and who may change it.
+        if matches!(
+            statement,
+            Statement::Drop {
+                object_type: ObjectType::Table,
+                ..
+            } | Statement::AlterTable(_)
+        ) && let Some(session) = client
+            .session_extensions()
+            .get::<crate::server::ConnectionSession>()
+            && let Err(error) = session.session.refresh_acl_now().await
+        {
+            return Some(Err(user_error(
+                "XX000",
+                format!("refreshing table ACLs before DDL failed: {error}"),
+            )));
+        }
         let result = match statement {
             Statement::CreateTable(create) => {
                 self.create_table(create, session_context).await
@@ -484,6 +515,17 @@ impl DdlStatementHook {
         // settings generation once for the whole statement, so their next
         // `Execute` replans against the new catalog. A refused statement has
         // not touched the catalog and must leave every plan valid.
+        if result.is_ok()
+            && let Some(session) = client
+                .session_extensions()
+                .get::<crate::server::ConnectionSession>()
+            && let Err(error) = session.session.refresh_acl_now().await
+        {
+            // The DDL already committed; do not turn a cache refresh failure
+            // into a failed statement. The next lookup falls back to the live
+            // single-table ACL check.
+            tracing::warn!("refreshing table ACLs after DDL failed: {error}");
+        }
         if result.is_ok()
             && let Ok(settings) = settings_generation(client)
         {
@@ -1055,6 +1097,11 @@ fn check_create_options(
     let mut names: Vec<&String> = options.keys().collect();
     names.sort();
     for name in names {
+        if name == CREATOR_OPTION || name == DOMAIN_OPTION {
+            return Err(feature_not_supported(format!(
+                "table option \"{name}\" is set from the connection identity, not SQL"
+            )));
+        }
         crate::alter::check_option_takes_effect(table, name, |key| {
             options.get(key).map(String::as_str)
         })?;

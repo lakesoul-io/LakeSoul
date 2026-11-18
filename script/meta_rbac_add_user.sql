@@ -29,5 +29,14 @@ $$
         END IF;
         EXECUTE 'GRANT ' || role_name || ' TO ' || user_name;
         RAISE NOTICE 'Granted user % with role: %', user_name, role_name;
+        IF current_setting('_is_admin.value')::boolean THEN
+            INSERT INTO public.domain_admin(domain, user_name)
+            VALUES (current_setting('_domain.name'), current_setting('_user.name'))
+            ON CONFLICT ON CONSTRAINT domain_admin_pkey DO NOTHING;
+        ELSE
+            DELETE FROM public.domain_admin da
+            WHERE da.domain = current_setting('_domain.name')
+              AND da.user_name = current_setting('_user.name');
+        END IF;
     END
 $$;

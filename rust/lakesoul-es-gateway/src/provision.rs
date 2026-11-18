@@ -98,6 +98,7 @@ pub(crate) async fn ensure_table(
             properties: serde_json::to_string(&properties)?,
             partitions: format!(";{}", PK_COLUMN),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
 

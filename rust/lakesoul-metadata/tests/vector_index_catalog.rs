@@ -335,6 +335,7 @@ async fn drop_table_cleans_index_rows() -> Result<()> {
             properties: "{}".to_string(),
             partitions: String::new(),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
 

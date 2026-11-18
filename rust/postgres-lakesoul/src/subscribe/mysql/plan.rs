@@ -408,6 +408,7 @@ async fn ensure_target(
         partitions: format!(";{}", source.primary_key.join(",")),
         table_path,
         domain: "public".to_string(),
+        creator: String::new(),
     };
 
     let created = meta
