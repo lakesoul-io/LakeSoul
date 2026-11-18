@@ -39,7 +39,7 @@ SPDX-License-Identifier: Apache-2.0
 
 增量 SQL 与分布式执行可以同时启用；每个 worker 都必须启用 IVM，并使用相同的协议版本。
 
-`--jwt-auth` 与 `--rbac` 详见[认证与域隔离](authentication.md)。
+`--jwt-auth` 与 `--rbac` 详见[认证与权限](authentication.md)。
 
 ## 运行时限制
 
@@ -74,7 +74,7 @@ coordinator 会跨 worker 计划；只有在设置 `--distributed-fallback-to-lo
 
 ## 下一步
 
-- [认证与域隔离](authentication.md)
+- [认证与权限](authentication.md)
 - [兼容性](compatibility.md)
 - [元数据存储](../../operations/metadata-postgres.md)
 - [工作空间与 RBAC](../../operations/workspace-and-rbac.md)

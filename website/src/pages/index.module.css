@@ -34,7 +34,7 @@
   margin: 0 auto;
   padding: 72px 24px 88px;
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  grid-template-columns: 1fr 1.1fr;
   gap: 56px;
   align-items: center;
 }
@@ -181,12 +181,13 @@
 .terminalBody {
   margin: 0;
   padding: 18px;
-  overflow-x: auto;
+  overflow-x: hidden;
   background: #07121f;
   color: #cfe6ff;
   font-size: 0.74rem;
   line-height: 1.6;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 /* ---------- Sections ---------- */
@@ -394,6 +395,35 @@
   text-align: center;
 }
 
+.archClusters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  width: min(760px, 100%);
+}
+
+.archCluster {
+  padding: 18px 14px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #0d3b6e 0%, #0a2d55 100%);
+  color: #fff;
+  text-align: center;
+}
+
+.archCluster strong {
+  display: block;
+  font-size: 0.98rem;
+  letter-spacing: 0.01em;
+}
+
+.archCluster span {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.74);
+}
+
 .archEngine strong {
   font-size: 1.05rem;
   letter-spacing: 0.02em;
@@ -430,6 +460,14 @@
   border: 1px solid #e1edf9;
   border-radius: 14px;
   min-width: 0;
+}
+
+.quickCard :global(pre),
+.quickCard :global(code) {
+  max-width: 100%;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .quickTitle {
@@ -534,5 +572,9 @@
 
   .pillar {
     padding: 22px 20px;
+  }
+
+  .archClusters {
+    grid-template-columns: 1fr;
   }
 }

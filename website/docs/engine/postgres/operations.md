@@ -40,7 +40,7 @@ Incremental SQL and distributed execution can be enabled together; every worker
 must be built with IVM and the same protocol generation.
 
 `--jwt-auth` and `--rbac` are covered in
-[Authentication and domains](authentication.md).
+[Authentication and Permissions](authentication.md).
 
 ## Runtime limits
 
@@ -90,7 +90,7 @@ with `--discovery kubernetes --k8s-worker-service ... --k8s-namespace ...`.
 
 ## Next
 
-- [Authentication and domains](authentication.md)
+- [Authentication and Permissions](authentication.md)
 - [Compatibility](compatibility.md)
 - [Metadata store](../../operations/metadata-postgres.md)
 - [Workspace and RBAC](../../operations/workspace-and-rbac.md)

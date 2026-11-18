@@ -12,7 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 为什么做 LakeSoul
 
-默认的答案，是为 Agent 重新拼一套复杂的数据平台：分析用数仓，新鲜度用 CDC 管道，检索用向量库，状态用 OLTP 库，再用 ETL 把它们对齐。每多一个系统，Agent 就多学一套 API，数据也多一份需要对齐的副本；闭源平台还会把数据锁住。
+传统的数据平台是很多系统的拼接：分析用数仓，新鲜度用 CDC 管道，检索用向量库，状态用 OLTP 库，再用 ETL 把它们对齐。每多一个系统，Agent 就多学一套 API，数据也多一份需要对齐的副本；闭源平台还会把数据锁住。
 
 LakeSoul 选择另一条路。Agent 通常已经具备 PostgreSQL 客户端，LakeSoul 通过 PostgreSQL wire protocol 提供一个开放湖仓：联邦查询可以直接访问数据所在的位置，CDC 订阅保持数据新鲜，向量与结构化检索进入同一个执行计划，增量 SQL 维护派生表，同一批表从单机平滑扩展到 PB 级分布式集群。数据保留在你的对象存储中，以 Parquet 和 Vortex 文件保存，代码使用 Apache 2.0 许可。
 
@@ -27,6 +27,7 @@ Agent 只是 PostgreSQL 客户端的一种。同一个端点同时服务 `psql`�
 - **向量与全文检索。** 兼容 pgvector 的 SQL 查的是 IVF + RaBitQ 索引，BM25 全文检索查的是 Tantivy 索引；两者都与数据同置，写入时维护。
 - **Python 原生读取。** Python SDK 通过 Rust IO 层直接读取对象存储，Daft、Ray、PyTorch 可以分片扫描，不需要 SQL 网关。
 - **分布式执行。** coordinator 在多个 `lakesoul-worker` 进程之间规划任务，并支持 Kubernetes discovery；同一批表从单进程扩展到 PB 级集群。Spark、Flink、Presto 通过同一条 Rust IO 路径接入。
+- **认证与权限。** 客户端通过用户名和密码连接；每条连接都被限制在该用户被授予的权限内。可以在同一份 catalog 上，为不同的 workload 或 Agent 启动不同的计算集群。
 
 ## 它在什么位置
 

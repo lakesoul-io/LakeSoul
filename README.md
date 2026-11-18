@@ -22,18 +22,17 @@ SPDX-License-Identifier: Apache-2.0
 **The agent-native lakehouse.**<br>
 Postgres-native. Vector-native. Python-native. Apache 2.0.
 
-The default answer to agent data infrastructure is to assemble a platform: a
-warehouse for analytics, a CDC pipeline for freshness, a vector database for
-retrieval, an OLTP database for state, and ETL to keep them consistent. Each
-system is another API for the agent to learn and another copy of the data to
-reconcile; a closed platform adds a lock-in you cannot undo.
+Traditional data platforms are a patchwork of systems: a warehouse for analytics,
+a CDC pipeline for freshness, a vector database for retrieval, an OLTP database
+for state, and ETL to keep them consistent. Each system is another API for the
+agent to learn and another copy of the data to reconcile; a closed platform adds
+a lock-in you cannot undo.
 
 LakeSoul takes another path. Agents already have PostgreSQL clients, so LakeSoul
 puts an open lakehouse behind the PostgreSQL wire protocol: federated queries
 over data where it lives, CDC subscriptions for freshness, vector and structured
 search in one plan, incremental SQL, and the same tables from a single process to
-a PB-scale distributed cluster. Data stays in your object store, in Parquet and
-Vortex, under Apache 2.0.
+a PB-scale distributed cluster.
 
 [Quick Start](#quick-start) · [Architecture](#architecture) · [Docs](https://lakesoul-io.github.io/docs/engine/overview)
 
@@ -64,6 +63,42 @@ protocol, `pg_catalog` and `psql \d`. DDL, `INSERT ... ON CONFLICT`, `UPDATE`,
 lakehouse engine over object storage. The
 [compatibility matrix](https://lakesoul-io.github.io/docs/engine/postgres/compatibility)
 tracks the exact SQL surface.
+
+### Federated query
+
+Install the ADBC driver for the source database with `dbc install postgresql`,
+then expose a remote table as a foreign table and join it with local data:
+
+```sql
+CREATE EXTENSION adbc_fdw;
+
+CREATE SERVER app_source
+FOREIGN DATA WRAPPER adbc_fdw
+OPTIONS (
+  driver 'postgresql',
+  uri 'postgresql://source:5432/app'
+);
+
+CREATE USER MAPPING FOR CURRENT_USER
+SERVER app_source
+OPTIONS (user 'reader', password '...');
+
+CREATE FOREIGN TABLE remote_orders (
+  id     bigint,
+  region text,
+  amount numeric(20,4)
+)
+SERVER app_source
+OPTIONS (schema_name 'public', table_name 'orders');
+
+SELECT u.id, u.name, sum(o.amount) AS total
+FROM local_users u
+JOIN remote_orders o USING (id)
+GROUP BY 1, 2;
+```
+
+The same wrapper reads MySQL, SQLite, DuckDB, BigQuery, Snowflake and Trino;
+S3 Parquet, CSV and JSON files are foreign tables too.
 
 ### PostgreSQL subscriptions
 
@@ -153,6 +188,51 @@ table = scan.to_arrow_table()   # or .to_daft(), .to_ray(), .to_torch()
 The same table your BI dashboard queries is the table your training job reads.
 Video frames, robot episodes and tensors live as blobs beside their metadata.
 
+## Authentication and Permissions
+
+Clients connect with a username and password; the endpoint scopes each connection
+to the permissions granted to that user. Run separate compute clusters for
+different teams or agents when you also want to isolate load.
+
+```bash
+psql "postgresql://alice:******@lakesoul.example.com:5432/default"
+```
+
+See [Authentication and Permissions](https://lakesoul-io.github.io/docs/engine/postgres/authentication)
+for the full model.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  psycopg · JDBC · RAG        Python SDK · Daft · Ray · Torch │
+└───────────────┬──────────────────────────┬───────────────────┘
+                │ PG wire                  │ native IO / Arrow
+   ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
+   │ Compute cluster A  │  │ Compute cluster B  │  │ Compute cluster C  │
+   │ Subscription · FDW │  │ Incremental SQL    │  │ BI Query · ANN     │
+   └──────────┬─────────┘  └──────────┬─────────┘  └──────────┬─────────┘
+              ▼                       ▼                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│  object storage (S3 / OSS / HDFS)  +  PostgreSQL metadata    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- **PostgreSQL front end** — wire protocol, `pg_catalog`, DDL, DML and explicit
+  transaction blocks, executed by the engine rather than by a Postgres extension
+- **Federated query and CDC** — ADBC foreign tables and PostgreSQL/MySQL
+  subscriptions bring external data in without a separate pipeline
+- **Incremental SQL** — each run consumes the table's own commit log and writes
+  only changed rows, replay-safe
+- **Vector and full-text indexes** — IVF + RaBitQ and Tantivy BM25, maintained on
+  write
+- **Native IO** — Parquet, Vortex and Vortex Compact over object storage, with
+  merge-on-read for primary-key tables
+- **Distributed execution** — a coordinator plans across `lakesoul-worker`
+  processes; the same tables scale from one process to a PB-scale cluster
+- **Multiple compute clusters** — every cluster is stateless; run one per
+  workload, team or agent against the same catalog and object store
+
 ## Quick Start
 
 ### Option A — the PostgreSQL endpoint
@@ -195,37 +275,6 @@ print(catalog.scan("t").to_arrow_table().num_rows)
 
 See the [documentation](https://lakesoul-io.github.io/docs/get-started/quickstart-postgres) for object
 storage configuration and the full local setup.
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  psql · JDBC · BI tools      Python SDK · Daft · Ray · Torch │
-└───────────────┬──────────────────────────┬───────────────────┘
-                │ PG wire                  │ native IO / Arrow
-┌───────────────▼──────────────────────────▼───────────────────┐
-│                        LakeSoul engine                       │
-│  PostgreSQL front end   ·   incremental SQL                  │
-│  vector + full-text indexes   ·   vectorized execution       │
-└───────────────────────────────┬──────────────────────────────┘
-                                │
-┌───────────────────────────────▼──────────────────────────────┐
-│  object storage (S3 / OSS / HDFS)  +  PostgreSQL metadata    │
-└──────────────────────────────────────────────────────────────┘
-```
-
-- **PostgreSQL front end** — wire protocol, `pg_catalog`, DDL, DML and explicit
-  transaction blocks, executed by the engine rather than by a Postgres extension
-- **Federated query and CDC** — ADBC foreign tables and PostgreSQL/MySQL
-  subscriptions bring external data in without a separate pipeline
-- **Incremental SQL** — each run consumes the table's own commit log and writes
-  only changed rows, replay-safe
-- **Vector and full-text indexes** — IVF + RaBitQ and Tantivy BM25, maintained on
-  write
-- **Native IO** — Parquet, Vortex and Vortex Compact over object storage, with
-  merge-on-read for primary-key tables
-- **Distributed execution** — a coordinator plans across `lakesoul-worker`
-  processes; the same tables scale from one process to a PB-scale cluster
 
 ## How it compares
 

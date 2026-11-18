@@ -22,9 +22,9 @@ SPDX-License-Identifier: Apache-2.0
 **Agent-native 湖仓。**<br>
 Postgres 原生。Vector 原生。Python 原生。Apache 2.0。
 
-默认的答案，是为 Agent 重新拼一套复杂的数据平台：分析用数仓，新鲜度用 CDC 管道，检索用向量库，状态用 OLTP 库，再用 ETL 把它们对齐。每多一个系统，Agent 就多学一套 API，数据也多一份需要对齐的副本；闭源平台还会把数据锁住。
+传统的数据平台是很多系统的拼接：分析用数仓，新鲜度用 CDC 管道，检索用向量库，状态用 OLTP 库，再用 ETL 把它们对齐。每多一个系统，Agent 就多学一套 API，数据也多一份需要对齐的副本；闭源平台还会把数据锁住。
 
-LakeSoul 选择另一条路。Agent 通常已经具备 PostgreSQL 客户端，LakeSoul 通过 PostgreSQL wire protocol 提供一个开放湖仓：联邦查询可以直接访问数据所在的位置，CDC 订阅保持数据新鲜，向量与结构化检索进入同一个执行计划，增量 SQL 维护派生表，同一批表从单机平滑扩展到 PB 级分布式集群。数据保留在你的对象存储中，以 Parquet 和 Vortex 文件保存，代码使用 Apache 2.0 许可。
+LakeSoul 选择另一条路。Agent 通常已经具备 PostgreSQL 客户端，LakeSoul 通过 PostgreSQL wire protocol 提供一个开放湖仓：联邦查询可以直接访问数据所在的位置，CDC 订阅保持数据新鲜，向量与结构化检索进入同一个执行计划，增量 SQL 维护派生表，同一批表从单机平滑扩展到 PB 级分布式集群。
 
 [快速开始](#快速开始) · [架构](#架构) · [文档](https://lakesoul-io.github.io/zh-Hans/docs/engine/overview)
 
@@ -48,6 +48,40 @@ SELECT region, sum(amount) FROM orders GROUP BY 1;
 ```
 
 端点实现 PostgreSQL wire protocol、扩展查询协议、`pg_catalog` 和 `psql \d`。DDL、`INSERT ... ON CONFLICT`、`UPDATE`、`COPY ... FROM STDIN`、`RETURNING` 和显式事务块都在湖仓引擎里、在对象存储上执行。具体 SQL 范围见[兼容性矩阵](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/compatibility)。
+
+### 联邦查询
+
+用 `dbc install postgresql` 安装源数据库的 ADBC 驱动，然后把远端表注册为 foreign table，与本地数据直接 join：
+
+```sql
+CREATE EXTENSION adbc_fdw;
+
+CREATE SERVER app_source
+FOREIGN DATA WRAPPER adbc_fdw
+OPTIONS (
+  driver 'postgresql',
+  uri 'postgresql://source:5432/app'
+);
+
+CREATE USER MAPPING FOR CURRENT_USER
+SERVER app_source
+OPTIONS (user 'reader', password '...');
+
+CREATE FOREIGN TABLE remote_orders (
+  id     bigint,
+  region text,
+  amount numeric(20,4)
+)
+SERVER app_source
+OPTIONS (schema_name 'public', table_name 'orders');
+
+SELECT u.id, u.name, sum(o.amount) AS total
+FROM local_users u
+JOIN remote_orders o USING (id)
+GROUP BY 1, 2;
+```
+
+同一个 wrapper 也支持 MySQL、SQLite、DuckDB、BigQuery、Snowflake 和 Trino；S3 上的 Parquet、CSV、JSON 文件同样可以作为 foreign table 查询。
 
 ### PostgreSQL 订阅
 
@@ -117,6 +151,41 @@ table = scan.to_arrow_table()   # 或 .to_daft()、.to_ray()、.to_torch()
 
 BI 看板查询的那张表，就是训练任务读取的那张表。视频帧、机器人 episode 和 tensor 以 blob 形式与元数据同置。
 
+## 认证与权限
+
+客户端通过用户名和密码连接；端点会把每条连接限制在该用户被授予的权限内。需要隔离负载时，可以为不同的团队或 Agent 启动不同的计算集群。
+
+```bash
+psql "postgresql://alice:******@lakesoul.example.com:5432/default"
+```
+
+完整模型见[认证与权限](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/authentication)。
+
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  psycopg · JDBC · RAG        Python SDK · Daft · Ray · Torch │
+└───────────────┬──────────────────────────┬───────────────────┘
+                │ PG wire                  │ native IO / Arrow
+   ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
+   │ Compute cluster A  │  │ Compute cluster B  │  │ Compute cluster C  │
+   │ Subscription · FDW │  │ Incremental SQL    │  │ BI Query · ANN     │
+   └──────────┬─────────┘  └──────────┬─────────┘  └──────────┬─────────┘
+              ▼                       ▼                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│  object storage (S3 / OSS / HDFS)  +  PostgreSQL metadata    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- **PostgreSQL 前端** —— wire protocol、`pg_catalog`、DDL、DML 与显式事务块，由引擎执行，而不是由 Postgres 扩展执行
+- **联邦查询与 CDC** —— ADBC foreign table 与 PostgreSQL/MySQL 订阅，无需额外的数据管道即可接入外部数据
+- **增量 SQL** —— 每次执行消费表自己的 commit log，只写变化的行，可安全重放
+- **向量与全文索引** —— IVF + RaBitQ 与 Tantivy BM25，写入时自动维护
+- **Native IO** —— 对象存储上的 Parquet、Vortex、Vortex Compact，主键表走 merge-on-read
+- **分布式执行** —— coordinator 在多个 `lakesoul-worker` 之间规划任务；同一批表从单进程扩展到 PB 级集群
+- **多个计算集群** —— 每个计算集群都是无状态的；可以按 workload、团队或 Agent 启动多个集群，共享同一份 catalog 和对象存储
+
 ## 快速开始
 
 ### 方式 A —— PostgreSQL 端点
@@ -158,31 +227,6 @@ print(catalog.scan("t").to_arrow_table().num_rows)
 ```
 
 对象存储配置与完整的本地环境搭建见[文档](https://lakesoul-io.github.io/zh-Hans/docs/get-started/quickstart-postgres)。
-
-## 架构
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  psql · JDBC · BI 工具       Python SDK · Daft · Ray · Torch │
-└───────────────┬──────────────────────────┬───────────────────┘
-                │ PG wire                  │ native IO / Arrow
-┌───────────────▼──────────────────────────▼───────────────────┐
-│                        LakeSoul 引擎                         │
-│  PostgreSQL 前端   ·   增量 SQL                              │
-│  向量 + 全文索引   ·   向量化执行                            │
-└───────────────────────────────┬──────────────────────────────┘
-                                │
-┌───────────────────────────────▼──────────────────────────────┐
-│  对象存储（S3 / OSS / HDFS）  +  PostgreSQL 元数据           │
-└──────────────────────────────────────────────────────────────┘
-```
-
-- **PostgreSQL 前端** —— wire protocol、`pg_catalog`、DDL、DML 与显式事务块，由引擎执行，而不是由 Postgres 扩展执行
-- **联邦查询与 CDC** —— ADBC foreign table 与 PostgreSQL/MySQL 订阅，无需额外的数据管道即可接入外部数据
-- **增量 SQL** —— 每次执行消费表自己的 commit log，只写变化的行，可安全重放
-- **向量与全文索引** —— IVF + RaBitQ 与 Tantivy BM25，写入时自动维护
-- **Native IO** —— 对象存储上的 Parquet、Vortex、Vortex Compact，主键表走 merge-on-read
-- **分布式执行** —— coordinator 在多个 `lakesoul-worker` 之间规划任务；同一批表从单进程扩展到 PB 级集群
 
 ## 与其他方案对比
 

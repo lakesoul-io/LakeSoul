@@ -12,11 +12,11 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Why LakeSoul
 
-The default answer to agent data infrastructure is to assemble a platform: a
-warehouse for analytics, a CDC pipeline for freshness, a vector database for
-retrieval, an OLTP database for state, and ETL to keep them consistent. Each
-system is another API for the agent to learn and another copy of the data to
-reconcile; a closed platform adds a lock-in you cannot undo.
+Traditional data platforms are a patchwork of systems: a warehouse for analytics,
+a CDC pipeline for freshness, a vector database for retrieval, an OLTP database
+for state, and ETL to keep them consistent. Each system is another API for the
+agent to learn and another copy of the data to reconcile; a closed platform adds
+a lock-in you cannot undo.
 
 LakeSoul takes another path. Agents already have PostgreSQL clients, so LakeSoul
 puts an open lakehouse behind the PostgreSQL wire protocol: federated queries
@@ -58,6 +58,10 @@ search and AI do not need a second copy.
   processes, with Kubernetes discovery; the same tables scale from a single
   process to a PB-scale cluster. Spark, Flink and Presto connect through the same
   Rust IO path.
+- **Authentication and Permissions.** Clients connect with a username and
+  password; each connection is scoped to the permissions granted to that user.
+  Run separate compute clusters for different workloads or agents against the
+  same catalog.
 
 ## Where it fits
 
