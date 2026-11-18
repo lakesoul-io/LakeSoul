@@ -102,7 +102,7 @@ async fn attach_session_with_limits(
     // `CLOSE`, `SET`, transactions) diverge from what tests exercise.
     let service = Arc::new(DfSessionService::new_with_hooks(
         Arc::clone(&session.context),
-        crate::server::connection_statement_hooks(factory, &session.identity),
+        crate::server::connection_statement_hooks(factory, &session),
     ));
     let server = crate::limits::ServerLimits::new(limits);
     // Mirror production setup: the metadata `SHOW`/`RESET` read starts from

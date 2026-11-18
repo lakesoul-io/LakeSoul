@@ -1389,6 +1389,7 @@ impl StartupState {
                 properties: "{}".to_string(),
                 comment: "postgres-lakesoul authentication suite".to_string(),
                 domain: domain.to_string(),
+                creator: String::new(),
             })
             .await
             .map_err(|error| anyhow!("create {namespace}: {error:?}"))?;

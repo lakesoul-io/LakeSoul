@@ -2689,6 +2689,7 @@ async fn create_sql_table(
             properties,
             partitions: format!(";{}", PK_COLUMN),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await
         .map_err(|e| format!("create table: {e}"))

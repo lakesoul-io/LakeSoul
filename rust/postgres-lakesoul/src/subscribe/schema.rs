@@ -238,6 +238,7 @@ async fn ensure_target_with_retries(
         partitions: format!(";{}", source.primary_key.join(",")),
         table_path,
         domain: "public".to_string(),
+        creator: String::new(),
     };
 
     let created = meta
@@ -899,6 +900,7 @@ mod tests {
                 .to_string(),
             partitions: ";id".to_string(),
             domain: "public".to_string(),
+            creator: String::new(),
         };
         meta.create_table(created.clone()).await.unwrap();
         let info = meta

@@ -51,6 +51,7 @@ use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::PgWireBackendMessage;
 use datafusion_postgres::pgwire::messages::copy::{CopyData, CopyDone, CopyFail};
 use futures::{Sink, SinkExt, stream};
+use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use parking_lot::Mutex;
 
 use crate::cancel::statement_timeout;
@@ -356,6 +357,13 @@ where
                 format!("relation \"{table_name}\" does not exist: {error}"),
             )
         })?;
+    if provider
+        .as_ref()
+        .downcast_ref::<LakeSoulTableProvider>()
+        .is_some()
+    {
+        crate::acl::require_table_write(session_context, &database, &table_name).await?;
+    }
     // A copy is a write of the same kinds `INSERT` supports; a block stages a
     // LakeSoul write and refuses a foreign/external one.
     check_write_target(

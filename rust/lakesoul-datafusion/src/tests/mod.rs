@@ -356,6 +356,7 @@ async fn create_table_inner(
                     .join(",")
             ),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
     Ok(())
@@ -433,6 +434,7 @@ pub(crate) async fn create_partitioned_vector_table(
             })?,
             partitions: format_table_info_partitions(&range_partitions, &primary_keys),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
     Ok(())
@@ -490,6 +492,7 @@ pub(crate) async fn create_cdc_vector_table(
             })?,
             partitions: format_table_info_partitions(&[], &primary_keys),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
     Ok(())
@@ -573,6 +576,7 @@ async fn create_cdc_table_inner(
                 &primary_keys,
             ),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
     Ok(())

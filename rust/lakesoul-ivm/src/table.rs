@@ -650,6 +650,7 @@ pub async fn create_ivm_table(
                 options.primary_keys.join(",")
             ),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
 
@@ -2838,6 +2839,7 @@ mod epoch_column_tests {
             .to_string(),
             partitions: ";id".to_string(),
             domain: "public".to_string(),
+            creator: String::new(),
         };
         client.create_table(info.clone()).await.unwrap();
         client

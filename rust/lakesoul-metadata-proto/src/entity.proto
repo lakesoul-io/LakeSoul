@@ -40,6 +40,8 @@ message TableInfo {
   //  Domain this entry belongs to.
   //  Only when rbac feature enabled will have contents different to 'public'
   string domain = 9;
+  //  Logical owner of the table (the client user for PG wire sessions).
+  string creator = 12;
 }
 
 //  Version information for specific table range partitions
@@ -75,6 +77,8 @@ message Namespace {
   //  Domain this entry belongs to.
   //  Only when rbac feature enabled will have contents different to 'public'
   string domain = 4;
+  //  Logical owner of the namespace (the client user for PG wire sessions).
+  string creator = 5;
 }
 
 

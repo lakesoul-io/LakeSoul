@@ -208,6 +208,7 @@ async fn rebuild_table_identity(
             })?,
             partitions: format_table_info_partitions(&[], &[String::from("id")]),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await?;
     Ok(table_id)

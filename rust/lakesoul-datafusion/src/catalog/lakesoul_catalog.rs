@@ -223,6 +223,7 @@ impl CatalogProvider for LakeSoulCatalog {
                 properties: "{}".into(),
                 comment: "created by lakesoul-datafusion".into(),
                 domain: "public".into(),
+                creator: String::new(),
             };
             wait_on_runtime(async move {
                 client

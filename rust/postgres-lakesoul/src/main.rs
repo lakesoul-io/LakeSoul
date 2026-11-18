@@ -29,6 +29,7 @@ use crate::limits::{Limits, ServerLimits};
 use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
+mod acl;
 mod allocator;
 mod alter;
 mod auth;
@@ -226,6 +227,12 @@ struct Cli {
     #[clap(long, env = "LAKESOUL_PG_RBAC", requires = "jwt_auth")]
     rbac: bool,
 
+    /// The domain this cluster creates tables in and accepts writes for.
+    /// Defaults to each token's `group`; set it when one shared cluster
+    /// serves several domains read-only.
+    #[clap(long, env = "LAKESOUL_PG_RBAC_DOMAIN", requires = "rbac")]
+    rbac_domain: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -358,7 +365,8 @@ async fn main_inner(cli: Cli) -> Result<()> {
     )?
     .with_subscriptions(Arc::clone(&subscriptions))
     .with_federation(federation)
-    .with_auth(auth);
+    .with_auth(auth)
+    .with_cluster_domain(cli.rbac_domain.clone());
     info!(
         version = lakesoul_build_info::VERSION,
         commit = lakesoul_build_info::GIT_COMMIT,
@@ -650,6 +658,7 @@ mod cli_probe_tests {
             "tcp_keepalive_retries": cli.tcp_keepalive_retries,
             "jwt_auth": cli.jwt_auth,
             "rbac": cli.rbac,
+            "rbac_domain": cli.rbac_domain,
         })
     }
 
@@ -707,6 +716,24 @@ mod cli_probe_tests {
         assert!(cli.jwt_auth && cli.rbac);
         let cli = Cli::try_parse_from(["pg", "--jwt-auth"]).expect("parse");
         assert!(!cli.rbac, "domain enforcement is off by default");
+    }
+
+    #[test]
+    fn rbac_domain_requires_rbac() {
+        assert!(
+            Cli::try_parse_from(["pg", "--jwt-auth", "--rbac-domain", "team_a",])
+                .is_err(),
+            "--rbac-domain without --rbac must be refused"
+        );
+        let cli = Cli::try_parse_from([
+            "pg",
+            "--jwt-auth",
+            "--rbac",
+            "--rbac-domain",
+            "team_a",
+        ])
+        .expect("parse");
+        assert_eq!(cli.rbac_domain.as_deref(), Some("team_a"));
     }
 
     #[test]

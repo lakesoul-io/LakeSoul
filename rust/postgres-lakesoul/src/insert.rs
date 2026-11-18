@@ -277,7 +277,8 @@ async fn prepare_upsert(
     database: &str,
     mode: UpsertSnapshotMode,
 ) -> PgWireResult<lakesoul_datafusion::planner::upsert::PlannedUpsert> {
-    let (table_ref, _) = target_reference(&insert.table, database)?;
+    let (table_ref, table_name) = target_reference(&insert.table, database)?;
+    crate::acl::require_table_write(session_context, database, &table_name).await?;
     plan_upsert(session_context, insert, table_ref, mode)
         .await
         .map_err(upsert_plan_error)
@@ -572,6 +573,7 @@ async fn prepare(
         })?;
     let provider_any: &dyn std::any::Any = provider.as_ref();
     if let Some(provider) = provider_any.downcast_ref::<LakeSoulTableProvider>() {
+        crate::acl::require_table_write(session_context, database, &table_name).await?;
         reject_transaction(status, session_context, "INSERT")?;
         let table_info = provider.table_info();
         let (range, primary_keys) = split_partitions(&table_info.partitions);

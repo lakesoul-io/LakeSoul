@@ -17,6 +17,7 @@ PostgreSQL wire 服务默认不认证：信任启动时的 `user`，每条连接
 | --- | --- | --- |
 | `--jwt-auth` | `LAKESOUL_PG_JWT_AUTH` | 要求每条连接用明文密码方式提交 LakeSoul JWT，并只接受该 JWT |
 | `--rbac` | `LAKESOUL_PG_RBAC` | 把每条连接限制在 token 的 `group` 所表示的域内；需要 `--jwt-auth` |
+| `--rbac-domain` | `LAKESOUL_PG_RBAC_DOMAIN` | 固定共享 cluster 的写入域；需要 `--rbac` |
 
 两个参数都不开时，启动和可见性与之前完全一致。
 
@@ -74,18 +75,20 @@ token 通过之前不会创建会话，也不会占用连接名额。
 
 开 `--rbac` 后，token 的 `group` 成为连接的域。规则与 `script/meta_rbac_init.sql` 对 JVM 引擎施加的行级安全一致，但没有角色继承：一个 token 只带一个 group。
 
-连接能看到自己的域，以及 `public` 和 `lake-public`；其余对象对它不存在：
+连接能看到自己的域，以及 `public` 和 `lake-public`；表级 ACL 还可以跨域授予只读访问，未授权的表对它不存在：
 
 | 路径 | 行为 |
 | --- | --- |
-| 连接其他域的 namespace | 启动失败：`database "…" does not exist` |
-| 对其他域的表执行 `SELECT`、`INSERT`、`UPDATE`、`ALTER`、`DROP` | `42P01`，在共享 namespace 里同样如此 |
+| 连接其他域的 namespace | 启动失败：`database "…" does not exist`；有表授权时 namespace 以只读可见 |
+| 对其他域已授权表的 `SELECT` / `COPY TO` | 允许；无授权则为 `42P01` |
+| 对只读表的 `INSERT` / `UPDATE` / `COPY FROM` | `42501` |
+| 非 owner/空间管理员的 `ALTER` / `DROP` | `42501` |
 | `pg_class`、`pg_tables`、`pg_database` | 只列出可见对象 |
-| `CREATE TABLE` | 表的元数据行带上创建者的域 |
+| `CREATE TABLE` | 表域为 cluster 写入域（`--rbac-domain` 或 token group）；`creator` 为连接用户 |
 | 后台查询（detached job） | 在提交者的域内执行，并按该域存储 |
 | 订阅、IVM 维护的 `INSERT ... SELECT` | 以 `42501` 拒绝；它们会绕过域过滤写表 |
 
-域在启动时确定，`SET`/`RESET` 无法修改。需要多个域的用户按域各开一条连接。
+token 的域在启动时确定，`SET`/`RESET` 无法修改。共享 cluster 的写入域由 `--rbac-domain` 固定；其他域的客户端可以读取被授权的表，但不能写入或创建私有表。表 ACL 规则与 `script/meta_rbac_init.sql` 一致，见[工作空间与 RBAC](../../operations/workspace-and-rbac.md)。
 
 `--rbac` 会把域写进每个后台查询（`job.queries.domain`），`job_key` 的唯一索引也包含域。已有的 4.x 元数据库必须先迁移，服务端才能提交作业：
 

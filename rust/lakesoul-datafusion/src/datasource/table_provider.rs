@@ -82,6 +82,11 @@ use crate::write_mode::UpdateUnsupported;
 /// table's IO options.
 pub const DOMAIN_OPTION: &str = "lakesoul.domain";
 
+/// `CreateExternalTable` option naming the logical owner of a new table. The
+/// PostgreSQL front end sets it to the connecting user; when absent the
+/// metadata insert falls back to `current_user`.
+pub const CREATOR_OPTION: &str = "lakesoul.creator";
+
 const SCAN_STRATEGY_TOTAL: &str = "lakesoul_table_scan_strategy_total";
 const INDEX_PLANNING_TOTAL: &str = "lakesoul_index_planning_total";
 const INDEX_FALLBACKS_TOTAL: &str = "lakesoul_index_fallbacks_total";
@@ -1085,6 +1090,7 @@ impl LakeSoulTableProvider {
                 .get(DOMAIN_OPTION)
                 .cloned()
                 .unwrap_or_else(|| "public".to_string()),
+            creator: cmd.options.get(CREATOR_OPTION).cloned().unwrap_or_default(),
         });
         // The object-store options captured on the session (`fs.s3a.*`, …)
         // must reach the table's io config: stores built outside the session
@@ -1096,7 +1102,9 @@ impl LakeSoulTableProvider {
             table_info.clone(),
             cmd.options
                 .iter()
-                .filter(|(key, _)| key.as_str() != DOMAIN_OPTION)
+                .filter(|(key, _)| {
+                    key.as_str() != DOMAIN_OPTION && key.as_str() != CREATOR_OPTION
+                })
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect::<HashMap<_, _>>()
                 .into(),

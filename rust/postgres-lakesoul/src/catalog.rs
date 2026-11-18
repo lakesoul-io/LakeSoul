@@ -33,6 +33,7 @@ use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use lakesoul_metadata::MetaDataClientRef;
 use parking_lot::RwLock;
 
+use crate::acl::AclEntry;
 use crate::auth::DomainAccess;
 use crate::federation::FederationRuntime;
 
@@ -78,6 +79,7 @@ pub struct PgPublicSchema {
     database: String,
     user: String,
     access: Option<DomainAccess>,
+    acl: Option<Arc<AclEntry>>,
 }
 
 impl std::fmt::Debug for PgPublicSchema {
@@ -87,6 +89,7 @@ impl std::fmt::Debug for PgPublicSchema {
             .field("user", &self.user)
             .field("federation", &self.federation.is_some())
             .field("access", &self.access)
+            .field("acl", &self.acl.is_some())
             .finish()
     }
 }
@@ -98,6 +101,7 @@ impl PgPublicSchema {
         database: &str,
         user: &str,
         access: Option<DomainAccess>,
+        acl: Option<Arc<AclEntry>>,
     ) -> Self {
         Self {
             local,
@@ -105,6 +109,7 @@ impl PgPublicSchema {
             database: database.to_string(),
             user: user.to_string(),
             access,
+            acl,
         }
     }
 
@@ -117,6 +122,9 @@ impl PgPublicSchema {
     /// see. Always true without domain enforcement; false for a table the
     /// snapshot does not know.
     fn visible_in_snapshot(&self, table: &str) -> bool {
+        if let Some(acl) = &self.acl {
+            return acl.view().table_is_visible(self.local.namespace(), table);
+        }
         let Some(access) = &self.access else {
             return true;
         };
@@ -128,6 +136,15 @@ impl PgPublicSchema {
 
     /// Whether a table read from metadata is visible to this connection.
     fn visible_provider(&self, table: &Arc<dyn TableProvider>) -> bool {
+        if let Some(acl) = &self.acl {
+            return table.downcast_ref::<LakeSoulTableProvider>().is_some_and(
+                |provider| {
+                    let info = provider.table_info();
+                    acl.view()
+                        .table_is_visible(&info.table_namespace, &info.table_name)
+                },
+            );
+        }
         let Some(access) = &self.access else {
             return true;
         };
@@ -143,7 +160,7 @@ impl PgPublicSchema {
 impl SchemaProvider for PgPublicSchema {
     fn table_names(&self) -> Vec<String> {
         let mut names = self.local.table_names();
-        if self.access.is_some() {
+        if self.access.is_some() || self.acl.is_some() {
             names.retain(|name| self.visible_in_snapshot(name));
         }
         if let Some(federation) = &self.federation {
@@ -157,6 +174,24 @@ impl SchemaProvider for PgPublicSchema {
     }
 
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        if let Some(acl) = &self.acl
+            && !acl.view().table_is_visible(self.local.namespace(), name)
+        {
+            // A table created by another engine after this session's last ACL
+            // refresh is not in the view yet. Resolve that one table live
+            // before reporting it missing; no full metadata scan is needed.
+            let live = acl
+                .live_table_access(self.local.namespace(), name)
+                .await
+                .map_err(|error| {
+                    datafusion::error::DataFusionError::External(Box::new(error))
+                })?;
+            if let Some(live) = live
+                && live.privilege.can_read()
+            {
+                return self.local.table(name).await;
+            }
+        }
         if let Some(federation) = &self.federation
             && let Some(table) = federation
                 .provider(&self.database, &self.user, name)
@@ -191,6 +226,18 @@ impl SchemaProvider for PgPublicSchema {
     /// recreated in another domain since. The deletion is therefore
     /// authorized again on the exact row it deletes.
     fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        if let Some(acl) = self.acl.clone() {
+            let view = acl.view();
+            if !view.table_is_visible(self.local.namespace(), name) {
+                return Ok(None);
+            }
+            return self.local.deregister_table_if(name, move |table_info| {
+                view.table_access(&table_info.table_namespace, &table_info.table_name)
+                    .is_some_and(|access| {
+                        access.table_id == table_info.table_id && access.can_ddl()
+                    })
+            });
+        }
         let Some(access) = self.access.clone() else {
             return self.local.deregister_table(name);
         };
@@ -324,6 +371,11 @@ impl PgDatabaseCatalogList {
     pub fn database_names(&self) -> Vec<String> {
         self.visible_databases.read().iter().cloned().collect()
     }
+
+    /// Replace the visible database set after an ACL refresh.
+    pub fn replace_visible_databases(&self, databases: BTreeSet<String>) {
+        *self.visible_databases.write() = databases;
+    }
 }
 
 impl CatalogProviderList for PgDatabaseCatalogList {
@@ -376,6 +428,7 @@ pub fn pg_lakesoul_catalog(
         None,
         "",
         None,
+        None,
     )
 }
 
@@ -387,6 +440,7 @@ pub fn pg_lakesoul_catalog_with_federation(
     federation: Option<Arc<FederationRuntime>>,
     user: &str,
     access: Option<DomainAccess>,
+    acl: Option<Arc<AclEntry>>,
 ) -> Arc<PgLakeSoulCatalog> {
     let local = Arc::new(LakeSoulNamespace::with_snapshot(
         client,
@@ -395,7 +449,7 @@ pub fn pg_lakesoul_catalog_with_federation(
         snapshot,
     ));
     let public_schema = Arc::new(PgPublicSchema::new(
-        local, federation, namespace, user, access,
+        local, federation, namespace, user, access, acl,
     ));
     Arc::new(PgLakeSoulCatalog::new(public_schema))
 }

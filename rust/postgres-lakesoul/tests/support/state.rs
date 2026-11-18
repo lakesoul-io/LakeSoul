@@ -124,8 +124,10 @@ impl Harness {
         &self,
         table: &str,
         domain: &str,
+        creator: &str,
     ) -> Result<()> {
-        self.write_table_out_of_band(table, domain, false).await
+        self.write_table_out_of_band(table, domain, creator, false)
+            .await
     }
 
     /// Drops `table` from the base namespace and recreates the name in
@@ -136,14 +138,17 @@ impl Harness {
         &self,
         table: &str,
         domain: &str,
+        creator: &str,
     ) -> Result<()> {
-        self.write_table_out_of_band(table, domain, true).await
+        self.write_table_out_of_band(table, domain, creator, true)
+            .await
     }
 
     async fn write_table_out_of_band(
         &self,
         table: &str,
         domain: &str,
+        creator: &str,
         replace: bool,
     ) -> Result<()> {
         let client = self.connect_reference().await?;
@@ -176,7 +181,8 @@ impl Harness {
                SELECT (jsonb_populate_record(NULL::public.table_info,
                  to_jsonb(t) || jsonb_build_object(
                    'table_id', '{table_id}', 'table_name', '{table}',
-                   'table_path', '{table_path}', 'domain', '{domain}'))).*
+                   'table_path', '{table_path}', 'domain', '{domain}',
+                   'creator', '{creator}'))).*
                FROM public.table_info t
                WHERE t.table_namespace = '{namespace}' AND t.table_name = 'items';
              INSERT INTO public.table_name_id (table_name, table_id, table_namespace, domain)
@@ -188,7 +194,8 @@ impl Harness {
         client
             .batch_execute(&sql)
             .await
-            .with_context(|| format!("write {table} in {domain} out of band"))
+            .with_context(|| format!("write {table} in {domain} out of band"))?;
+        Ok(())
     }
 
     fn jwt(&self) -> Result<&lakesoul_metadata::JwtServer> {

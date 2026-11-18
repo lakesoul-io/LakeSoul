@@ -952,6 +952,7 @@ impl MetaDataClient {
             properties: "{}".to_string(),
             comment: "".to_string(),
             domain: "public".to_string(),
+            creator: String::new(),
         })
         .await
     }
@@ -2462,7 +2463,7 @@ impl MetaDataClient {
             .query_opt(
                 "select table_id, table_name, table_path, table_schema, \
                     table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash, \
-                    properties, partitions, table_namespace, domain \
+                    properties, partitions, table_namespace, domain, creator \
              from table_info where table_id = $1",
                 &[&table_id],
             )
@@ -2484,6 +2485,7 @@ impl MetaDataClient {
             partitions: row.get(7),
             table_namespace: row.get(8),
             domain: row.get(9),
+            creator: row.get::<_, Option<String>>(10).unwrap_or_default(),
         };
         let rows = tx.query(
             "select distinct on (partition_desc) table_id, partition_desc, version, \
@@ -3902,6 +3904,8 @@ mod tests {
         let second_client = MetaDataClient::from_env().await.unwrap();
         let suffix = uuid::Uuid::new_v4();
         let table_name = format!("concurrent_create_{suffix}");
+        let creator = std::env::var("LAKESOUL_PG_USERNAME")
+            .unwrap_or_else(|_| "lakesoul_test".into());
         let first = TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_namespace: "default".to_string(),
@@ -3909,6 +3913,7 @@ mod tests {
             table_path: format!("file:///tmp/{table_name}_first"),
             properties: "{}".to_string(),
             domain: "public".to_string(),
+            creator: creator.clone(),
             ..Default::default()
         };
         let second = TableInfo {

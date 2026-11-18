@@ -114,6 +114,7 @@ enum MissingObject {
 fn metadata_error_to_py(error: LakeSoulMetaDataError, missing: MissingObject) -> PyErr {
     let message = error.to_string();
     match error {
+        LakeSoulMetaDataError::PermissionDenied(_) => PermissionDeniedError::new_err(message),
         LakeSoulMetaDataError::NotFound(_) => match missing {
             MissingObject::Table => TableNotFoundError::new_err(message),
             MissingObject::Namespace => NamespaceNotFoundError::new_err(message),
@@ -337,5 +338,6 @@ fn build_table_info(
         properties,
         partitions,
         domain,
+        creator: String::new(),
     })
 }

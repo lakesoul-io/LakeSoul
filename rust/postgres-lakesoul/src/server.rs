@@ -855,7 +855,7 @@ impl LakeSoulStartupHandler {
         let defaults = SessionDefaults::capture(&session.context, client.metadata());
         let service = Arc::new(DfSessionService::new_with_hooks(
             Arc::clone(&session.context),
-            connection_statement_hooks(&self.session_factory, &session.identity),
+            connection_statement_hooks(&self.session_factory, &session),
         ));
         let cancellation = Arc::new(QueryCancellation::new(
             Arc::clone(&self.server_limits),
@@ -940,8 +940,9 @@ impl StartupHandler for LakeSoulStartupHandler {
 /// own dialect-specific DDL.
 pub(crate) fn connection_statement_hooks(
     factory: &PgSessionFactory,
-    identity: &SessionIdentity,
+    session: &PgSession,
 ) -> Vec<Arc<dyn datafusion_postgres::QueryHook>> {
+    let identity = &session.identity;
     let database = identity.database.as_str();
     let mut hooks = crate::pg_vector::statement_hooks();
     if let Some(federation) = factory.federation() {
@@ -950,14 +951,18 @@ pub(crate) fn connection_statement_hooks(
             database.to_string(),
         )));
     }
+    hooks.push(Arc::new(crate::acl::AclRefreshHook));
     hooks.push(Arc::new(crate::ddl::DdlStatementHook::new(
         Arc::clone(factory.meta_client()),
         database.to_string(),
         factory.warehouse().map(str::to_owned),
-        identity
-            .access
-            .as_ref()
-            .map(|access| access.domain().to_string()),
+        session.cluster_domain().map(str::to_owned).or_else(|| {
+            identity
+                .access
+                .as_ref()
+                .map(|access| access.domain().to_string())
+        }),
+        identity.user.clone(),
     )));
     hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
     hooks.push(Arc::new(crate::ivm::IvmInsertHook));
