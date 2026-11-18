@@ -1,0 +1,23 @@
+# Keep the PostgreSQL answers: INTERSECT ALL takes the smaller multiplicity
+# and EXCEPT ALL subtracts it. NULL participates as a set-operation value.
+query I
+WITH l(x) AS (VALUES (1), (1), (1), (1), (2), (4), (NULL), (NULL), (NULL), (NULL)),
+     r(x) AS (VALUES (1), (1), (2), (2), (3), (NULL), (NULL))
+SELECT x FROM l INTERSECT ALL SELECT x FROM r ORDER BY x NULLS LAST
+----
+1
+1
+2
+NULL
+NULL
+
+query I
+WITH l(x) AS (VALUES (1), (1), (1), (1), (2), (4), (NULL), (NULL), (NULL), (NULL)),
+     r(x) AS (VALUES (1), (1), (2), (2), (3), (NULL), (NULL))
+SELECT x FROM l EXCEPT ALL SELECT x FROM r ORDER BY x NULLS LAST
+----
+1
+1
+4
+NULL
+NULL

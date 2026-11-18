@@ -108,11 +108,13 @@ LAKESOUL_SLT_FILTER=queries.slt cargo -q test --profile test-fast -p postgres-la
   there is no automatic answer-update mode. Both legacy/v2 CI compatibility
   commands explicitly include `--test sqllogic`.
 
-The standalone normal corpus has 11 files and 203 SQL records (114 query, 89
+The standalone normal corpus has 12 files and 206 SQL records (117 query, 89
 statement). Distributed mode runs those same files plus the 11-record remote-write
-script (12 files, 214 records total). Records include expected errors, not just successful
-commands; enabling worker discovery alone is not accepted as remote execution
-evidence.
+script (13 files, 217 records total). Records include expected errors, not just
+successful commands; enabling worker discovery alone is not accepted as remote
+execution evidence. `pg/semantic_boundaries.slt` distinguishes `ROWS`, `RANGE`
+and `GROUPS` using tied and gapped sort keys, and checks aggregate `FILTER` on
+FALSE/NULL predicates, NULL values and empty input.
 `tests/known_defects/simple_not_null.slt` is a separate strict reproduction:
 simple `INSERT ... VALUES (NULL, ...)` into a NOT NULL primary key currently
 returns `XX000` from Arrow, while PostgreSQL and the extended path report
@@ -152,11 +154,26 @@ cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic upstream_
 ```
 
 Keep these answers unchanged when fixing the incompatibilities and promote each
-fixed query to the normal gate. The current normal target has two named ignored
-tests: this upstream reproduction and the existing literal-NULL SQLSTATE case.
-This is a selected initial import, not a claim that PostgreSQL's full regression
-suite passes. All imported queries use `rowsort`, preserving duplicate rows;
-order-sensitive behavior stays covered by the existing handwritten cases.
+fixed query to the normal gate. The imports are selections, not a claim that
+PostgreSQL's full regression suite passes. Imported queries use `rowsort`,
+preserving duplicate rows; handwritten cases also check explicit ordering.
+
+`tests/known_defects/set_all.slt` separately checks `INTERSECT ALL` and
+`EXCEPT ALL` with unequal duplicate and NULL counts. PostgreSQL keeps the
+smaller count for intersection and subtracts counts for difference. LakeSoul
+currently keeps all matching left copies for intersection and drops all
+matching left copies for difference. Both queries returned incorrect results
+in both protocols and execution modes on legacy and v2. Run the strict
+reproduction explicitly; it must currently fail after checking PostgreSQL:
+
+```sh
+cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic set_all_multiplicity_matches_postgres -- --exact --ignored --nocapture
+```
+
+The complete default target passed with **6 passed / 3 ignored** on each merge
+mode, including all three new normal queries in both protocols and execution
+modes. The three named ignores are the upstream reproduction, the literal-NULL
+SQLSTATE case and the `ALL` multiplicity reproduction.
 
 Local validation on 2026-11-16 used an isolated PostgreSQL 18.6 metadata
 instance: legacy/v2 each **4 passed / 1 ignored** in `sqllogic`, and each

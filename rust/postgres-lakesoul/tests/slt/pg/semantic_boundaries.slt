@@ -1,0 +1,33 @@
+# Equal sort keys form peers. The gaps between keys distinguish RANGE
+# (key distance) from GROUPS (peer-group distance). ROWS counts individual rows.
+query IIII
+SELECT id,
+       SUM(v) OVER (ORDER BY k, id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW),
+       SUM(v) OVER (ORDER BY k RANGE BETWEEN 1 PRECEDING AND CURRENT ROW),
+       SUM(v) OVER (ORDER BY k GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW)
+FROM (VALUES (1, 1, 10), (2, 1, 20), (3, 3, 30), (4, 4, 40), (5, 4, 50), (6, 8, 60)) AS t(id, k, v)
+ORDER BY id
+----
+1 10 30 30
+2 30 30 30
+3 50 30 60
+4 70 120 120
+5 90 120 120
+6 110 60 150
+
+# FILTER excludes both FALSE and UNKNOWN. COUNT(*) counts a qualifying NULL
+# value, COUNT(v) does not, and a group with no qualifying rows is retained.
+query IIII
+SELECT g, COUNT(*) FILTER (WHERE keep), COUNT(v) FILTER (WHERE keep), SUM(v) FILTER (WHERE keep)
+FROM (VALUES (1, 10, TRUE), (1, 10, TRUE), (1, NULL, TRUE),
+             (1, 90, FALSE), (1, 80, NULL), (2, 70, FALSE), (2, 60, NULL)) AS t(g, v, keep)
+GROUP BY g ORDER BY g
+----
+1 3 2 20
+2 0 0 NULL
+
+# A filtered aggregate over an actually empty input still returns one row.
+query II
+SELECT COUNT(*) FILTER (WHERE val > 0), SUM(val) FILTER (WHERE val > 0) FROM empty_items
+----
+0 NULL
