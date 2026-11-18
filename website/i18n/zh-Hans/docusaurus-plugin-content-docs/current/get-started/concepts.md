@@ -49,7 +49,7 @@ LakeSoul 的**表**属于一个 **namespace**。PostgreSQL 端点把 database �
 ## 两个 PostgreSQL
 
 1. **元数据存储**保存 catalog 和提交记录。它是基础设施，用户不通过它查表。
-2. **PostgreSQL 端点**（`postgres-lakesoul`）对用户说 PostgreSQL 协议，并在引擎里执行 SQL。
+2. **PostgreSQL 端点**（`postgres-lakesoul`）实现 PostgreSQL wire protocol，并在引擎里执行 SQL。
 
 本地环境把它们放在不同端口。
 

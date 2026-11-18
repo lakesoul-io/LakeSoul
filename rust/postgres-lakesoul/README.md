@@ -1,8 +1,8 @@
 # PostgreSQL SQL compatibility tests
 
-`postgres-lakesoul` is a LakeSoul service that speaks the PostgreSQL protocol: it supports queries, `CREATE TABLE`/`DROP TABLE`, the schema-evolution forms of `ALTER TABLE`, `INSERT`, `UPDATE` on non-CDC primary-key tables, and the general `INSERT ... ON CONFLICT DO UPDATE` within the boundaries below, but is not a complete PostgreSQL. The matrix below records the concrete evidence for each integration target; it does not treat every DataFusion SQL capability as verified compatibility.
+`postgres-lakesoul` is a LakeSoul service that implements the PostgreSQL protocol: it supports queries, `CREATE TABLE`/`DROP TABLE`, the schema-evolution forms of `ALTER TABLE`, `INSERT`, `UPDATE` on non-CDC primary-key tables, and the general `INSERT ... ON CONFLICT DO UPDATE` within the boundaries below, but is not a complete PostgreSQL. The matrix below records the concrete evidence for each integration target; it does not treat every DataFusion SQL capability as verified compatibility.
 
-> Experimental feature: the same binary can run the P0 PostgreSQL logical-replication subscriber with `--subscribe`; the server also supports `CREATE/DROP/ALTER SUBSCRIPTION` and performs synchronization through a local child process, see [SUBSCRIBE_P0.md](SUBSCRIBE_P0.md). It is not part of the SQL compatibility matrix below.
+> The same binary can run the PostgreSQL logical-replication subscriber with `--subscribe`; the server also supports `CREATE/DROP/ALTER SUBSCRIPTION` and performs synchronization through a local child process, see the [subscription design notes](SUBSCRIBE.md). It is not part of the SQL compatibility matrix below.
 
 ## Running
 
@@ -53,7 +53,7 @@ INSERT INTO target ...;
 - A rebuild happens automatically when the definition changes or the state is empty or dirty. A rebuild uses a single atomic `UpdateCommit` against the user-visible target and does not truncate first, so readers never see an empty table.
 - The target table can use `PARTITIONED BY`. IVM records the partitions it has published; a rebuild replaces only those partitions and leaves all others untouched.
 - If an external engine produces a data commit in a partition IVM owns or is writing in this run, IVM detects it at refresh start and before commit and reports an error; compaction commits are allowed. Ordinary batch/streaming writes on different partitions can coexist with IVM.
-- IVM works together with distributed mode (experimental). The coordinator owns refresh orchestration, epochs, and commits; workers execute serializable scan/lookup/write stages, writing only staged files and never `ivm.epochs`. Example:
+- IVM works together with distributed mode. The coordinator owns refresh orchestration, epochs, and commits; workers execute serializable scan/lookup/write stages, writing only staged files and never `ivm.epochs`. Example:
 
   ```sh
   postgres-lakesoul \

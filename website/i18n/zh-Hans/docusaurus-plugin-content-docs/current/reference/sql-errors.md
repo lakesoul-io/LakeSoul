@@ -17,7 +17,7 @@ PostgreSQL 前端在行为能够清晰映射时返回标准 SQLSTATE，并记录
 
 | SQLSTATE | 名称 | 常见原因 |
 | --- | --- | --- |
-| `0A000` | feature_not_supported | `UPDATE`、`DELETE`、`COPY`、`RETURNING`、不支持的 DDL 子句、事务块内写入 |
+| `0A000` | feature_not_supported | `DELETE`、`COPY ... TO STDOUT`、`CREATE TABLE AS`、`TRUNCATE`、非 `READ COMMITTED` 隔离级别、不支持的 DDL 子句 |
 | `21000` | cardinality_violation | 标量子查询返回多行 |
 | `22007` | invalid_datetime_format | 时间戳或日期字面量无法解析 |
 | `22023` | invalid_parameter_value | 非法的 `SET` 值或表选项 |

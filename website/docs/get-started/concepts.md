@@ -61,8 +61,8 @@ writes only the changed rows.
 
 1. The **metadata store** holds the catalog and commit records. It is
    infrastructure; users do not query tables through it.
-2. The **PostgreSQL endpoint** (`postgres-lakesoul`) speaks the PostgreSQL wire
-   protocol to users and executes SQL in the engine.
+2. The **PostgreSQL endpoint** (`postgres-lakesoul`) implements the PostgreSQL
+   wire protocol and executes SQL in the engine.
 
 Keep them on separate ports in local setups.
 

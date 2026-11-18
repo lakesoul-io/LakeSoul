@@ -37,7 +37,7 @@ SPDX-License-Identifier: Apache-2.0
 | `--jwt-auth` | 关闭 | 要求连接以 LakeSoul JWT 作为密码（`LAKESOUL_PG_JWT_AUTH`） |
 | `--rbac` | 关闭 | 把每条连接限制在 token 的域内（`LAKESOUL_PG_RBAC`，需要 `--jwt-auth`） |
 
-v1 中 `--ivm` 与分布式执行互斥。
+增量 SQL 与分布式执行可以同时启用；每个 worker 都必须启用 IVM，并使用相同的协议版本。
 
 `--jwt-auth` 与 `--rbac` 详见[认证与域隔离](authentication.md)。
 

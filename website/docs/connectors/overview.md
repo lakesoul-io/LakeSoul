@@ -10,9 +10,10 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-Connectors are optional. The engine speaks PostgreSQL and exposes a Python SDK;
-the pages in this section are for teams that already run Spark, Flink, Presto or
-another engine and want it to read or write the same tables.
+Connectors are optional. The engine implements the PostgreSQL wire protocol and
+exposes a Python SDK; the pages in this section are for teams that already run
+Spark, Flink, Presto or another engine and want it to read or write the same
+tables.
 
 | Connector | Version | Read | Write | Interface |
 | --- | --- | --- | --- | --- |

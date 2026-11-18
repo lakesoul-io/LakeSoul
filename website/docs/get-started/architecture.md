@@ -36,7 +36,8 @@ storage at the bottom.
 | **Catalog and commit protocol** | Tables, namespaces, snapshots and atomic commits, stored in PostgreSQL |
 | **Native IO** | Parquet, Vortex and Vortex Compact; merge-on-read for primary-key tables; object-store cache |
 | **Execution** | DataFusion planning and vectorized execution, plus LakeSoul planner rules |
-| **PostgreSQL front end** | Wire protocol, `pg_catalog`, DDL, `INSERT`, query sessions and limits |
+| **PostgreSQL front end** | Wire protocol, `pg_catalog`, DDL, DML, transactions, query sessions and limits |
+| **Federation and subscriptions** | ADBC foreign tables and S3 external files; PostgreSQL logical replication and MySQL binlog subscriptions |
 | **Incremental SQL** | Consumes the source commit log and writes only changed rows to the target |
 | **Vector and full-text indexes** | IVF + RaBitQ and Tantivy BM25, maintained on write and pushed into the scan |
 | **Compaction** | Disaggregated, size-tiered merge of delta files |
@@ -48,8 +49,8 @@ The name "PostgreSQL" appears twice, in different places:
 1. **The metadata store.** LakeSoul uses a PostgreSQL database for its catalog and
    commit records. This is infrastructure; users do not connect to it to query
    tables.
-2. **The PostgreSQL endpoint.** `postgres-lakesoul` speaks the PostgreSQL wire
-   protocol to users. It is the LakeSoul engine, not the metadata database.
+2. **The PostgreSQL endpoint.** `postgres-lakesoul` implements the PostgreSQL
+   wire protocol. It is the LakeSoul engine, not the metadata database.
 
 Keep the two on separate ports in local setups. The quick start uses `5432` for
 metadata and `5433` for the endpoint.
@@ -60,7 +61,7 @@ metadata and `5433` for the endpoint.
   the commit metadata in PostgreSQL.
 - **Compute is stateless.** A `postgres-lakesoul` process can be restarted or
   replaced without moving data. With distributed workers configured, queries are
-  planned across them.
+  planned across them and the same tables scale to a PB-scale cluster.
 - **One snapshot.** The PostgreSQL endpoint, the Python SDK and the connectors
   read the same committed snapshot. There is no second copy for search or AI.
 

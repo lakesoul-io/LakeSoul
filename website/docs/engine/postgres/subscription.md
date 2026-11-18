@@ -435,9 +435,9 @@ committed to LakeSoul per batch; no global transaction spans worker tasks.
 Supported source types are signed/unsigned integers, `DECIMAL(p<=38)`,
 `FLOAT`/`DOUBLE`, `DATE`, `DATETIME`, `TIMESTAMP`, `TIME` (stored as Int64
 microseconds), `YEAR`, text/char, binary/varbinary/blob, `BIT` (stored as
-Binary), `ENUM`, `SET` and `JSON`. P0 rejects `GEOMETRY`, `VECTOR`, `DECIMAL`
-above 38 digits, text that cannot be decoded in its declared charset, and zero
-dates. `ALTER TABLE`
+Binary), `ENUM`, `SET` and `JSON`. Unsupported source types are `GEOMETRY`,
+`VECTOR`, `DECIMAL` above 38 digits, text that cannot be decoded in its declared
+charset, and zero dates. `ALTER TABLE`
 supports `ADD COLUMN`, safe numeric widening and relaxing `NOT NULL`;
 `DROP`/`RENAME`/`TRUNCATE` and narrowing are rejected.
 

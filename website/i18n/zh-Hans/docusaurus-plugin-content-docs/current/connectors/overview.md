@@ -11,7 +11,7 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-连接器是可选的。引擎本身说 PostgreSQL，并提供 Python SDK；这一节面向已经在用 Spark、Flink、Presto 或其他引擎、希望它们读写同一批表的团队。
+连接器是可选的。引擎实现 PostgreSQL wire protocol，并提供 Python SDK；这一节面向已经在用 Spark、Flink、Presto 或其他引擎、希望它们读写同一批表的团队。
 
 | 连接器 | 版本 | 读取 | 写入 | 接口 |
 | --- | --- | --- | --- | --- |

@@ -11,7 +11,7 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-`postgres-lakesoul` 是说 PostgreSQL wire protocol 的 LakeSoul 引擎。把 `psql`、JDBC、`pgx` 或 BI 工具接到它上面，语句就在湖仓引擎里、在对象存储上执行。
+`postgres-lakesoul` 是实现了 PostgreSQL wire protocol 的 LakeSoul 引擎。把 `psql`、JDBC、`pgx` 或 BI 工具接到它上面，语句就在湖仓引擎里、在对象存储上执行。
 
 它不是 PostgreSQL 扩展。没有 Postgres 进程执行查询，也没有数据被复制进 Postgres 堆表；元数据库是独立的基础设施。
 
@@ -30,11 +30,11 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 | --- | --- |
 | **连接** | PostgreSQL wire protocol、simple 与 extended query protocol、`pg_catalog`、`psql \d` |
 | **DDL** | `CREATE TABLE`、`DROP TABLE`、主键、`PARTITIONED BY`、`WITH (...)` 选项 |
-| **写入** | `INSERT ... VALUES`、`INSERT ... SELECT`、`COPY ... FROM STDIN`、非 CDC 主键表上的 `UPDATE`、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
+| **写入** | `INSERT ... VALUES`（含 `RETURNING`）、`INSERT ... SELECT`、`COPY ... FROM STDIN`、非 CDC 主键表上的 `UPDATE`、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | **查询** | DataFusion SQL 表面，包括 join、聚合、窗口、CTE 和集合运算 |
 | **检索** | 兼容 pgvector 的向量操作符、BM25 的 `text_score` |
 | **增量 SQL** | 会话开启后，`INSERT ... SELECT` 维护目标表 |
-| **订阅** | `CREATE/DROP/ALTER SUBSCRIPTION` 把一张源 PostgreSQL 表复制到 LakeSoul CDC 表 |
+| **订阅** | `CREATE/DROP/ALTER SUBSCRIPTION` 把 PostgreSQL logical replication 或 MySQL binlog 的变更写入 LakeSoul CDC 表，支持受管快照、schema evolution 和多表订阅 |
 | **后台查询** | `lakesoul_submit` 让长 `SELECT` / `INSERT ... SELECT` 脱离提交连接运行，之后可按 query id 轮询、取结果和取消 |
 | **事务** | Autocommit 和显式事务块；`READ COMMITTED`；写入使用 deferred publication；失败事务恢复 |
 | **目录** | 一个 database 映射一个 LakeSoul namespace；用户表在 `public` |

@@ -36,7 +36,8 @@ SPDX-License-Identifier: Apache-2.0
 | `--jwt-auth` | off | Require a LakeSoul JWT as the connection password (`LAKESOUL_PG_JWT_AUTH`) |
 | `--rbac` | off | Confine each connection to the token's domain (`LAKESOUL_PG_RBAC`, requires `--jwt-auth`) |
 
-`--ivm` and distributed execution are mutually exclusive in v1.
+Incremental SQL and distributed execution can be enabled together; every worker
+must be built with IVM and the same protocol generation.
 
 `--jwt-auth` and `--rbac` are covered in
 [Authentication and domains](authentication.md).

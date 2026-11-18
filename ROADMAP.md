@@ -21,9 +21,8 @@ design sketch; anything in *Later* is a direction we want feedback on.
 
 ## Now
 
-- **Complete the PostgreSQL write surface.** `UPDATE`, `DELETE`, `COPY`,
-  `RETURNING`, expression assignments in `ON CONFLICT DO UPDATE`, and writes inside
-  a transaction block.
+- **Complete the PostgreSQL write surface.** `DELETE`, `COPY ... TO STDOUT`, and
+  the remaining client and catalog gaps tracked in the compatibility matrix.
 - **pgvector coverage.** Complete the operator, cast and index-option surface, and
   document exactly what is covered.
 - **Incremental SQL GA.** More query shapes, a stable way to declare a target and
@@ -33,9 +32,6 @@ design sketch; anything in *Later* is a direction we want feedback on.
 
 ## Next
 
-- **Distributed incremental SQL.** Push incremental SQL and compaction to the
-  distributed executor; today incremental SQL and distributed mode are mutually
-  exclusive.
 - **Secondary indexes in Spark and Flink.** The index framework and the vector and
   full-text kinds exist; the JVM connectors do not use them yet.
 - **External catalog interoperability.** Let engines that do not link the native
@@ -54,9 +50,19 @@ design sketch; anything in *Later* is a direction we want feedback on.
 ### 2026
 
 - **PostgreSQL front end.** Wire protocol and extended query protocol; `CREATE
-  TABLE`, `DROP TABLE` and partitioned DDL; `INSERT` with `ON CONFLICT DO NOTHING`
-  and `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col`; `pg_catalog`, `psql \d`,
-  namespace-to-database mapping.
+  TABLE`, `DROP TABLE` and partitioned DDL; `INSERT` with `RETURNING` and
+  `ON CONFLICT ... DO UPDATE`; `UPDATE`, `COPY ... FROM STDIN`; explicit
+  transaction blocks; `pg_catalog`, `psql \d`, namespace-to-database mapping;
+  a real-client baseline for psql, psycopg, SQLAlchemy and pgjdbc.
+- **Federation.** ADBC foreign tables for PostgreSQL, MySQL, SQLite, DuckDB,
+  BigQuery, Snowflake and Trino; S3 external files; remote and local tables in
+  one plan.
+- **CDC subscriptions.** PostgreSQL logical replication and MySQL binlog into
+  LakeSoul CDC tables, with managed snapshots, multi-table subscriptions and
+  schema evolution.
+- **Distributed execution.** Metadata-only scan planning, cache-locality task
+  routing, a coordinator with `lakesoul-worker` processes, Kubernetes discovery,
+  and distributed incremental SQL.
 - **Incremental SQL through PostgreSQL.** `SET lakesoul.ivm.enabled = on` makes
   `INSERT ... SELECT` update the target from the source changelog, with atomic
   rebuilds and a per-target lease.

@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 <img src='https://github.com/lfai/artwork/blob/main/other/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20INSERT%20%2B%20query-green.svg)](#postgres-%E5%8E%9F%E7%94%9F)
+[![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20DML%20%2B%20COPY-green.svg)](#postgres-%E5%8E%9F%E7%94%9F)
 [![pgvector](https://img.shields.io/badge/pgvector-compatible%20SQL-purple.svg)](#%E5%90%91%E9%87%8F%E5%8E%9F%E7%94%9F)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](#python-%E5%8E%9F%E7%94%9F)
 [![Daft](https://img.shields.io/badge/Daft-multimodal-orange.svg)](#python-%E5%8E%9F%E7%94%9F)
@@ -19,16 +19,18 @@ SPDX-License-Identifier: Apache-2.0
 
 # LakeSoul
 
-**Postgres 原生。Vector 原生。Python 原生。**<br>
-一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。
+**Agent-native 湖仓。**<br>
+Postgres 原生。Vector 原生。Python 原生。Apache 2.0。
 
-把已经在用的工具接上来 —— `psql`、Python、兼容 pgvector 的 SQL —— 底下是一个增量湖仓。
+默认的答案，是为 Agent 重新拼一套复杂的数据平台：分析用数仓，新鲜度用 CDC 管道，检索用向量库，状态用 OLTP 库，再用 ETL 把它们对齐。每多一个系统，Agent 就多学一套 API，数据也多一份需要对齐的副本；闭源平台还会把数据锁住。
+
+LakeSoul 选择另一条路。Agent 通常已经具备 PostgreSQL 客户端，LakeSoul 通过 PostgreSQL wire protocol 提供一个开放湖仓：联邦查询可以直接访问数据所在的位置，CDC 订阅保持数据新鲜，向量与结构化检索进入同一个执行计划，增量 SQL 维护派生表，同一批表从单机平滑扩展到 PB 级分布式集群。数据保留在你的对象存储中，以 Parquet 和 Vortex 文件保存，代码使用 Apache 2.0 许可。
 
 [快速开始](#快速开始) · [架构](#架构) · [文档](https://lakesoul-io.github.io/zh-Hans/docs/engine/overview)
 
 ## Postgres 原生
 
-把任意 PostgreSQL 客户端接到 LakeSoul。`CREATE TABLE`、`INSERT ... ON CONFLICT` 和查询都在湖仓引擎里执行，直接落在对象存储上 —— 不是 sidecar，也不走 CDC 管道。
+把任意 PostgreSQL 客户端接到 LakeSoul。`CREATE TABLE`、`INSERT ... ON CONFLICT`、`UPDATE`、`COPY ... FROM STDIN` 和查询都在湖仓引擎里执行，直接落在对象存储上 —— 不是 sidecar，也不走 CDC 管道。
 
 ```sql
 CREATE TABLE orders (
@@ -45,11 +47,11 @@ SET region = EXCLUDED.region,
 SELECT region, sum(amount) FROM orders GROUP BY 1;
 ```
 
-wire protocol、扩展查询协议、`pg_catalog` 和 `psql \d` 都可用。但这不是 drop-in 的 PostgreSQL：`UPDATE`、`DELETE`、`COPY`、`RETURNING` 以及非 `READ COMMITTED` 隔离级别会返回 `0A000`，写入必须在 autocommit 下执行。
+端点实现 PostgreSQL wire protocol、扩展查询协议、`pg_catalog` 和 `psql \d`。DDL、`INSERT ... ON CONFLICT`、`UPDATE`、`COPY ... FROM STDIN`、`RETURNING` 和显式事务块都在湖仓引擎里、在对象存储上执行。具体 SQL 范围见[兼容性矩阵](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/compatibility)。
 
 ### PostgreSQL 订阅
 
-同一个端点也可以订阅源 PostgreSQL，把变更持续写入 LakeSoul CDC 表。用 SQL 定义订阅；端点会校验 publication 和目标表，执行受管初始快照，并拉起受监管的本地订阅进程。
+同一个端点可以订阅 PostgreSQL 和 MySQL 源，把变更持续写入 LakeSoul CDC 表。用 SQL 定义订阅；端点会校验源和目标表，执行受管初始快照，并拉起受监管的本地订阅进程。一个订阅可以映射多张源表。
 
 ```sql
 CREATE SUBSCRIPTION users_from_app
@@ -64,7 +66,7 @@ WITH (
 );
 ```
 
-源库需要开启 logical WAL、创建 publication，并设置 `REPLICA IDENTITY FULL`；目标端是可以按源 schema 自动创建或预先创建的 LakeSoul CDC 表；managed 快照要求目标表为空。源端 schema 变化时，订阅端会自动追加 nullable 列并安全放宽类型。初始拷贝按 CTID 范围并行执行（`snapshot_parallelism`、`snapshot_memory_bytes`）。用 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` 和 `DROP SUBSCRIPTION` 管理进程。一个订阅可以映射多张源表；每张表独立 snapshot 和 commit。完整配置和 SQL 参考见 [PostgreSQL 订阅](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/subscription)。
+源库需要开启 logical WAL、创建 publication，并设置 `REPLICA IDENTITY FULL`；目标端是可以按源 schema 自动创建或预先创建的 LakeSoul CDC 表。源端 schema 变化时，订阅端会自动追加 nullable 列并安全放宽类型。初始拷贝按 CTID 范围并行执行（`snapshot_parallelism`、`snapshot_memory_bytes`）。用 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` 和 `DROP SUBSCRIPTION` 管理进程。一个订阅可以映射多张源表；每张表独立 snapshot 和 commit。MySQL 8.0/8.4 源使用同一条语句和 `TABLES (...)`，订阅端读取 row-based binlog。完整配置和 SQL 参考见 [PostgreSQL 订阅](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/subscription)。
 
 ## 高效的 SQL 增量计算
 
@@ -175,10 +177,12 @@ print(catalog.scan("t").to_arrow_table().num_rows)
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **PostgreSQL 前端** —— wire protocol、`pg_catalog`、DDL 与 `INSERT`，由引擎执行，而不是由 Postgres 扩展执行
+- **PostgreSQL 前端** —— wire protocol、`pg_catalog`、DDL、DML 与显式事务块，由引擎执行，而不是由 Postgres 扩展执行
+- **联邦查询与 CDC** —— ADBC foreign table 与 PostgreSQL/MySQL 订阅，无需额外的数据管道即可接入外部数据
 - **增量 SQL** —— 每次执行消费表自己的 commit log，只写变化的行，可安全重放
 - **向量与全文索引** —— IVF + RaBitQ 与 Tantivy BM25，写入时自动维护
 - **Native IO** —— 对象存储上的 Parquet、Vortex、Vortex Compact，主键表走 merge-on-read
+- **分布式执行** —— coordinator 在多个 `lakesoul-worker` 之间规划任务；同一批表从单进程扩展到 PB 级集群
 
 ## 与其他方案对比
 
@@ -197,10 +201,11 @@ print(catalog.scan("t").to_arrow_table().num_rows)
 
 ## 接入你的技术栈
 
-- **PostgreSQL 客户端** —— `psql`、pgAdmin、DBeaver、JDBC、libpq
+- **PostgreSQL 客户端** —— `psql`、pgAdmin、DBeaver、JDBC、libpq、psycopg、SQLAlchemy
+- **数据源** —— PostgreSQL logical replication、MySQL binlog、ADBC foreign table（PostgreSQL、MySQL、SQLite、DuckDB、BigQuery、Snowflake、Trino）、S3 文件
 - **Python** —— Pandas、PyArrow、DuckDB、Daft、Ray、PyTorch、Hugging Face Datasets
 - **引擎** —— Spark 3.5、Flink 1.20、Presto 0.296
-- **BI** —— Superset、Metabase，以及任何支持 PostgreSQL 的工具
+- **BI** —— Superset、Metabase，以及任何支持 PostgreSQL 协议的工具
 
 ## 社区
 

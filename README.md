@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 <img src='https://github.com/lfai/artwork/blob/main/other/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20INSERT%20%2B%20query-green.svg)](#postgres-native)
+[![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20DML%20%2B%20COPY-green.svg)](#postgres-native)
 [![pgvector](https://img.shields.io/badge/pgvector-compatible%20SQL-purple.svg)](#vector-native)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-yellow.svg)](#python-native)
 [![Daft](https://img.shields.io/badge/Daft-multimodal-orange.svg)](#python-native)
@@ -19,20 +19,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # LakeSoul
 
-**Postgres-native. Vector-native. Python-native.**<br>
-An open lakehouse engine — a shared catalog, ACID upserts, SQL, incremental
-compute, vector search and a Python SDK, in Rust, over your object storage.
+**The agent-native lakehouse.**<br>
+Postgres-native. Vector-native. Python-native. Apache 2.0.
 
-Point the tools you already use at it — `psql`, Python, pgvector-compatible SQL — and
-get an incremental lakehouse underneath.
+The default answer to agent data infrastructure is to assemble a platform: a
+warehouse for analytics, a CDC pipeline for freshness, a vector database for
+retrieval, an OLTP database for state, and ETL to keep them consistent. Each
+system is another API for the agent to learn and another copy of the data to
+reconcile; a closed platform adds a lock-in you cannot undo.
+
+LakeSoul takes another path. Agents already have PostgreSQL clients, so LakeSoul
+puts an open lakehouse behind the PostgreSQL wire protocol: federated queries
+over data where it lives, CDC subscriptions for freshness, vector and structured
+search in one plan, incremental SQL, and the same tables from a single process to
+a PB-scale distributed cluster. Data stays in your object store, in Parquet and
+Vortex, under Apache 2.0.
 
 [Quick Start](#quick-start) · [Architecture](#architecture) · [Docs](https://lakesoul-io.github.io/docs/engine/overview)
 
 ## Postgres-native
 
-Point any PostgreSQL client at LakeSoul. `CREATE TABLE`, `INSERT ... ON CONFLICT`
-and queries run in the lakehouse engine, against object storage — not in a
-sidecar, and not through a CDC pipeline.
+Point any PostgreSQL client at LakeSoul. `CREATE TABLE`, `INSERT ... ON CONFLICT`,
+`UPDATE`, `COPY ... FROM STDIN` and queries run in the lakehouse engine, against
+object storage — not in a sidecar, and not through a CDC pipeline.
 
 ```sql
 CREATE TABLE orders (
@@ -49,17 +58,19 @@ SET region = EXCLUDED.region,
 SELECT region, sum(amount) FROM orders GROUP BY 1;
 ```
 
-The wire protocol, the extended query protocol, `pg_catalog` and `psql \d` all
-work. This is not a drop-in PostgreSQL: `UPDATE`, `DELETE`, `COPY`, `RETURNING`
-and non-`READ COMMITTED` isolation are refused with `0A000`, and writes must be
-autocommit.
+The endpoint implements the PostgreSQL wire protocol, the extended query
+protocol, `pg_catalog` and `psql \d`. DDL, `INSERT ... ON CONFLICT`, `UPDATE`,
+`COPY ... FROM STDIN`, `RETURNING` and explicit transaction blocks execute in the
+lakehouse engine over object storage. The
+[compatibility matrix](https://lakesoul-io.github.io/docs/engine/postgres/compatibility)
+tracks the exact SQL surface.
 
 ### PostgreSQL subscriptions
 
-The same endpoint can subscribe to a source PostgreSQL database and keep a
-LakeSoul CDC table in sync. Define the subscription with SQL; the endpoint
-validates the publication and target, takes a managed snapshot, and starts a
-supervised local subscriber process.
+The same endpoint can subscribe to PostgreSQL and MySQL sources and keep LakeSoul
+CDC tables in sync. Define the subscription with SQL; the endpoint validates the
+source and target, takes a managed snapshot, and starts a supervised local
+subscriber process. One subscription can map multiple source tables.
 
 ```sql
 CREATE SUBSCRIPTION users_from_app
@@ -76,12 +87,13 @@ WITH (
 
 The source needs logical WAL, a publication, and `REPLICA IDENTITY FULL`; the
 target is a LakeSoul CDC table that can be created automatically from the source
-schema or pre-created; a managed snapshot requires it to be empty. The
+schema or pre-created. The
 subscriber adds nullable columns and widens safe types when the source schema
 changes. The initial copy runs in parallel across CTID ranges (`snapshot_parallelism`, `snapshot_memory_bytes`).
 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` and `DROP SUBSCRIPTION` control the
 process. A subscription can map one or more source tables; each table snapshots
-and commits independently. See
+and commits independently. MySQL 8.0/8.4 sources use the same statement with
+`TABLES (...)`; the subscriber reads the row-based binlog. See
 [PostgreSQL subscriptions](https://lakesoul-io.github.io/docs/engine/postgres/subscription)
 for the full setup and SQL reference.
 
@@ -202,14 +214,18 @@ storage configuration and the full local setup.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **PostgreSQL front end** — wire protocol, `pg_catalog`, DDL and `INSERT`,
-  executed by the engine rather than by a Postgres extension
+- **PostgreSQL front end** — wire protocol, `pg_catalog`, DDL, DML and explicit
+  transaction blocks, executed by the engine rather than by a Postgres extension
+- **Federated query and CDC** — ADBC foreign tables and PostgreSQL/MySQL
+  subscriptions bring external data in without a separate pipeline
 - **Incremental SQL** — each run consumes the table's own commit log and writes
   only changed rows, replay-safe
 - **Vector and full-text indexes** — IVF + RaBitQ and Tantivy BM25, maintained on
   write
 - **Native IO** — Parquet, Vortex and Vortex Compact over object storage, with
   merge-on-read for primary-key tables
+- **Distributed execution** — a coordinator plans across `lakesoul-worker`
+  processes; the same tables scale from one process to a PB-scale cluster
 
 ## How it compares
 
@@ -232,10 +248,12 @@ pg_mooncake, and Lakebase. The dated, sourced comparison lives in the docs.
 
 ## Works with your stack
 
-- **PostgreSQL clients** — `psql`, pgAdmin, DBeaver, JDBC, libpq
+- **PostgreSQL clients** — `psql`, pgAdmin, DBeaver, JDBC, libpq, psycopg, SQLAlchemy
+- **Sources** — PostgreSQL logical replication, MySQL binlog, ADBC foreign tables
+  (PostgreSQL, MySQL, SQLite, DuckDB, BigQuery, Snowflake, Trino), S3 files
 - **Python** — Pandas, PyArrow, DuckDB, Daft, Ray, PyTorch, Hugging Face Datasets
 - **Engines** — Spark 3.5, Flink 1.20, Presto 0.296
-- **BI** — Superset, Metabase, and anything else that speaks PostgreSQL
+- **BI** — Superset, Metabase, and anything else that uses the PostgreSQL protocol
 
 ## Community
 
