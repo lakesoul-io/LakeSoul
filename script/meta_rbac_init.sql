@@ -537,8 +537,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO base_user
 -- admins are not allowed to modify global_config table
 REVOKE INSERT, UPDATE, DELETE ON TABLE global_config FROM base_admin_role;
 
--- users are not allowed to modify global_config, namespace and casbin_rule table
-REVOKE INSERT, UPDATE, DELETE ON TABLE namespace FROM base_user_role;
+-- Users may create/delete their own namespaces in their domain; the ACL RLS
+-- policies decide which namespace rows they can create or modify. They still
+-- cannot touch global_config or casbin_rule.
 REVOKE INSERT, UPDATE, DELETE ON TABLE global_config FROM base_user_role;
 REVOKE INSERT, UPDATE, DELETE ON TABLE casbin_rule FROM base_user_role;
 
