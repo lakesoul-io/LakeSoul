@@ -804,7 +804,25 @@ def align_daft(
     def sampler(*args: Any) -> list[dict[str, Any]]:
         left_lists = args[: len(left_names)]
         right_lists = args[len(left_names) :]
+        # Daft's groupby does not guarantee the order of list_agg inputs
+        # across partitions and workers. Restore the per-episode order before
+        # aligning timestamps.
+        left_on_index = left_names.index(on)
+        left_order = sorted(
+            range(len(left_lists[left_on_index])),
+            key=left_lists[left_on_index].__getitem__,
+        )
+        if any(position != index for position, index in enumerate(left_order)):
+            left_lists = [
+                [values[index] for index in left_order] for values in left_lists
+            ]
         right_on = right_lists[0]
+        right_order = sorted(range(len(right_on)), key=right_on.__getitem__)
+        if any(position != index for position, index in enumerate(right_order)):
+            right_lists = [
+                [values[index] for index in right_order] for values in right_lists
+            ]
+            right_on = right_lists[0]
         right_values = right_lists[1 : 1 + right_count]
         right_table = stream_table_from_rows(
             [
@@ -999,6 +1017,20 @@ def _sample_pipeline(
         window_values = args[cursor : cursor + len(names)]
         cursor += len(names)
         stream_values = args[cursor:]
+        # Daft's groupby does not guarantee the order of list_agg inputs
+        # across partitions and workers. Windows are row offsets, so restore
+        # the order of every list in the episode before building them.
+        order = sorted(range(len(order_values)), key=order_values.__getitem__)
+        if any(position != index for position, index in enumerate(order)):
+            order_values = [order_values[index] for index in order]
+            window_values = [
+                [values[index] for index in order] for values in window_values
+            ]
+            if on_values is not None:
+                on_values = [on_values[index] for index in order]
+            stream_values = tuple(
+                [values[index] for index in order] for values in stream_values
+            )
         chunks: list[tuple[Any, ...]] = []
         offset = 0
         for size in stream_chunk_sizes:
