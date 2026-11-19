@@ -86,8 +86,17 @@
 //! must therefore be refreshed inside that retention window; older history can
 //! be removed and the view then rebuilds from the current state. The legacy
 //! Spark `CleanExpiredData` and `cleanOldCompaction` paths are not covered.
-//! Cursor-aware garbage collection (checking
-//! `min(ivm.cursors.last_timestamp)` before deleting) is not implemented.
+//!
+//! The Flink `NewCleanJob` is cursor aware: for each source table and
+//! partition it retains every version at or after the oldest
+//! `ivm.cursors.last_version` of a view consuming that partition, in addition
+//! to the `dataExpiredTime`, pinned and latest rules.  A view may therefore
+//! refresh less often than the clean job's retention window; once every
+//! consumer advances past a version, the next cleanup cycle can reclaim it.
+//! Versions recorded as a pending epoch's before image
+//! (`ivm.pending_versions`) are kept until the epoch commits, aborts or is
+//! rebuilt.  `ivm.source_streams` exposes the per-partition cursor watermark
+//! and lag for alerting.
 
 pub mod config;
 #[cfg(feature = "distributed")]

@@ -42,6 +42,7 @@ public class DiscardFileDeleteFunctionTest {
     private static final String PARTITION = "-5";
 
     private final String tableId = "discard_guard_" + UUID.randomUUID().toString().replace("-", "");
+    private final String viewId = "discard_view_" + UUID.randomUUID().toString().replace("-", "");
     private final String oldCommit = UUID.randomUUID().toString();
     private final String recentCommit = UUID.randomUUID().toString();
     private final String latestCommit = UUID.randomUUID().toString();
@@ -93,6 +94,8 @@ public class DiscardFileDeleteFunctionTest {
                     "delete from discard_compressed_file_info where table_path = 'file://"
                             + root
                             + "'");
+            st.executeUpdate("delete from ivm.cursors where view_id = '" + viewId + "'");
+            st.executeUpdate("delete from ivm.epochs where view_id = '" + tableId + "'");
             st.executeUpdate("delete from data_commit_info where table_id = '" + tableId + "'");
             st.executeUpdate("delete from partition_info where table_id = '" + tableId + "'");
             st.executeUpdate("delete from table_info where table_id = '" + tableId + "'");
@@ -134,6 +137,61 @@ public class DiscardFileDeleteFunctionTest {
                     "the latest snapshot always protects its files",
                     protectedPaths.contains(latestPath));
             assertEquals(1, protectedPaths.size());
+        }
+    }
+
+    @Test
+    public void cursorRetainsDiscardPathsAboveTheWatermark() throws Exception {
+        long retainedAfter = System.currentTimeMillis();
+        try (Connection conn = open();
+                Statement st = conn.createStatement()) {
+            st.executeUpdate(
+                    String.format(
+                            "insert into ivm.cursors(view_id, source_table_id, partition_desc,"
+                                    + " last_version, last_timestamp) values"
+                                    + " ('%s','%s','%s',1,%d)",
+                            viewId, tableId, PARTITION, retainedAfter - 5 * 60_000L));
+        }
+        List<String> paths = Arrays.asList(oldPath, recentPath, latestPath);
+        try (Connection conn = open()) {
+            List<String> protectedPaths =
+                    DiscardFileDeleteFunction.protectedPaths(conn, paths, retainedAfter);
+            assertFalse(
+                    "the version below the cursor is reclaimable",
+                    protectedPaths.contains(oldPath));
+            assertTrue(
+                    "the version at the cursor is still needed",
+                    protectedPaths.contains(recentPath));
+            assertTrue("the latest version is always needed", protectedPaths.contains(latestPath));
+            assertEquals(2, protectedPaths.size());
+        }
+    }
+
+    @Test
+    public void pendingEpochRetainsItsBeforeImageDiscardPath() throws Exception {
+        long retainedAfter = System.currentTimeMillis();
+        try (Connection conn = open();
+                Statement st = conn.createStatement()) {
+            st.executeUpdate(
+                    String.format(
+                            "insert into ivm.epochs(view_id, generation, epoch, window_key, status,"
+                                    + " to_versions, mv_versions_before, state_versions_before,"
+                                    + " created_at) values"
+                                    + " ('%s',1,1,'pending-discard','pending','[]'::jsonb,"
+                                    + " '[{\"partition_desc\":\"%s\",\"version\":0}]'::jsonb,"
+                                    + " '[]'::jsonb,0)",
+                            tableId, PARTITION));
+        }
+        List<String> paths = Arrays.asList(oldPath, recentPath, latestPath);
+        try (Connection conn = open()) {
+            List<String> protectedPaths =
+                    DiscardFileDeleteFunction.protectedPaths(conn, paths, retainedAfter);
+            assertTrue(
+                    "a pending epoch's before image protects its old file",
+                    protectedPaths.contains(oldPath));
+            assertFalse(protectedPaths.contains(recentPath));
+            assertTrue("the latest version is always needed", protectedPaths.contains(latestPath));
+            assertEquals(2, protectedPaths.size());
         }
     }
 

@@ -628,6 +628,9 @@ create table if not exists ivm.epochs
 create unique index if not exists ivm_epochs_window_key
     on ivm.epochs (view_id, generation, window_key);
 
+create index if not exists ivm_epochs_status
+    on ivm.epochs (status);
+
 create table if not exists ivm.states
 (
     view_id    text   not null,
@@ -672,3 +675,72 @@ create table if not exists ivm.view_partitions
     updated_at     bigint not null,
     primary key (view_id, partition_desc)
 );
+
+-- The cleanup service reads the minimum cursor of every view that consumes a
+-- source partition. The source side of this lookup is not covered by the
+-- primary key (view_id first), so index it explicitly.
+create index if not exists ivm_cursors_source_partition_version
+    on ivm.cursors (source_table_id, partition_desc, last_version);
+
+-- Source consumption status: for every source partition with at least one
+-- consumer, the slowest cursor (the retention watermark), the newest source
+-- version, and the resulting lag.  This is observability only; the Flink clean
+-- job enforces retention from ivm.cursors directly.
+create or replace view ivm.source_streams as
+select
+    c.source_table_id,
+    c.partition_desc,
+    min(c.last_version) as min_cursor_version,
+    max(c.last_version) as max_cursor_version,
+    min(c.last_timestamp) as min_cursor_timestamp,
+    max(c.last_timestamp) as max_cursor_timestamp,
+    count(*) as consumer_views,
+    array_agg(c.view_id order by c.view_id) as view_ids,
+    p.version as latest_version,
+    p.timestamp as latest_timestamp,
+    greatest(p.timestamp - min(c.last_timestamp), 0) as lag_ms
+from ivm.cursors c
+join lateral (
+    select version, timestamp
+    from partition_info
+    where table_id = c.source_table_id
+      and partition_desc = c.partition_desc
+    order by version desc
+    limit 1
+) p on true
+group by c.source_table_id, c.partition_desc, p.version, p.timestamp;
+
+-- Versions a pending refresh still needs for its before-image.  A pending
+-- epoch may outlive the clean job's timestamp window, so cleanup must keep
+-- these MV/state versions until the epoch commits, aborts or is rebuilt.
+create or replace view ivm.pending_versions as
+select distinct
+    e.view_id,
+    e.generation,
+    e.epoch,
+    e.view_id as table_id,
+    mv.partition_desc,
+    mv.version
+from ivm.epochs e
+cross join lateral jsonb_to_recordset(e.mv_versions_before)
+    as mv(partition_desc text, version bigint)
+where e.status = 'pending'
+union
+select distinct
+    e.view_id,
+    e.generation,
+    e.epoch,
+    state_table.table_id,
+    version_value.partition_desc,
+    version_value.version
+from ivm.epochs e
+cross join lateral jsonb_array_elements(e.state_versions_before) as state(value)
+cross join lateral (
+    select (state.value->>'table_id')::text as table_id,
+           jsonb_array_elements(state.value->'versions') as version_value
+) state_table
+cross join lateral (
+    select (state_table.version_value->>'partition_desc')::text as partition_desc,
+           (state_table.version_value->>'version')::bigint as version
+) version_value
+where e.status = 'pending';

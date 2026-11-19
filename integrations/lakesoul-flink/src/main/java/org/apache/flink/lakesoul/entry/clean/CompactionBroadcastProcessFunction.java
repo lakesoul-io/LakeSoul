@@ -196,25 +196,48 @@ public class CompactionBroadcastProcessFunction
                             value.version < state.get(key).switchVersion
                                     || latestCompactVersionIsOld;
                     try (Connection connection = dataSource.getConnection()) {
-                        boolean cleaned =
-                                cleanUtils.deleteFileAndDataCommitInfo(
-                                        value.snapshot,
+                        if (cleanUtils.isVersionRetainedByIvmCursor(
+                                        connection,
                                         value.tableId,
                                         value.partitionDesc,
+                                        value.version)
+                                || cleanUtils.isVersionRetainedByPendingEpoch(
                                         connection,
-                                        belongOldCompaction,
-                                        currTimestamp - expiredTime);
-                        if (cleaned) {
-                            cleanUtils.cleanPartitionInfo(
-                                    value.tableId, value.partitionDesc, value.version, connection);
+                                        value.tableId,
+                                        value.partitionDesc,
+                                        value.version)) {
+                            // A view has not consumed this version yet. Keep the
+                            // metadata and files and retry on the next timer;
+                            // over-retention is safe, deleting live history is not.
+                            long triggerTime = currTimestamp + ontimerInterval;
+                            timerTsState.update(triggerTime);
+                            ctx.timerService().registerProcessingTimeTimer(triggerTime);
+                            log.info(
+                                    ctx.getCurrentKey() + " 仍被 IVM cursor 保留，延迟清理至 " + triggerTime);
                         } else {
-                            log.warn(ctx.getCurrentKey() + " 清理未完成，保留 partition_info 等待重试");
+                            boolean cleaned =
+                                    cleanUtils.deleteFileAndDataCommitInfo(
+                                            value.snapshot,
+                                            value.tableId,
+                                            value.partitionDesc,
+                                            connection,
+                                            belongOldCompaction,
+                                            currTimestamp - expiredTime);
+                            if (cleaned) {
+                                cleanUtils.cleanPartitionInfo(
+                                        value.tableId,
+                                        value.partitionDesc,
+                                        value.version,
+                                        connection);
+                            } else {
+                                log.warn(ctx.getCurrentKey() + " 清理未完成，保留 partition_info 等待重试");
+                            }
+                            log.info(ctx.getCurrentKey() + " 执行旧版清理： " + belongOldCompaction);
+                            elementState.clear();
                         }
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
-                    log.info(ctx.getCurrentKey() + " 执行旧版清理： " + belongOldCompaction);
-                    elementState.clear();
                 } else {
                     long currentProcessingTime = ctx.timerService().currentProcessingTime();
                     long triggerTime = currentProcessingTime + ontimerInterval;
@@ -272,6 +295,21 @@ public class CompactionBroadcastProcessFunction
                                 || latestCompactVersionIsOld;
                 log.info(currentKey + " 执行旧版清理： " + belongOldCompaction);
                 try (Connection connection = dataSource.getConnection()) {
+                    if (cleanUtils.isVersionRetainedByIvmCursor(
+                                    connection, value.tableId, value.partitionDesc, value.version)
+                            || cleanUtils.isVersionRetainedByPendingEpoch(
+                                    connection,
+                                    value.tableId,
+                                    value.partitionDesc,
+                                    value.version)) {
+                        // A view still needs this version; keep both the metadata
+                        // and the files and try again on the next timer.
+                        long triggerTime = timestamp + ontimerInterval;
+                        timerTsState.update(triggerTime);
+                        ctx.timerService().registerProcessingTimeTimer(triggerTime);
+                        log.info(currentKey + " 仍被 IVM cursor 保留，延迟清理至 " + triggerTime);
+                        return;
+                    }
                     boolean cleaned =
                             cleanUtils.deleteFileAndDataCommitInfo(
                                     value.snapshot,

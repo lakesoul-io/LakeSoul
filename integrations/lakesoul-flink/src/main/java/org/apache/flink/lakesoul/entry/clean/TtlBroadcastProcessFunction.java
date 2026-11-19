@@ -208,6 +208,23 @@ public class TtlBroadcastProcessFunction
                         }
                     }
                 }
+                if (CleanUtils.hasIvmCursors(connection)) {
+                    // A whole-partition drop is not a changelog event. If any
+                    // view still consumes this partition, dropping it would
+                    // leave that view without history to replay.
+                    try (PreparedStatement statement =
+                            connection.prepareStatement(
+                                    "select 1 from ivm.cursors where source_table_id = ?"
+                                            + " and partition_desc = ? limit 1")) {
+                        statement.setString(1, tableId);
+                        statement.setString(2, partitionDesc);
+                        try (ResultSet rows = statement.executeQuery()) {
+                            if (rows.next()) {
+                                return false;
+                            }
+                        }
+                    }
+                }
                 List<String> paths = new ArrayList<>();
                 try (PreparedStatement statement =
                         connection.prepareStatement(
