@@ -73,6 +73,11 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
         state.register_udf(crate::udf::vector_search_marker::marker_udf())?;
         state.register_udf(crate::udf::vector_search_marker::multi_marker_udf())?;
         state.register_udf(std::sync::Arc::new(crate::udf::drop_index::udf()))?;
+        // JSON operators are scalar functions; resolve them by name from the
+        // registry before the proto codec is consulted.
+        for udf in crate::udf::json::all_udfs() {
+            state.register_udf(udf)?;
+        }
         #[cfg(feature = "ivm")]
         {
             state.register_udf(lakesoul_ivm::runtime::worker_group_row_udf())?;

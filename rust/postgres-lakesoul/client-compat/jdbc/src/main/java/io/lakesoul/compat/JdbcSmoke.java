@@ -114,6 +114,39 @@ public final class JdbcSmoke {
         check(hasColumn(metadata, table, "name"), "DatabaseMetaData.getColumns(name)");
         check(hasPrimaryKey(metadata, table), "DatabaseMetaData.getPrimaryKeys");
 
+        String jsonTable = table + "_jsonb";
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE IF EXISTS " + jsonTable);
+            statement.executeUpdate(
+                    "CREATE TABLE " + jsonTable + " (id bigint primary key, payload jsonb)");
+        }
+        try (PreparedStatement insert =
+                connection.prepareStatement(
+                        "INSERT INTO " + jsonTable + " (id, payload) VALUES (?, ?)")) {
+            org.postgresql.util.PGobject payload = new org.postgresql.util.PGobject();
+            payload.setType("jsonb");
+            payload.setValue("{\"b\": 2, \"a\": 1}");
+            insert.setLong(1, 1);
+            insert.setObject(2, payload);
+            insert.executeUpdate();
+        }
+        try (PreparedStatement select =
+                connection.prepareStatement(
+                        "SELECT payload, payload->>'a', payload ?? 'b' FROM "
+                                + jsonTable
+                                + " WHERE id = ?")) {
+            select.setLong(1, 1);
+            try (ResultSet result = select.executeQuery()) {
+                check(result.next(), "jsonb SELECT returned a row");
+                check("{\"a\":1,\"b\":2}".equals(result.getString(1)), "jsonb canonical text");
+                check("1".equals(result.getString(2)), "jsonb ->> value");
+                check(result.getBoolean(3), "jsonb ? value");
+            }
+        }
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE " + jsonTable);
+        }
+
         try (Statement statement = connection.createStatement()) {
             statement.setFetchSize(2);
             try (ResultSet result =

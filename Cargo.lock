@@ -433,7 +433,7 @@ dependencies = [
 [[package]]
 name = "arrow-pg"
 version = "0.15.0"
-source = "git+https://github.com/mag1c1an1/datafusion-postgres.git?rev=4b8b759141757e36a7a5bfc6ead98d71bc044645#4b8b759141757e36a7a5bfc6ead98d71bc044645"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=18991e58f276c7701d7dec6c386b03b44280bbb2#18991e58f276c7701d7dec6c386b03b44280bbb2"
 dependencies = [
  "arrow-schema",
  "bytes",
@@ -444,6 +444,7 @@ dependencies = [
  "pgwire",
  "postgres-types",
  "rust_decimal",
+ "serde_json",
 ]
 
 [[package]]
@@ -2991,7 +2992,7 @@ dependencies = [
 [[package]]
 name = "datafusion-pg-catalog"
 version = "0.18.3"
-source = "git+https://github.com/mag1c1an1/datafusion-postgres.git?rev=4b8b759141757e36a7a5bfc6ead98d71bc044645#4b8b759141757e36a7a5bfc6ead98d71bc044645"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=18991e58f276c7701d7dec6c386b03b44280bbb2#18991e58f276c7701d7dec6c386b03b44280bbb2"
 dependencies = [
  "arrow-pg",
  "async-trait",
@@ -3005,7 +3006,7 @@ dependencies = [
 [[package]]
 name = "datafusion-pg-functions"
 version = "0.1.0"
-source = "git+https://github.com/mag1c1an1/datafusion-postgres.git?rev=4b8b759141757e36a7a5bfc6ead98d71bc044645#4b8b759141757e36a7a5bfc6ead98d71bc044645"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=18991e58f276c7701d7dec6c386b03b44280bbb2#18991e58f276c7701d7dec6c386b03b44280bbb2"
 dependencies = [
  "datafusion",
  "libm",
@@ -3129,7 +3130,7 @@ dependencies = [
 [[package]]
 name = "datafusion-postgres"
 version = "0.18.0"
-source = "git+https://github.com/mag1c1an1/datafusion-postgres.git?rev=4b8b759141757e36a7a5bfc6ead98d71bc044645#4b8b759141757e36a7a5bfc6ead98d71bc044645"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=18991e58f276c7701d7dec6c386b03b44280bbb2#18991e58f276c7701d7dec6c386b03b44280bbb2"
 dependencies = [
  "arrow-pg",
  "async-trait",
@@ -7558,9 +7559,9 @@ dependencies = [
 
 [[package]]
 name = "pgwire"
-version = "0.41.1"
+version = "0.41.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3a2ed730d49a39ab87b1901ba193c1b205de5fc528e1ddca5502fc079454fd8"
+checksum = "129d04e292444b235f962174e59db5c2ff197b8397a3e9310e3afb9a7b3f7dd8"
 dependencies = [
  "async-trait",
  "base64 0.23.1",

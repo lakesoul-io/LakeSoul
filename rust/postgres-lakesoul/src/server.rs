@@ -1473,6 +1473,19 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         // failed (an unknown statement) leaves the existing portal, and the
         // statement running it, in place.
         if result.is_ok() {
+            // Remember the result format at Bind time. Hooks that build a
+            // response before `Execute` (INSERT ... RETURNING) need it to know
+            // whether to encode text or binary; waiting for `on_execute` is too
+            // late for them.
+            if let Some(pgwire::api::store::Entry::Value(portal)) =
+                client.portal_store().get_portal(&portal)
+            {
+                *client
+                    .session_extensions()
+                    .get_or_insert_with(ResultFormatCell::default)
+                    .0
+                    .lock() = portal.result_column_format.clone();
+            }
             state.cancellation.forget_portal(&portal);
         }
         result

@@ -11,10 +11,10 @@ that ordinary PostgreSQL driver workflows can execute.
 
 | Client | Path |
 | --- | --- |
-| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `SHOW`/`SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`, `to_char`, `psql \d`/`\dt`/`\l`/`\dn`, named cursors |
+| `psycopg2` | connect, SELECT, parameterized types including `bytea` and `jsonb`, `jsonb` operators (`->`, `->>`, `?`), `executemany`, `execute_values`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `SHOW`/`SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`, `to_char`, `psql \d`/`\dt`/`\l`/`\dn`, named cursors |
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
-| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
+| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
 
 The suite asserts **explicit refusal** for currently unsupported paths:
 

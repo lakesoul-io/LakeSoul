@@ -995,6 +995,8 @@ impl LakeSoulSessionFactory {
         ctx.register_udf(crate::udf::drop_index::udf_with_options(
             self.object_store_config.object_store_options(),
         ));
+        crate::udf::json::register(&ctx)
+            .map_err(|error| report!("JSON functions: {error}"))?;
 
         let lakesoul_catalog = Arc::new(LakeSoulCatalog::with_snapshot(
             Arc::clone(&self.meta_client),

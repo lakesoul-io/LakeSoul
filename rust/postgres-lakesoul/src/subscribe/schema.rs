@@ -296,12 +296,23 @@ pub(crate) fn source_schema(source: &SourceTable, cdc_column: &str) -> Result<Sc
     }
     let mut fields = Vec::with_capacity(source.columns.len() + 1);
     for column in &source.columns {
-        let data_type = source_arrow_type(column)?;
         let nullable = !column.not_null && !source.primary_key.contains(&column.name);
-        fields.push(Field::new(column.name.clone(), data_type, nullable));
+        fields.push(source_arrow_field(column, nullable)?);
     }
     fields.push(Field::new(cdc_column, DataType::Utf8, true));
     Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The Arrow field for a source column, including the JSON logical-type
+/// metadata for `json` / `jsonb` sources.
+pub(crate) fn source_arrow_field(source: &SourceColumn, nullable: bool) -> Result<Field> {
+    let data_type = source_arrow_type(source)?;
+    let field = Field::new(&source.name, data_type, nullable);
+    Ok(match &source.pg_type {
+        PgType::Json => crate::ddl::with_json_metadata(field, "json"),
+        PgType::Jsonb => crate::ddl::with_json_metadata(field, "jsonb"),
+        _ => field,
+    })
 }
 
 /// [`evolved_schema_for_layout`] for a target laid out the way the subscriber
@@ -465,11 +476,8 @@ pub(crate) fn evolved_schema_for_layout(
                 source_column.name
             );
         }
-        let data_type = source_arrow_type(source_column)?;
-        schema = apply(
-            &schema,
-            ColumnChange::Add(Field::new(source_column.name.clone(), data_type, true)),
-        )?;
+        let field = source_arrow_field(source_column, true)?;
+        schema = apply(&schema, ColumnChange::Add(field))?;
         changed = true;
     }
 
@@ -935,6 +943,47 @@ mod tests {
         meta.delete_table_by_table_info_cascade(&stored)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn json_source_columns_carry_json_metadata() {
+        let source = source_table(vec![
+            SourceColumn {
+                not_null: true,
+                ..source_column("id", PgType::Int8, "int8")
+            },
+            source_column("doc", PgType::Json, "json"),
+            source_column("docb", PgType::Jsonb, "jsonb"),
+        ]);
+        let schema = source_schema(&source, "rowKinds").unwrap();
+        let doc = schema.field_with_name("doc").unwrap();
+        assert_eq!(
+            doc.metadata().get("pg.json").map(String::as_str),
+            Some("json")
+        );
+        assert_eq!(doc.extension_type_name(), Some("arrow.json"));
+        let docb = schema.field_with_name("docb").unwrap();
+        assert_eq!(
+            docb.metadata().get("pg.json").map(String::as_str),
+            Some("jsonb")
+        );
+        assert_eq!(docb.extension_type_name(), Some("arrow.json"));
+
+        // An existing target without the columns appends them with the same
+        // logical-type metadata.
+        let target = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("rowKinds", DataType::Utf8, true),
+        ]));
+        let evolved = evolved_schema(&source, target, "rowKinds", SchemaEvolution::Auto)
+            .unwrap()
+            .unwrap();
+        let added = evolved.field_with_name("docb").unwrap();
+        assert_eq!(
+            added.metadata().get("pg.json").map(String::as_str),
+            Some("jsonb")
+        );
+        assert_eq!(added.extension_type_name(), Some("arrow.json"));
     }
 
     #[test]

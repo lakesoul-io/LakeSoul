@@ -69,6 +69,11 @@ const INVALID_PARAMETER_VALUE: &str = "22023";
 const DEFAULT_HASH_BUCKET_NUM: u32 = 4;
 const MAX_HASH_BUCKET_NUM: u32 = 32768;
 
+/// The Arrow canonical JSON extension name (`arrow.json`).
+pub(crate) const ARROW_JSON_EXTENSION_NAME: &str = "arrow.json";
+/// Field metadata key distinguishing Postgres `json` from `jsonb`.
+pub(crate) const PG_JSON_KEY: &str = "pg.json";
+
 /// The Spark/Flink default change column. The PG front end folds column names
 /// to lower case, so a declared `rowKinds` is matched case-insensitively and
 /// the property stores the schema's actual (lower-case) name.
@@ -856,7 +861,11 @@ pub(crate) fn build_schema(
         }
         names.push(name.clone());
         declared_not_null.push(not_null);
-        fields.push(Field::new(name, data_type, true));
+        let mut field = Field::new(name, data_type, true);
+        if let Some(kind) = pg_json_kind(&column.data_type) {
+            field = with_json_metadata(field, kind);
+        }
+        fields.push(field);
     }
 
     for constraint in constraints {
@@ -907,7 +916,7 @@ pub(crate) fn build_schema(
                 return Err(conflicting_null_declaration(&names[*index]));
             }
             let field = &fields[*index];
-            fields[*index] = Field::new(field.name(), field.data_type().clone(), false);
+            fields[*index] = field.as_ref().clone().with_nullable(false);
         }
     }
     // Every other declared `NOT NULL` is a stored constraint: the writer
@@ -916,7 +925,7 @@ pub(crate) fn build_schema(
     for (index, not_null) in declared_not_null.iter().enumerate() {
         if *not_null == Some(true) && fields[index].is_nullable() {
             let field = &fields[index];
-            fields[index] = Field::new(field.name(), field.data_type().clone(), false);
+            fields[index] = field.as_ref().clone().with_nullable(false);
         }
     }
     Ok((Schema::new(fields), primary_key))
@@ -982,10 +991,62 @@ fn conflicting_null_declaration(name: &str) -> PgWireError {
     )
 }
 
+/// The Postgres JSON kind declared by a SQL type: `json`, `jsonb`, or `None`.
+///
+/// Both kinds are stored as UTF-8 JSON text; the marker survives in the table
+/// schema and tells the wire layer which OID to report.
+pub(crate) fn pg_json_kind(data_type: &SqlDataType) -> Option<&'static str> {
+    match data_type {
+        SqlDataType::JSON => Some("json"),
+        SqlDataType::JSONB => Some("jsonb"),
+        SqlDataType::Custom(name, args) if args.is_empty() => {
+            let last = name.0.last()?;
+            let datafusion::sql::sqlparser::ast::ObjectNamePart::Identifier(ident) = last
+            else {
+                return None;
+            };
+            match ident.value.to_ascii_lowercase().as_str() {
+                "json" => Some("json"),
+                "jsonb" => Some("jsonb"),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Attach the canonical Arrow JSON extension and the Postgres `json`/`jsonb`
+/// marker to a field, keeping every other metadata entry.
+pub(crate) fn with_json_metadata(field: Field, kind: &str) -> Field {
+    let mut metadata: HashMap<String, String> = field.metadata().clone();
+    metadata.insert(
+        "ARROW:extension:name".to_string(),
+        ARROW_JSON_EXTENSION_NAME.to_string(),
+    );
+    metadata.insert(PG_JSON_KEY.to_string(), kind.to_string());
+    field.with_metadata(metadata)
+}
+
+/// The JSON kind stored on an Arrow field, if it carries both the canonical
+/// JSON extension and the Postgres marker.
+pub(crate) fn field_json_kind(field: &Field) -> Option<&'static str> {
+    if field.extension_type_name() != Some(ARROW_JSON_EXTENSION_NAME) {
+        return None;
+    }
+    match field.metadata().get(PG_JSON_KEY).map(String::as_str) {
+        Some("json") => Some("json"),
+        Some("jsonb") => Some("jsonb"),
+        _ => None,
+    }
+}
+
 /// PG column type → Arrow type. The mapping is deliberately small: an
 /// unsupported type is refused with `0A000` instead of being coerced into a
 /// different storage type.
 pub(crate) fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
+    if pg_json_kind(data_type).is_some() {
+        return Ok(DataType::Utf8);
+    }
     let ty = match data_type {
         SqlDataType::SmallInt(_) | SqlDataType::Int2(_) => DataType::Int16,
         SqlDataType::Int(_) | SqlDataType::Integer(_) | SqlDataType::Int4(_) => {
