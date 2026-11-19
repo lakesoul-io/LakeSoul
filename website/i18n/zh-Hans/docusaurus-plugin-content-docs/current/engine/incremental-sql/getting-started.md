@@ -65,16 +65,16 @@ GROUP BY 1, 2;
 
 ## 5. 源表变化后重跑
 
-没有调度器，也没有 refresh 命令。需要目标表追上时，重新运行同一条 `INSERT ... SELECT`；引擎决定变化了什么。
+没有 `CREATE MATERIALIZED VIEW` 对象，也没有内置调度器：目标表是一张普通表。需要目标表追上时，从 Airflow、DolphinScheduler、cron 或应用重新运行同一条 `INSERT ... SELECT`；引擎决定变化了什么，外部编排负责触发时机和 backfill。原因见[概览](overview.md)。
 
 如果查询定义变化，下一次运行会从完整源表重建目标表，并以一次原子提交发布。读者不会在重建期间看到空表。
 
 ## 要求
 
 - 目标表必须是主键、CDC 表：主键 + `rowKinds` + `use_cdc = true`。
-- 源表必须是主键表。需要让删除可见的源表也要开启 `use_cdc = true` 并声明变更列。Append-only 源会被拒绝；无法增量维护的形状会回退到全量重算。
+- 增量维护要求源表有主键。需要让删除可见的源表也要开启 `use_cdc = true` 并声明变更列。仅追加的 append-only 源可走 Tier-2 全量重算；带删除标记的 append-only 源不在维护范围内。
 - 语句必须在 autocommit 下运行。显式事务和多语句 batch 会被拒绝。
-- v1 中增量 SQL 与分布式执行互斥。
+- 支持分布式执行，但每个 worker 都必须启用 IVM，并使用相同的协议版本。
 
 ## 下一步
 

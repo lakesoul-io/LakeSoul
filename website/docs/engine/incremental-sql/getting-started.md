@@ -76,8 +76,11 @@ insert, regardless of the setting.
 
 ## 5. Re-run after source changes
 
-There is no scheduler and no refresh command. Run the same `INSERT ... SELECT`
-when you want the target to catch up; the engine decides what changed.
+There is no `CREATE MATERIALIZED VIEW` object and no built-in scheduler: the
+target is an ordinary table. Run the same `INSERT ... SELECT` from Airflow,
+DolphinScheduler, cron or your application when you want the target to catch up;
+the engine decides what changed and the external orchestrator owns timing and
+backfill. See [Overview](overview.md) for the reasoning.
 
 If the query definition changes, the next run rebuilds the target from the full
 source in one atomic commit. Readers do not see an empty table during the
@@ -87,10 +90,10 @@ rebuild.
 
 - The target must be a keyed, CDC-enabled table: primary key, `rowKinds`, and
   `use_cdc = true`.
-- Sources must be keyed tables. A source whose deletes must be visible also
-  needs `use_cdc = true` and a change column. Append-only sources are rejected
-  for incremental runs; a shape that cannot be maintained incrementally falls
-  back to a full recompute.
+- Incremental maintenance requires keyed sources. A source whose deletes must
+  be visible also needs `use_cdc = true` and a change column. An insert-only
+  append-only source can be used through a Tier-2 full recompute; a shape that
+  cannot be maintained incrementally falls back to a full recompute.
 - The statement must run in autocommit. Explicit transactions and multi-statement
   batches are refused.
 - Distributed execution is supported when every worker is built with the IVM
