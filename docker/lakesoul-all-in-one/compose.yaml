@@ -14,6 +14,7 @@ services:
     image: lakesoul-all-in-one:dev
     container_name: lakesoul-all-in-one
     restart: unless-stopped
+    stop_grace_period: 30s
     ports:
       - "127.0.0.1:5433:5433"
     environment:
