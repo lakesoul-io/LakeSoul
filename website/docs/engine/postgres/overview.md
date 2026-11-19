@@ -35,7 +35,7 @@ for the metadata database and the first table.
 | --- | --- |
 | **Connectivity** | PostgreSQL wire protocol, simple and extended query protocol, `pg_catalog`, `psql \d` |
 | **DDL** | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` options |
-| **Writes** | `INSERT ... VALUES` (including `RETURNING`), `INSERT ... SELECT`, `COPY ... FROM STDIN`, `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial columns, expressions and conflict `WHERE`) |
+| **Writes** | `INSERT ... VALUES` (including `RETURNING`), `INSERT ... SELECT`, `COPY ... FROM STDIN`, `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstones, partition clears and rewrites), `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial columns, expressions and conflict `WHERE`) |
 | **Queries** | The DataFusion SQL surface, including joins, aggregates, windows, CTEs and set operations |
 | **Search** | pgvector-compatible vector operators, `text_score` for BM25 |
 | **Incremental SQL** | `INSERT ... SELECT` maintains its target when the session enables it |
@@ -46,16 +46,18 @@ for the metadata database and the first table.
 
 ## What does not
 
-`DELETE`, `COPY ... TO STDOUT`, `COPY ... FROM` a file, `CREATE TABLE AS`,
-`CREATE TEMP TABLE`, `TRUNCATE`, non-`READ COMMITTED` isolation, and writes
-inside a multi-statement simple-query batch are refused with SQLSTATE `0A000`. Writes inside an explicit
-block use deferred publication. See the
+`COPY ... TO` a file, `COPY ... FROM` a file, `CREATE TABLE AS`,
+`CREATE TEMP TABLE`, `DELETE ... USING`, non-`READ COMMITTED` isolation, and
+writes inside a multi-statement simple-query batch are refused with SQLSTATE
+`0A000`. Writes inside an explicit block use deferred publication; a non-CDC
+`DELETE` rewrite and `TRUNCATE` are refused there in Phase 1. See the
 [compatibility matrix](compatibility.md) for the full list.
 
 ## Next
 
 - [DDL](ddl.md)
 - [Insert and upsert](insert-and-upsert.md)
+- [DELETE and TRUNCATE](delete-and-truncate.md)
 - [COPY](copy.md)
 - [Transactions and catalog](transactions-and-catalog.md)
 - [PostgreSQL subscriptions](subscription.md)

@@ -85,7 +85,7 @@ INSERT INTO target ...;
 
 ## Supported matrix
 
-`tests/sql_compat.rs` runs phase one base cases, `sql_compat/semantics.rs` runs phase two additions, and the projection scalar subquery cardinality normal gate; `tests/session_contract.rs` runs sessions, write refusals, and commit visibility; `tests/storage_contract.rs` runs phase three · 3.1 storage contracts; `tests/catalog_contract.rs` runs phase three · 3.2 database/public mapping; `tests/vector_contract.rs` runs phase three · 3.3 vector protocol, exact fallback, and ANN; `tests/tpch_contract.rs` runs phase four strict q01–q22 and the failure-exit contract; `tests/insert_contract.rs` runs phase eight INSERT and the existing restricted upsert; `tests/update_contract.rs` runs phase nine UPDATE; `tests/upsert_contract.rs` runs the general UPSERT PG differential matrix (see "General UPSERT"). Case IDs appear in `--nocapture` output and failure reports.
+`tests/sql_compat.rs` runs phase one base cases, `sql_compat/semantics.rs` runs phase two additions, and the projection scalar subquery cardinality normal gate; `tests/session_contract.rs` runs sessions, write refusals, and commit visibility; `tests/storage_contract.rs` runs phase three · 3.1 storage contracts; `tests/catalog_contract.rs` runs phase three · 3.2 database/public mapping; `tests/vector_contract.rs` runs phase three · 3.3 vector protocol, exact fallback, and ANN; `tests/tpch_contract.rs` runs phase four strict q01–q22 and the failure-exit contract; `tests/insert_contract.rs` runs phase eight INSERT and the existing restricted upsert; `tests/update_contract.rs` runs phase nine UPDATE; `tests/upsert_contract.rs` runs the general UPSERT PG differential matrix (see "General UPSERT"); `tests/delete_truncate_contract.rs` runs DELETE/TRUNCATE (coordinator and two-worker). Case IDs appear in `--nocapture` output and failure reports.
 
 | Contract | Verified scope | Specific cases |
 | --- | --- | --- |
@@ -416,6 +416,63 @@ COMMIT;
 - Index maintenance runs at `COMMIT`, over everything the block published: the writer stages its files and skips the inline build, and the block builds the vector and text indexes once, per table, after the metadata commit returned (`vector_contract::transaction`). The shards of a staged write do not exist before `COMMIT` and are not created by `ROLLBACK`; a failed build is logged as a warning and never turns the already-published `COMMIT` into an error.
 - The metadata publication runs detached from the statement, so a cancel request or `statement_timeout` cannot make a `COMMIT` delete files it may have published: the task publishes or deletes exactly once. A cancellation during the (post-publication) index build costs shards, never data (`server::tests::dropping_a_published_block_deletes_nothing`).
 - **Bounds and cleanup.** `--max-staged-files-per-transaction` / `--max-staged-bytes-per-transaction` (`LAKESOUL_PG_MAX_STAGED_*`) refuse a write that would exceed them with `54000` and keep the block's accepted writes staged (`transaction::staged_limit_tests`); the counter `lakesoul_transaction_staged_limit_total{resource}` records refusals. A connection that goes away with an open block hands its staged files to a deletion task (`Drop for ConnectionSession`); without a live runtime the files are left to GC. `idle_in_transaction_session_timeout` is **not** implemented. A hook cannot close the socket (`ClientInfo` has no such call), so the only available behaviour is to expire the block at the next statement boundary and answer `FATAL 25P03` (pgwire closes on a fatal response); a client that never sends another message keeps its block - and its files - until it disconnects, when they are deleted.
+
+### Phase eleven: DELETE and TRUNCATE
+
+`DELETE` and `TRUNCATE` are handled by `src/delete.rs` and `src/truncate.rs`.
+Both publish new metadata versions and never delete an object synchronously:
+old commits and files remain readable through a pinned snapshot and are
+reclaimed by GC after the retention window.
+
+`DELETE` selects its representation from the table and the predicate:
+
+| Table / predicate | Representation |
+| --- | --- |
+| CDC table with a primary key | tombstone row (`change column = 'delete'`) written through the ordinary INSERT sink |
+| non-CDC, predicate only names range-partition columns | `commit_replace` with empty snapshots for the matching partitions |
+| non-CDC, any other predicate | the affected partitions are rewritten without the matching rows and replaced with one `UpdateCommit` |
+| no primary key | the whole table or the affected partitions are rewritten |
+| `appendOnly` | `0A000` |
+| CDC without a primary key | `0A000` |
+
+The rewrite runs the survivor query (`CASE WHEN predicate THEN FALSE ELSE TRUE
+END`, which preserves rows whose predicate is NULL) with a fixed snapshot,
+collects its files through a private `StagedWriteSink`, and publishes them with
+`MetaDataClient::commit_replace`. The private sink reports no staged commits, so
+the survivor query reads the published relation rather than its own output.
+`DELETE ... RETURNING` evaluates the returning projection on the same fixed
+snapshot before the commit.
+
+`TRUNCATE` publishes an empty snapshot per selected partition through
+`MetaDataClient::commit_delete` (single table) or `commit_truncate` (multiple
+tables, one transaction), both `DeleteCommit`, version + 1. `PARTITION
+(...)` accepts `column = value` terms and must name every range partition
+column. Multiple tables are published in one metadata transaction. `ONLY`,
+`CASCADE`, `RESTART IDENTITY` are no-ops; `IF EXISTS` skips a missing table.
+
+Contracts (`tests/delete_truncate_contract.rs`, coordinator and two-worker):
+
+| Contract | Verified scope |
+| --- | --- |
+| Non-CDC rewrite | no-PK duplicate rows, PK tables, `RETURNING`, prepared statements, NULL three-valued predicates; one new partition version; deleted rows are gone |
+| CDC tombstone | `DELETE` hides the key, a later insert revives it, a block stages the tombstone and read-your-writes hides it, rollback restores it, no-PK CDC is `0A000` |
+| Partition clear | `DELETE ... WHERE part = ...` publishes an empty snapshot without rewriting; a general predicate rewrites the remaining partitions |
+| `TRUNCATE` | single/multi-table, `PARTITION (...)`, prepared/extended protocol, `IF EXISTS`, `RESTART IDENTITY CASCADE`, empty snapshots, writes after truncate |
+| Refusals | missing table `42P01`, `DELETE ... USING` `0A000`, appendOnly `DELETE` `0A000`, rewrite/`TRUNCATE` in a block `0A000`, simple-query batch `0A000` |
+| Distributed | the rewrite path runs with two real Flight workers and local fallback disabled |
+
+The vector/text coverage proof now also requires every indexed file to still be
+active (`covered_files_are_active` in `lakesoul-datafusion/src/vector_batch.rs`).
+Without that, a shard that still named a file removed by `DELETE`/`TRUNCATE`
+could answer an index-only query with stale candidates. After a rewrite the
+server rebuilds pending vector/text index shards; a failed build is logged and
+leaves the search path on its exact fallback.
+
+Known Phase 1 boundaries: `DELETE ... USING`/`ORDER BY`/`LIMIT` and multi-table
+`DELETE` are refused; a non-CDC rewrite and `TRUNCATE` are refused inside an
+explicit transaction block (their publication is not staged yet); `MERGE` is not
+implemented. The rewrite cost is the affected partition size, not the deleted
+row count; a key-targeted file rewrite is the planned optimization.
 
 ### Authentication: LakeSoul JWT (`--jwt-auth`)
 

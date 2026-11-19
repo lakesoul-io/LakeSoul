@@ -181,6 +181,30 @@ def test_jsonb_parameter_and_result_round_trip(driver, connector, table_factory)
             assert rows(cursor)[0][0] is None
 
 
+def test_delete_and_truncate(driver, connector, table_factory):
+    table = table_factory("id bigint primary key, val bigint", "client_delete")
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                f"INSERT INTO {table} (id, val) VALUES (%s, %s)",
+                [(1, 10), (2, 20), (3, 30)],
+            )
+            connection.commit()
+
+            cursor.execute(f"DELETE FROM {table} WHERE id = %s", (2,))
+            assert cursor.rowcount == 1
+            cursor.execute(f"SELECT id FROM {table} ORDER BY id")
+            assert rows(cursor) == [(1,), (3,)]
+
+            cursor.execute(f"DELETE FROM {table} WHERE id = %s RETURNING id, val", (3,))
+            assert rows(cursor) == [(3, 30)]
+            connection.commit()
+
+            cursor.execute(f"TRUNCATE TABLE {table}")
+            cursor.execute(f"SELECT count(*) FROM {table}")
+            assert rows(cursor) == [(0,)]
+
+
 def test_bytea_parameter_round_trip(driver, connector, table_factory):
     table = table_factory("id bigint primary key, payload bytea", "client_bytea")
     with closing(connector(driver)) as connection:

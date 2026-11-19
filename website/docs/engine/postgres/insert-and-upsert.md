@@ -112,6 +112,11 @@ If the table declares vector or full-text indexes, the index is updated after th
 metadata commit. If the index build fails, the statement returns an error but the
 inserted rows are already committed and visible.
 
+## DELETE and TRUNCATE
+
+See [DELETE and TRUNCATE](delete-and-truncate.md) for the row representations,
+the partition fast path and the transaction boundaries.
+
 ## Bulk load
 
 For bulk loads, use [`COPY ... FROM STDIN`](copy.md) instead of many

@@ -1436,7 +1436,24 @@ pub(crate) fn candidate_files_covered(
     covered_files: &[&str],
 ) -> bool {
     !covered_files.is_empty()
+        && covered_files_are_active(active_files, covered_files)
         && lakesoul_common::index::pending_files(active_files, covered_files).is_empty()
+}
+
+/// Every file the shard indexed must still be active.
+///
+/// `pending_files` only answers "does the index miss an active file?". A shard
+/// that still references files a DELETE/TRUNCATE removed would otherwise look
+/// covered (it names every remaining file) and could feed index-only queries
+/// stale candidates from the removed files.
+fn covered_files_are_active(active_files: &[String], covered_files: &[&str]) -> bool {
+    let active = active_files
+        .iter()
+        .map(|path| path.rsplit('/').next().unwrap_or(path))
+        .collect::<std::collections::HashSet<_>>();
+    covered_files
+        .iter()
+        .all(|path| active.contains(path.rsplit('/').next().unwrap_or(path)))
 }
 
 pub(crate) fn can_skip_verification(
@@ -1450,6 +1467,7 @@ pub(crate) fn can_skip_verification(
         && mutation_head_absent
         && mutation_records == 0
         && !covered_files.is_empty()
+        && covered_files_are_active(active_files, covered_files)
         && lakesoul_common::index::pending_files(active_files, covered_files).is_empty()
 }
 
@@ -1473,7 +1491,7 @@ fn decode_ids_refs(codec: &KeyCodec, keys: &[&IndexKey]) -> DFResult<Vec<i64>> {
 
 #[cfg(test)]
 mod tests {
-    use super::can_skip_verification;
+    use super::{can_skip_verification, candidate_files_covered};
 
     fn files(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_string()).collect()
@@ -1514,6 +1532,24 @@ mod tests {
             0,
             &files(&["file:///data/a.vortex", "s3://bucket/b.vortex"]),
             &covered,
+        ));
+    }
+
+    #[test]
+    fn removed_files_invalidate_the_index() {
+        // A shard that still names a file removed by DELETE/TRUNCATE must not
+        // be treated as covering the current snapshot: index-only queries
+        // would return candidates from the removed file.
+        let active = files(&["a.vortex"]);
+        let covered = ["a.vortex", "b.vortex"];
+        assert!(!candidate_files_covered(&active, &covered));
+        assert!(!can_skip_verification("", true, 0, &active, &covered));
+
+        // A shard that misses an active file is invalid for the same reason:
+        // the path would not read the new file at all.
+        assert!(!candidate_files_covered(
+            &files(&["a.vortex", "b.vortex"]),
+            &["a.vortex"],
         ));
     }
 }

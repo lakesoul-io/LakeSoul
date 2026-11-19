@@ -4,6 +4,7 @@
 
 //! The [`datafusion::physical_plan`] and [`datafusion::logical_expr`] implementation for LakeSoul table.
 
+pub mod delete;
 pub mod fold_vector_literals;
 mod physical_planner;
 pub mod query_planner;

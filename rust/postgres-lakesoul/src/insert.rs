@@ -976,7 +976,7 @@ pub(crate) fn target_reference(
 }
 
 /// `partitions` is `range1,range2;pk1,pk2`.
-fn split_partitions(partitions: &str) -> (Vec<String>, Vec<String>) {
+pub(crate) fn split_partitions(partitions: &str) -> (Vec<String>, Vec<String>) {
     let (range, primary_keys) = match partitions.split_once(';') {
         Some((range, primary_keys)) => (range, primary_keys),
         None => ("", partitions),
@@ -1365,7 +1365,7 @@ fn returning_projection(
 
 /// The result format of the current extended-protocol portal; simple queries
 /// use text format.
-fn current_result_format(client: &(impl ClientInfo + ?Sized)) -> Format {
+pub(crate) fn current_result_format(client: &(impl ClientInfo + ?Sized)) -> Format {
     client
         .session_extensions()
         .get::<ResultFormatCell>()

@@ -30,7 +30,7 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 | --- | --- |
 | **连接** | PostgreSQL wire protocol、simple 与 extended query protocol、`pg_catalog`、`psql \d` |
 | **DDL** | `CREATE TABLE`、`DROP TABLE`、主键、`PARTITIONED BY`、`WITH (...)` 选项 |
-| **写入** | `INSERT ... VALUES`（含 `RETURNING`）、`INSERT ... SELECT`、`COPY ... FROM STDIN`、非 CDC 主键表上的 `UPDATE`、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
+| **写入** | `INSERT ... VALUES`（含 `RETURNING`）、`INSERT ... SELECT`、`COPY ... FROM STDIN`、非 CDC 主键表上的 `UPDATE`、`DELETE`（CDC tombstone、分区清空和分区重写）、`TRUNCATE`（含 `PARTITION (...)`）、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | **查询** | DataFusion SQL 表面，包括 join、聚合、窗口、CTE 和集合运算 |
 | **检索** | 兼容 pgvector 的向量操作符、BM25 的 `text_score` |
 | **增量 SQL** | 会话开启后，`INSERT ... SELECT` 维护目标表 |
@@ -41,12 +41,13 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 
 ## 不支持
 
-`DELETE`、`COPY ... TO STDOUT`、`COPY ... FROM` 文件、`CREATE TABLE AS`、`CREATE TEMP TABLE`、`TRUNCATE`、非 `READ COMMITTED` 隔离级别，以及多语句 simple-query batch 里的写入，都会以 SQLSTATE `0A000` 被拒绝。显式事务块里的写入使用 deferred publication。完整列表见[兼容性矩阵](compatibility.md)。
+`COPY ... TO` 文件、`COPY ... FROM` 文件、`CREATE TABLE AS`、`CREATE TEMP TABLE`、`DELETE ... USING`、非 `READ COMMITTED` 隔离级别，以及多语句 simple-query batch 里的写入，都会以 SQLSTATE `0A000` 被拒绝。显式事务块里的写入使用 deferred publication；Phase 1 中非 CDC `DELETE` 重写和 `TRUNCATE` 在事务块内会被拒绝。完整列表见[兼容性矩阵](compatibility.md)。
 
 ## 下一步
 
 - [DDL](ddl.md)
 - [写入与 Upsert](insert-and-upsert.md)
+- [DELETE 与 TRUNCATE](delete-and-truncate.md)
 - [COPY](copy.md)
 - [事务与目录](transactions-and-catalog.md)
 - [PostgreSQL 订阅](subscription.md)
