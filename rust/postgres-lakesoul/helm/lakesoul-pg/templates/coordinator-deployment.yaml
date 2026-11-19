@@ -65,10 +65,12 @@ spec:
           env:
             {{- include "lakesoul-pg.metadataEnv" . | nindent 12 }}
             {{- include "lakesoul-pg.warehouseEnv" . | nindent 12 }}
+            {{- if eq .Values.distributed.discovery "kubernetes" }}
             - name: LAKESOUL_K8S_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- end }}
             - name: LAKESOUL_PG_JWT_AUTH
               value: {{ .Values.auth.jwt | toString | quote }}
             - name: LAKESOUL_PG_RBAC
