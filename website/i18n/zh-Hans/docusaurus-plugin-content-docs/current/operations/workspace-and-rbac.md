@@ -7,117 +7,153 @@ sidebar_position: 6
 :::tip
 从 2.4 起支持。
 :::
-LakeSoul 支持多个工作空间划分，每个空间可以有多个用户，分为管理员和普通用户两种角色。不同工作空间的数据（包括元数据、物理数据）均是隔离的。
 
-实现原理上，LakeSoul 使用了 PostgreSQL 的 Role 和 Row Level Security Policies （RLS 行级别安全策略），实现了元数据隔离。
+## 概述
 
-多租户情况下，为每个用户分配一个 PG 的用户，通过 RLS 的控制，该用户仅能读写其所属工作空间的元数据（包括 namespace/table/partition/snapshot），而无法读取/修改其他工作空间的元数据。配合 hadoop 的用户组，可以实现 HDFS 的权限隔离。
+LakeSoul 支持多个工作空间（domain，也称域）。每个空间有自己的 namespace、表、partition、snapshot 和物理数据；一个空间的用户无法读取或修改另一个空间的数据。
 
-**值得一提的是，LakeSoul 的权限隔离，对于提交到集群上的 SQL/Java/Scala/Python 作业均是有效的，用户无法通过代码访问到其他空间的元数据和物理数据。而传统上 Hadoop 体系的 Ranger ，仅能够对提交到 HiveServer 的请求实现元数据隔离，而很难防止用户通过提交代码到集群上直接访问到 Hive 元数据。**
+实现上，LakeSoul 使用 PostgreSQL 的 Role 和 Row Level Security（RLS，行级安全策略）隔离元数据，并结合存储权限隔离物理数据。本页介绍租户模型和部署操作：启用多租户、创建工作空间和管理员、创建用户。pg-wire 服务的 token 认证、表级 ACL 和 SQL `CREATE USER` 见[认证与权限](../engine/postgres/authentication.md)。
 
-## 工作空间，默认角色和库表的关系
-每个工作空间中，都会有管理员（admins）角色和普通用户（users）角色。空间管理员可以创建/删除 namespace，并对空间内所有表有读写权限；普通用户可以在已有 namespace 中建表。每个 namespace 在创建时，当前操作的管理员所属的空间，就是该 namespace 所属的空间。namespace 和表所属的工作空间，创建后不可修改。
+这种隔离对提交到集群的 SQL/Java/Scala/Python 作业都有效，用户无法通过提交代码访问其他空间的元数据和物理数据。传统 Hadoop 体系中的 Ranger 只能保护发往 HiveServer 的请求，很难阻止集群上的代码直接访问 Hive 元数据。
 
-## 表级 ACL
+### 角色说明
 
-在空间边界之上，每张表还有 owner（`table_info.creator`）和可选的表级授权：
+| 角色 | 说明 |
+| --- | --- |
+| metadata 超级管理员 | 拥有 LakeSoul metadata 数据库的 PostgreSQL 账号。负责创建角色、开启 RLS 和执行初始化脚本。它不是 LakeSoul 客户端账号，凭据不能交给普通用户。 |
+| 工作空间管理员（`domain_admin`） | `<workspace>_admins` 的成员。可以创建/删除 namespace、读写空间内所有表，并可以创建普通用户；不能创建另一个工作空间管理员。 |
+| 普通用户 | `<workspace>_users` 的成员。可以在已有 namespace 中建表；默认对其他用户的表只读，具体受表级 ACL 约束。 |
+| `public` / `lake-public` | 对所有用户可见的共享空间。 |
 
-- 建表者是 owner，可以读写、修改、删除该表。
-- 空间管理员可以读写空间内所有表。
-- 同空间的其他用户默认只读。
-- 跨空间 `ro` 授权让表对该用户可见但只读；`rw` 只允许同空间。
-- 显式 `none` 对该用户隐藏该表。
-- `domain` 为 `public` / `lake-public` 的表完全开放，忽略 ACL。
+每个用户有一个 PostgreSQL role，可以是多个工作空间的成员。JVM 作业通过 `LAKESOUL_CURRENT_DOMAIN`（或 `lakesoul.current.domain`）选择工作空间；pg-wire 连接通过 token 的 `group` claim 选择。
 
-新表默认 owner 可读写、同空间其他人只读。存量表通过一次性数据迁移保持旧的可读写行为：
+## 隔离机制
 
-```shell
+元数据侧，LakeSoul 使用 PostgreSQL Role 和 Row Level Security 策略。每个用户用自己的 PostgreSQL role 连接 metadata 库，RLS 把该 role 限制在所属工作空间的行上：其他空间的 namespace、表、partition、snapshot 和 data commit 既不可读也不可写。
+
+HDFS 物理数据侧，LakeSoul 在建表时按创建者和工作空间设置 namespace/表目录的 user、group 和目录权限，配合 Hadoop 的用户组模型实现文件隔离。
+
+对象存储侧，[S3 proxy](#与存储系统的权限集成)对 S3 请求执行同一套表 ACL。
+
+## 工作空间、默认角色和库表关系
+
+每个工作空间都有一个管理员角色 `<workspace>_admins` 和一个普通用户角色 `<workspace>_users`。namespace 所属的工作空间由创建它的管理员决定；namespace 和表在创建后不能更换工作空间。
+
+## 启用多租户
+
+默认情况下多租户是关闭的。全新部署直接使用 `script/meta_init.sql` 的 schema。要启用角色和 RLS，由 **metadata 超级管理员**执行：
+
+```sh
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/meta_rbac_init.sql lakesoul_test
+```
+
+连接 PostgreSQL 的账号需要能创建 Role、开启 RLS。请按实际部署调整 host、port、user 和 database。
+
+如果部署中已有使用旧 ACL 模型的表，先执行 ACL 迁移，让这些表保持原来的读写行为：
+
+```sh
 PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
   -f script/migrate_acl.sql lakesoul_test
 PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
   -f script/meta_rbac_init.sql lakesoul_test
 ```
 
-第一个脚本创建 ACL 对象并给存量表补同空间 rw；第二个脚本安装 ACL 版 RLS 函数和策略。全新部署直接使用 `script/meta_init.sql` 的最新 schema。
-
-共享 pg-wire cluster 可以用 `--rbac-domain`（或 `LAKESOUL_PG_RBAC_DOMAIN`）固定写入空间；其他空间的客户端只能读取被授权的表。cluster 的 metadata 账号是受信任的 catalog reader，可读取所有空间的元数据/ACL；客户端拿不到该账号，应用层按每个客户端的 ACL 执行。S3 proxy 对直接访问对象存储的 Spark/Flink/Python 作业执行同一套表 ACL，因为仅靠元数据 RLS 无法阻止任意代码直接读取文件；跨空间授权时 sidecar 也需要 catalog-reader 的 metadata 账号。
-
-### 通过 SQL 执行 GRANT / REVOKE
-
-以 `--rbac` 启动的 pg-wire 服务接受 PostgreSQL `GRANT` / `REVOKE` 的表级子集：
-
-```sql
-GRANT SELECT ON t TO bob;
-GRANT INSERT, UPDATE ON t TO bob;
-GRANT SELECT ON t TO team_b.carol;          -- 跨空间，只读
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO bob;
-REVOKE INSERT ON t FROM bob;
-REVOKE ALL ON t FROM bob;
-```
-
-- `SELECT` 映射为 `ro`；`INSERT`、`UPDATE`、`DELETE`、`TRUNCATE`、`ALL` 映射为 `rw`。写权限隐含读权限。
-- 裸用户名属于表所在空间；`domain.user` 是 LakeSoul 扩展，用于跨空间**只读**授权；跨空间的 `ALL` 或写权限会被拒绝。
-- `PUBLIC` 写入空间级授权（`grantee_kind = 'domain'`）。`REVOKE ALL ... FROM PUBLIC` 会让表只对 owner 和空间管理员可见。
-- `REVOKE` 写权限会降为 `ro`；`REVOKE SELECT`/`ALL` 会给同空间用户写显式 `none`，从而隐藏该表。
-- owner 或空间管理员才能授权。不可见的表返回 `42P01`；可见但无管理权返回 `42501`；public 表不接受 ACL。
-- grantee 名字按原样保存。RBAC 部署还维护 `lakesoul_user` / `domain_user` 全局用户目录，供 `CREATE USER` 和 token 校验使用；仍然可以先授权、后建用户。
-- `ON ALL TABLES IN SCHEMA public` 只覆盖当前 database（即当前 namespace）中的表。
-- `GRANT`/`REVOKE` 立即提交，和 DDL 一样不支持在事务块内执行。当前连接立即生效；其他连接和 S3 proxy 在 5 秒 ACL 缓存内生效。ACL 视图刷新后如果可见权限发生变化，连接上的 prepared statement 会在执行前重新 plan，避免 revoke 后旧 plan 继续读表。
-- 角色成员、列级权限、`WITH GRANT OPTION`、group ACL，以及 `information_schema` / `psql \dp` 反射暂不支持。
-
-### 创建用户
-
-空间管理员可以创建普通用户，必须显式给出密码：
-
-```sql
-CREATE USER alice WITH PASSWORD 'secret';
-CREATE USER IF NOT EXISTS alice WITH PASSWORD 'secret';
-```
-
-该命令创建真实 PostgreSQL 登录角色，GRANT `<workspace>` 和 `<workspace>_users`，并写入 token 签发和 pg-wire 连接校验使用的用户目录。不会授予 `<workspace>_admins`，空间管理员不能创建其他空间管理员；`public` / `lake-public` 不接受。已存在且由 LakeSoul 管理的角色在 `IF NOT EXISTS` 下只补当前空间成员关系，不改密码。pg-wire 的 metadata 账号需要 `CREATEROLE` 以及对空间角色的 ADMIN OPTION。
-
-创建后即可签发该用户的 token。`ALTER USER` / `DROP USER` 暂未实现。
-
-### Federation 对象
-
-federation server 和 foreign table 使用与普通表相同的默认规则：同空间默认只读，`public` federation 对象对所有空间只读，只有 creator 或空间管理员可写。创建 foreign table 需要对 server 和当前 namespace 都有写权限；跨空间 federation 对象不可见。
-
-### 存量部署
-
-metadata 迁移后执行 `script/migrate_users.sql`，从现有 `<workspace>_users` / `<workspace>_admins` role 成员关系回填 domain 注册表和用户目录。之后以 `--rbac` 启动 pg-wire；不在目录中的用户 token 会被拒绝。
-
-## 启用多工作空间和角色权限控制功能
-默认情况下，LakeSoul 并不会开启该功能。可以通过执行 `script/meta_rbac_init.sql` 启用该功能：
-```shell
-PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test
-```
-这里连接 PG 的用户需要是管理员用户，具有创建 Role、开启 RLS 的权限。可以根据实际 PG 的部署修改（包括最后的 database 名）。
-
 ## 创建工作空间
-LakeSoul 提供了创建工作空间的 PLSQL 脚本，位于 `script/meta_rbac_add_domain.sql`，执行方法：
-```shell
-PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_add_domain.sql -v domain="'test_workspace'"
+
+工作空间由 metadata 超级管理员通过 `script/meta_rbac_add_domain.sql` 创建：
+
+```sh
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/meta_rbac_add_domain.sql \
+  -v domain="'test_workspace'"
 ```
-该脚本需要 PG 管理员帐号执行。其中 -v domain 参数，为要创建的工作空间名。
 
-## 创建工作空间中的用户
-执行：
-```shell
-PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_add_user.sql -v domain="'test_workspace'" -v user="'admin1'" -v is_admin='true'
-PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_add_user.sql -v domain="'test_workspace'" -v user="'user1'" -v is_admin='false'
+`-v domain` 参数是工作空间名。脚本会创建 `<workspace>`、`<workspace>_admins`、`<workspace>_users` 三个 PostgreSQL role，并登记到 domain registry。
+
+## 创建工作空间管理员
+
+metadata 超级管理员用同一个用户脚本、设置 `is_admin=true` 创建工作空间的第一个管理员：
+
+```sh
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/meta_rbac_add_user.sql \
+  -v domain="'test_workspace'" \
+  -v user="'admin1'" \
+  -v is_admin='true'
 ```
-该脚本需要 PG 管理员帐号执行。其中 domain 参数指定该用户所属的工作空间，user 参数为用户名，is_admin 参数配置是否是管理员。执行这个脚本，会为该用户分配一个具有对应工作空间和角色的 PG 用户，并生成一个 PG 连接的随机密码。后续该用户需要使用该用户名和密码作为 LakeSoul 元数据连接的参数。每个用户的密码需要自行妥善保管，不可泄漏给他人。
 
-## 用户访问 LakeSoul
-参考 [元数据配置](./metadata-postgres.md) 中的方法，使用用户自身的用户名、密码，建立与 LakeSoul 元数据库的连接。
+脚本会在需要时创建 PostgreSQL role，授予工作空间和 `<workspace>_admins` 角色，写入 `domain_admin` 行，并打印生成的 PostgreSQL 密码。请保存该密码，用户连接 metadata 库时需要使用。对已有用户重复执行脚本不会重置密码。
 
-同时，还需要增加一个额外的配置项来指定工作空间。可以用环境变量 `LAKESOUL_CURRENT_DOMAIN` 或 JVM 属性 `lakesoul.current.domain` 来传递该用户的工作空间。设置这些参数后，Spark/Flink/Presto/Python 的作业即可实现工作空间划分和元数据隔离。
+工作空间管理员不能通过 pg-wire 的 `CREATE USER` 创建另一个工作空间管理员；需要由 metadata 超级管理员执行本脚本。
+
+## 创建普通用户
+
+普通用户用同一个脚本、设置 `is_admin=false` 创建：
+
+```sh
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/meta_rbac_add_user.sql \
+  -v domain="'test_workspace'" \
+  -v user="'user1'" \
+  -v is_admin='false'
+```
+
+脚本会授予 `<workspace>` 和 `<workspace>_users`，并把用户登记到用户目录。生成的密码只打印一次，用户连接 metadata 库时需要使用。
+
+工作空间有管理员之后，普通用户也可以由该管理员通过 pg-wire 创建：
+
+```sql
+CREATE USER user2 WITH PASSWORD 'secret';
+```
+
+SQL 行为、密码要求和限制见[创建用户](../engine/postgres/authentication.md#创建用户)。
+
+## 配置用户访问 LakeSoul
+
+使用用户自己的 PostgreSQL 用户名和密码建立 metadata 连接，参考[元数据配置](metadata-postgres.md)。同时设置工作空间：
+
+```sh
+export LAKESOUL_CURRENT_DOMAIN='test_workspace'
+```
+
+或 JVM 属性：
+
+```properties
+lakesoul.current.domain=test_workspace
+```
+
+设置后，Spark/Flink/Presto/Python 作业会被限制在该工作空间内，只能读写该空间的元数据。
 
 ## 与存储系统的权限集成
-在 HDFS 集群中，通常还需要隔离 HDFS 上的物理数据。LakeSoul 会自动在建表时，将 namespace 和表目录的用户组设置为当前用户和工作空间。并将 namespace 目录权限设置为 `drwx-rwx-___`，将表目录权限设置为 `drwx-r_x-___` 。
 
-在多租户 Hadoop 环境中，建议在作业提交客户机上，为每个用户分配 Linux 用户，与 Hadoop 用户组同步。并为每个用户设置好 LakeSoul 元数据连接的环境变量(可以添加到每个用户的 `~/.bashrc` 中)。除集群管理员外，其他用户在客户机上不应有 sudo 权限。
+在 HDFS 集群中，还需要隔离物理数据。LakeSoul 在建 namespace 或表时，会把目录的 user 和 group 设置为当前用户和工作空间：namespace 目录权限为 `drwx-rwx-___`，表目录权限为 `drwx-r_x-___`。目前 Hadoop 存储主要支持 HDFS；S3 等对象存储的目录隔离由下面的 S3 proxy 提供。
 
-如果使用 Zeppelin 等开发环境，可以参考 Zeppelin 的 [User Impersonation](https://zeppelin.apache.org/docs/0.10.0/usage/interpreter/user_impersonation.html) 功能，在每个用户创建 Notebook 时，自动进行 Linux 用户的切换(通过 `sudo -u`)。其他开发工具也可以参考实现类似的机制。
+在多租户 Hadoop 环境中，建议在作业提交客户机上为每个用户分配 Linux 用户，并与 Hadoop 用户组同步。为每个用户设置 LakeSoul metadata 连接的环境变量（例如写入 `~/.bashrc`）。除集群管理员外，其他用户不应在客户机上拥有 sudo 权限。
 
-对于 S3 等对象存储，LakeSoul 提供了 `S3 Proxy`服务，用于实现对象存储上目录的权限隔离。`S3 Proxy`采用 Sidecar 转发模式，拦截 S3 的 http 请求，结合当前用户名信息判断是否具有要访问的目标表的权限。
+如果使用 Zeppelin 等开发环境，可以参考
+[User Impersonation](https://zeppelin.apache.org/docs/0.10.0/usage/interpreter/user_impersonation.html)。
+用户创建 Notebook 时，Zeppelin 会通过 `sudo -u` 切换到对应的 Linux 用户；其他工具也可以实现类似机制。
+
+对于 S3 等对象存储，LakeSoul 提供 `S3 Proxy` 做目录级权限隔离。它采用 sidecar 转发模式，拦截 S3 HTTP 请求，结合当前用户判断是否有权访问目标表。sidecar 需要一个 catalog-reader 的 metadata 账号来评估跨空间授权。
+
+## 存量部署
+
+已有 4.x 部署先执行 metadata 迁移：
+
+```sh
+python3 script/metadata_migrate.py migrate
+```
+
+然后从现有的 `<workspace>_users` / `<workspace>_admins` role 成员关系回填工作空间注册表和 pg-wire 用户目录：
+
+```sh
+PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
+  -f script/migrate_users.sql lakesoul_test
+```
+
+之后以 `--rbac` 启动 pg-wire 时，不在目录中的用户 token 会被拒绝。
+
+## 表级访问控制
+
+工作空间隔离是外层边界；表级 ACL 在空间内部进一步控制访问（owner 可写、同空间默认只读、跨空间只读授权）。具体规则、`GRANT` / `REVOKE` 示例和 SQL `CREATE USER` 见[认证与权限](../engine/postgres/authentication.md#表级-acl)。
