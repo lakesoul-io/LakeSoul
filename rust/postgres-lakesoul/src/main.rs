@@ -346,6 +346,11 @@ async fn main_inner(cli: Cli) -> Result<()> {
     alter::register_metrics();
     auth::register_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
+    if cli.subscription_runner
+        && (cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some())
+    {
+        rootcause::bail!("--subscription-runner and --subscribe are mutually exclusive");
+    }
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
         return subscribe::run(
             cli.subscribe,
