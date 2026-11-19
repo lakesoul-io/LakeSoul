@@ -611,7 +611,6 @@ create table if not exists ivm.views
 (
     view_id              text primary key,
     spec                 jsonb not null,
-    refresh_interval_ms  bigint not null default 0,
     status               text not null default 'active',
     last_epoch           bigint not null default 0,
     generation           bigint not null default 0,
