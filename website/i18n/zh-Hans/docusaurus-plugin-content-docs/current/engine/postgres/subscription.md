@@ -231,6 +231,35 @@ FROM subscription.tables;
 
 订阅进程会写每个订阅自己的日志。启动端点时用 `--subscription-log-dir` 配置日志目录；未设置时使用 `LAKESOUL_LOG_DIR`，再没有就使用系统临时目录下的目录。
 
+## 独立订阅 runner
+
+默认端点自己拉起订阅子进程（`local` 执行器）。在 Kubernetes 中，或者希望把快照的 CPU/内存从 coordinator Pod 中隔离出来时，可以使用外部执行器并单独运行 runner：
+
+```bash
+# Coordinator：只写期望状态，需要时等待 runner。
+postgres-lakesoul --subscription-executor external ...
+
+# 一个 runner 管理订阅子进程和租约。
+postgres-lakesoul --subscription-runner \
+  --runner-id "$HOSTNAME" \
+  --subscription-log-dir /var/log/lakesoul/subscriptions
+```
+
+runner 按轮询间隔 reconcile `subscription.subscriptions`。子进程运行期间它持有
+`subscription.progress.owner` / `lease_expires_at`，为 `starting` 启动子进程，为
+`disabled` 停止子进程，并完成 `dropping`。runner 只应运行一个副本：租约可以防止
+两个 runner 同时管理同一个订阅，但还不是完整的 HA 协议；MySQL 源也没有
+replication slot 来阻止重复订阅进程。
+
+该模式下的 SQL 语义：
+
+- `CREATE SUBSCRIPTION` 和 `ALTER ... ENABLE` 写入期望状态后返回，子进程异步启动；
+- `ALTER ... DISABLE` 和 `DROP SUBSCRIPTION` 最多等待 30 秒，直到 runner 把状态置为
+  `disabled` 或删除行。超时返回 SQLSTATE `55006`，行保留在 `disabling` / `dropping`，
+  runner 恢复后可重试。
+
+CLI 创建的订阅不会被 runner 自动管理，仍然需要手动启动。
+
 ## 生命周期
 
 ```sql
@@ -244,7 +273,7 @@ DROP SUBSCRIPTION IF EXISTS users_from_app;
 - `DISABLE` 停止订阅进程，但保留 replication slot。长时间暂停会继续在源库保留 WAL。
 - `ENABLE` 从持久化 watermark 继续运行。
 - `DROP` 停止进程、删除源库 replication slot，并删除订阅元数据。
-- SQL 创建且处于启用状态的订阅会在端点重启后自动拉起。
+- SQL 创建且处于启用状态的订阅会在本地端点或外部订阅 runner 重启后自动拉起。
 - 子进程异常退出会记录为 `error`，不会无限重试；执行 `ENABLE` 或重启端点会再次启动。
 
 用 CLI 创建的订阅不会被端点自动拉起，因此手动启动的订阅进程不会被重复启动。
@@ -253,7 +282,7 @@ DROP SUBSCRIPTION IF EXISTS users_from_app;
 
 1. `CREATE SUBSCRIPTION` 校验源 publication、源表、`REPLICA IDENTITY FULL`、主键和列类型，再校验目标 CDC 表。
 2. 把定义和零进度写入 `subscription.subscriptions`、`subscription.tables` 和 `subscription.progress`。
-3. 端点启动本地子进程：
+3. 端点（本地模式）或独立 runner（外部模式）启动子进程：
 
    ```text
    postgres-lakesoul --subscribe --subscription-id <name>

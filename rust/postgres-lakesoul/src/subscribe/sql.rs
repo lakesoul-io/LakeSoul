@@ -42,7 +42,7 @@ use super::source;
 use super::state::{
     SubscriptionDefinition, SubscriptionMetadata, SubscriptionRecord, TableDefinition,
 };
-use super::supervisor::{SubscriptionSupervisor, drop_replication_slot};
+use super::supervisor::SubscriptionSupervisor;
 use super::{
     SchemaEvolution, SnapshotMode, ordinary_url, parse_source_table, sanitized_error,
 };
@@ -577,27 +577,20 @@ impl SubscriptionStatementHook {
             return Err(undefined_subscription(name));
         };
         require_supervised(&record)?;
-        self.supervisor.stop(name).await.map_err(|error| {
-            user_error("XX000", sanitized_error(&error, &record.source_url))
-        })?;
-        if record.source_kind != "mysql" {
-            drop_replication_slot(&ordinary_url(&record.source_url), &record.slot)
-                .await
-                .map_err(|error| {
-                    let text = sanitized_error(&error, &record.source_url);
-                    user_error(
-                        if text.contains("connect to source PostgreSQL") {
-                            "08006"
-                        } else {
-                            "55006"
-                        },
-                        text,
-                    )
-                })?;
-        }
-        if !metadata.unregister(name).await.map_err(internal)? && !if_exists {
-            return Err(undefined_subscription(name));
-        }
+        self.supervisor
+            .drop_subscription(&record)
+            .await
+            .map_err(|error| {
+                let text = sanitized_error(&error, &record.source_url);
+                user_error(
+                    if text.contains("connect to source PostgreSQL") {
+                        "08006"
+                    } else {
+                        "55006"
+                    },
+                    text,
+                )
+            })?;
         Ok(Response::Execution(Tag::new("DROP SUBSCRIPTION")))
     }
 
@@ -607,29 +600,15 @@ impl SubscriptionStatementHook {
             return Err(undefined_subscription(name));
         };
         require_supervised(&record)?;
-        if enable {
-            metadata.set_enabled(name, true).await.map_err(internal)?;
-            if !self.supervisor.is_running(name).await {
-                metadata
-                    .set_state(name, "starting", None)
-                    .await
-                    .map_err(internal)?;
-                if let Err(error) = self.supervisor.start(name).await {
-                    let text = sanitized_error(&error, &record.source_url);
-                    let _ = metadata.set_state(name, "error", Some(&text)).await;
-                    return Err(user_error("XX000", text));
-                }
-            }
+        let result = if enable {
+            self.supervisor.enable(&record).await
         } else {
-            self.supervisor.stop(name).await.map_err(|error| {
-                user_error("XX000", sanitized_error(&error, &record.source_url))
-            })?;
-            metadata.set_enabled(name, false).await.map_err(internal)?;
-            metadata
-                .set_state(name, "disabled", None)
-                .await
-                .map_err(internal)?;
-        }
+            self.supervisor.disable(&record).await
+        };
+        result.map_err(|error| {
+            let text = sanitized_error(&error, &record.source_url);
+            user_error("55006", text)
+        })?;
         Ok(Response::Execution(Tag::new("ALTER SUBSCRIPTION")))
     }
 

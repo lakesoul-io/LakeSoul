@@ -749,18 +749,81 @@ impl SubscriptionMetadata {
         Ok(row.is_some())
     }
 
-    pub async fn list_enabled_ids(&self) -> Result<Vec<String>> {
+    /// Every SQL-created subscription with its desired switch and state. The
+    /// runner reconciles this list; CLI-created subscriptions are excluded
+    /// because they are not supervised.
+    pub async fn list_supervised(&self) -> Result<Vec<(String, bool, String)>> {
         let rows = self
             .client
             .query(
-                "select subscription_id from subscription.subscriptions \
-                 where enabled and supervised order by subscription_id",
+                "select subscription_id, enabled, state \
+                 from subscription.subscriptions where supervised \
+                 order by subscription_id",
                 QueryType::RW,
                 &[],
             )
             .await
-            .map_err(|error| report!("list enabled subscriptions: {error}"))?;
-        Ok(rows.iter().map(|row| row.get(0)).collect())
+            .map_err(|error| report!("list supervised subscriptions: {error}"))?;
+        Ok(rows
+            .iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2)))
+            .collect())
+    }
+
+    pub async fn state(&self, subscription_id: &str) -> Result<Option<String>> {
+        let row = self
+            .client
+            .query_opt(
+                "select state from subscription.subscriptions \
+                 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id],
+            )
+            .await
+            .map_err(|error| report!("read subscription state: {error}"))?;
+        Ok(row.map(|row| row.get(0)))
+    }
+
+    /// Take or renew the per-subscription runner lease. A runner that is
+    /// already the owner always succeeds; an expired lease can be taken over.
+    pub async fn acquire_lease(
+        &self,
+        subscription_id: &str,
+        owner: &str,
+        ttl: std::time::Duration,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let expires =
+            now.saturating_add(i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX));
+        let updated = self
+            .client
+            .execute(
+                "update subscription.progress \
+                 set owner = $2, lease_expires_at = $3, updated_at = $4 \
+                 where subscription_id = $1 \
+                   and (owner is null or owner = $2 or lease_expires_at is null \
+                        or lease_expires_at < $4)",
+                QueryType::RW,
+                &[&subscription_id, &owner, &expires, &now],
+            )
+            .await
+            .map_err(|error| report!("acquire subscription lease: {error}"))?;
+        Ok(updated > 0)
+    }
+
+    pub async fn release_lease(&self, subscription_id: &str, owner: &str) -> Result<()> {
+        let now = now_ms();
+        self.client
+            .execute(
+                "update subscription.progress \
+                 set owner = null, lease_expires_at = null, updated_at = $3 \
+                 where subscription_id = $1 and owner = $2",
+                QueryType::RW,
+                &[&subscription_id, &owner, &now],
+            )
+            .await
+            .map_err(|error| report!("release subscription lease: {error}"))?;
+        Ok(())
     }
 
     pub async fn set_process(
