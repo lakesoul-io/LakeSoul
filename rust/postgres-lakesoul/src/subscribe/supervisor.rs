@@ -176,6 +176,9 @@ impl SubscriptionSupervisor {
             .arg("--subscription-id")
             .arg(subscription_id)
             .arg("--no-metrics")
+            // A runner started through the environment must not pass its own
+            // role switch to the subscriber child.
+            .env_remove("LAKESOUL_PG_SUBSCRIPTION_RUNNER")
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
