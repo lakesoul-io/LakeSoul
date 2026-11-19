@@ -112,6 +112,11 @@ agent_export/
 
 **/result
 
+# Local all-in-one deployment state (docker/lakesoul-all-in-one)
+/warehouse/
+/pgdata/
+/scratch/
+
 
 
 # Local benchmark raw data / scripts (not published)
