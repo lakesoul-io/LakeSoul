@@ -211,12 +211,9 @@ pub struct MultiJoinView {
     pub conditions: Vec<MultiJoinCondition>,
     /// Every key comparison matches NULL with NULL.
     pub null_safe: bool,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl MultiJoinView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         sources: Vec<IvmTable>,
@@ -234,7 +231,6 @@ impl MultiJoinView {
             columns,
             conditions: Vec::new(),
             null_safe: false,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -816,9 +812,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Materialize every computed key of one source on a frame.  A keyed walk

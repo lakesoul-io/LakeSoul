@@ -55,7 +55,7 @@ impl StateIndexMode {
 #[derive(Debug, Clone)]
 pub struct IvmOptions {
     /// Maximum number of keyed state streams one lookup plan may expand at
-    /// once.  `None` leaves the gate unbounded and lets the scheduler decide.
+    /// once.  `None` leaves the gate unbounded and lets the caller decide.
     pub max_active_tasks: Option<usize>,
     /// Number of independent views a chain refresh may run concurrently.
     pub view_parallelism: usize,

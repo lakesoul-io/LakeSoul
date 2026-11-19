@@ -32,7 +32,9 @@ The statement is interpreted as **incremental maintenance** of the target
 table, not as a plain data insert: the first execution bootstraps the view from
 the current source state, later executions consume the source changelog and
 apply only the delta. `INSERT OVERWRITE` keeps full-overwrite semantics and
-recomputes the view from the current source state.
+recomputes the view from the current source state. The PostgreSQL front end
+currently accepts only plain `INSERT INTO ... SELECT`; `INSERT OVERWRITE` is
+available through the Rust API.
 
 * The target MV table must already exist and its schema must match the view
   (the executor validates it before any side effect).
@@ -47,10 +49,13 @@ Ordinary SQL execution is untouched; callers opt in by going through
 
 ## Supported query shapes
 
-Every source is keyed (a LakeSoul primary key, i.e. upsert semantics);
-append-only sources are rejected (see [Sources](#sources)) — unless the
-statement falls back to a full recompute (Tier-2, see
-[Refresh semantics](#refresh-semantics)). Aggregates and
+Incremental maintenance requires every source to be keyed (a LakeSoul primary
+key, i.e. upsert semantics). Append-only sources are rejected by the incremental
+analyzer; a statement over an insert-only append source can still be registered
+as a Tier-2 fallback when fallback is enabled, in which case the whole statement
+is recomputed from current state (see [Refresh semantics](#refresh-semantics)).
+A delete marker without a key cannot retract its insert row, so delete-bearing
+append-only sources remain outside the maintained contract. Aggregates and
 windows follow SQL NULL semantics; primary keys
 used as row identities must be non-nullable.
 
@@ -403,9 +408,13 @@ needs none).  A typical trap: the two branches of a
 * A **keyed** source (LakeSoul primary key) supports upserts, deletes and
   join-key changes: the refresh reads the changed keys' previous state as of
   the window start and retracts it.
-* Every source must be **keyed**: the refresh folds the changelog through
-  merge-on-read and retracts by key, so an append-only source (with or without
-  a change column) is rejected when the statement is analyzed.
+* Incremental maintenance requires every source to be **keyed**: the refresh
+  folds the changelog through merge-on-read and retracts by key, so an
+  append-only source (with or without a change column) is rejected when the
+  statement is analyzed. A statement over an insert-only append source can
+  still be a Tier-2 fallback (full recompute) when fallback is enabled; it is
+  not maintained incrementally, and a delete marker cannot retract its insert
+  row without a key.
 * Columns may be **nested** (`Struct`, `List`, `Map`): they are opaque
   payloads the refresh copies through, so row views, aggregates, joins, unions
   and windows all carry them (including NULL, empty and nested-NULL values),
@@ -511,21 +520,27 @@ after merge-on-read, so it can never resurrect an older version of a key).
   advances the cursors. The before state of a window is read per partition from
   its own pinned version, so partitions whose cursors moved apart stay
   consistent.
+* Sources advance independently. A refresh may read table A at version `a1` and
+  table B at `b1`; the result is the same state a direct query over those two
+  versions would see. IVM does not invent a cross-table transaction boundary:
+  when the upstream commits several tables atomically and the MV must never
+  expose a partial transaction, write them through one source table or carry an
+  explicit transaction boundary.
 * **Cascading views**: a statement only reads the current state of the views
-  it references.  A scheduler advances a whole chain with
-  `IvmRuntime::refresh_view_chain(view_id)` (`refresh_view_chains` covers
-  several roots in one traversal): the dependency graph is discovered from
-  the registered specs, the views refresh upstream first and each view once,
-  and a cycle is rejected with its path.  The default `ChainPolicy` retries a
-  failing view once, rebuilds it from the full source state when the
-  incremental refresh keeps failing (or when the view is marked `dirty`),
-  and aborts the chain -- leaving the view `dirty` with `last_error` set --
-  when even the rebuild fails, so downstream views never read an upstream
+  it references.  The caller (an external scheduler or an application) advances
+  a whole chain with `IvmRuntime::refresh_view_chain(view_id)`
+  (`refresh_view_chains` covers several roots in one traversal): the dependency
+  graph is discovered from the registered specs, the views refresh upstream
+  first and each view once, and a cycle is rejected with its path.  The default
+  `ChainPolicy` retries a failing view once, rebuilds it from the full source
+  state when the incremental refresh keeps failing (or when the view is marked
+  `dirty`), and aborts the chain -- leaving the view `dirty` with `last_error`
+  set -- when even the rebuild fails, so downstream views never read an upstream
   that stayed behind.  `IvmSqlExecutor::with_refresh_upstream(true)` opts a
   statement into bringing the views it reads up to date first (same policy,
   one traversal), and a `dirty` target view is rebuilt by the statement
-  itself.  `IvmMetadata::list_views` lists the views with their status,
-  interval and last error.
+  itself.  `IvmMetadata::list_views` lists the views with their status and last
+  error.
 * The user-visible target must carry the `rowKinds` change column.  A missing
   `__ivm_epoch` column is added to the table schema and the target is rebuilt.
   A rebuild replaces the target with one atomic `UpdateCommit`; it never
@@ -590,6 +605,22 @@ Every refresh attempt also records `last_refresh_at`, `last_check_at`,
 `ivm.views`; `IvmMetadata::list_views` exposes them through `ViewInfo`, and
 `IvmRuntime::view_source_lag` computes the current per-partition source gap on
 demand.
+
+## Orchestration and backfill
+
+LakeSoul IVM does not embed a trigger or scheduler. A refresh is an ordinary,
+idempotent statement or API call; an external orchestrator (Airflow,
+DolphinScheduler, cron, or an application) decides when to run it and owns DAG
+dependencies, retries, SLAs and alerting. This keeps a second stateful service,
+leader election and deployment-specific scheduling out of the runtime, and gives
+SQL and Python callers the same contract.
+
+Backfill is a batch concern. A common layout uses a cutover boundary: older
+partitions are written in full by the batch path and are outside the view's
+owned partitions, while new partitions are maintained incrementally. Airflow
+and DolphinScheduler already provide range-based backfill, so IVM does not
+replay historical partitions; it only needs to stay inside the retention/cursor
+rules above.
 
 ## Cleanup
 
@@ -753,14 +784,15 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
 * `UNNEST` is the exception: it is rejected outright even when the target
   allows fallback, because the expanded rows have no stable element key
   (see [Sources](#sources)); expand the array upstream instead.
+* temporal joins (`FOR SYSTEM_TIME AS OF`) are not maintained. A current-state
+  lookup join is not a substitute when the historical fact row must see the
+  dimension version that was current at its event time; keep that join in the
+  batch/streaming engine or materialize the versioned dimension upstream.
 
 * a non-equality join condition is maintained for the two-source inner and
   cross joins (a compared column the select list does not carry becomes a
   hidden payload column); an outer join or a chain step with a residual
   condition stays rejected;
-* `COUNT(DISTINCT ...)` as a select-list correlated scalar subquery:
-  DataFusion plans it as two aggregate levels, so the maintained subquery
-  would correlate on the distinct key too;
 * a single-sided inner join over a side without a primary key (the pair
   shape its duplicates need cannot key it): a right side keyed by the join
   key stays the semi (membership) shape, and otherwise the pair join
@@ -811,11 +843,12 @@ boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
   a subquery or window function **above** an aggregate; correlated `EXISTS` /
   `IN` subqueries are supported as semi/anti joins;
 * append-only sources (with or without a change column): incremental views
-  need keyed sources and reject them when the statement is analyzed. The same applies to a projection/filter view: a `delete`
-  marker is never materialized as a row, but the matching insert row stays
-  (there is no key to retract it), and views that recompute from the current
-  state are not maintained over such sources yet (see the CDC plan in
-  `PLAN.md`).
+  need keyed sources and reject them when the statement is analyzed. A
+  Tier-2 fallback can recompute the current state for an insert-only append
+  source, but that is a full recompute, not incremental maintenance. The same
+  applies to a projection/filter view: a `delete` marker is never materialized
+  as a row, but the matching insert row stays (there is no key to retract it),
+  so delete-bearing append-only sources are not maintained.
 
 ## Performance
 
@@ -853,6 +886,8 @@ The crate has three test layers:
   sql_oracle` (a custom seed whose data stays empty no longer fails the
   coverage guard);
 * typed runtime tests (e.g. `tests/join_keyed.rs`, `tests/window_refresh.rs`);
+* fallback tests (`tests/fallback_views.rs`), including an insert-only append
+  source recomputed through Tier-2;
 * typed coverage for `Float64` / `Decimal128` / `Date32` / `Boolean` inputs
   (`tests/slt/typed_*.slt` and `union_types.slt`), including NULL handling and
   the non-NULL count.

@@ -422,7 +422,6 @@ create table if not exists ivm.views
 (
     view_id              text primary key,
     spec                 jsonb not null,
-    refresh_interval_ms  bigint not null default 0,
     status               text not null default 'active',
     last_epoch           bigint not null default 0,
     generation           bigint not null default 0,
@@ -470,6 +469,11 @@ alter table if exists ivm.views
     add column if not exists last_error_at bigint;
 alter table if exists ivm.views
     add column if not exists consecutive_failures bigint not null default 0;
+
+-- IVM does not schedule refreshes; drop the pre-release hint from databases
+-- that were initialized before the field was removed.
+alter table if exists ivm.views
+    drop column if exists refresh_interval_ms;
 
 create table if not exists ivm.cursors
 (

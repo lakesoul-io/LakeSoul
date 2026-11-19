@@ -168,7 +168,6 @@ async fn refresh_spec_drives_a_registered_view() {
         filter: None,
         having: None,
         average: false,
-        refresh_interval_ms: 7_000,
     };
     runtime.register_view(&view).await.unwrap();
 
@@ -224,13 +223,6 @@ async fn refresh_spec_drives_a_registered_view() {
         HashMap::from([("a".to_string(), 31), ("c".to_string(), 7)])
     );
 
-    // The refresh preserves the registered scheduling interval instead of
-    // overwriting it with the spec-only default.
-    let metadata = IvmMetadata::from_env().await.unwrap();
-    assert_eq!(
-        metadata.view_refresh_interval_ms(&view_id).await.unwrap(),
-        Some(7_000)
-    );
     let states = runtime.list_states(&view_id).await.unwrap();
     assert_eq!(states.len(), 1);
     assert_eq!(states[0].table_id, mv.table_id);
@@ -314,7 +306,7 @@ async fn view_definition_hash_and_sql_roundtrip() {
     metadata.init_schema().await.unwrap();
     let view_id = format!("m1_def_{}", uuid::Uuid::new_v4().simple());
     metadata
-        .upsert_view(&view_id, &json!({"kind": "sum_count"}), 0)
+        .upsert_view(&view_id, &json!({"kind": "sum_count"}))
         .await
         .unwrap();
     assert_eq!(metadata.view_definition(&view_id).await.unwrap(), None);

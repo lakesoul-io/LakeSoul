@@ -49,17 +49,19 @@
   ~~as-of 下沉 TableProvider~~、~~changelog 表级单扫描~~（已完成）→
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
   `pk_locator` 泛化 → `DataCommitInfo` 时间单位与 JNI DAO offset 小修
-- **P3**：SQL 前端（SQL → 逻辑计划改写）与 tokio 调度器（interval/拓扑序、级联 MV、
-  dirty 自动重建）→ PG `CREATE/REFRESH MATERIALIZED VIEW` 表面（postgres-lakesoul）
-  （P2 已全部收尾）。SQL 增量入口的后续路线（WHERE、测试深度、算子扩展、框架扩展
-  checklist）见 §10；M1（spec 驱动）/M2（形状分析）/M3（专用执行器）/M4（sqllogictest +
-  差分 oracle）均已合并。
+- **P3**：SQL 前端（SQL → 逻辑计划改写）→ PG `CREATE/REFRESH MATERIALIZED VIEW` 表面
+  （postgres-lakesoul）（P2 已全部收尾）。刷新触发和调度由外部编排（Airflow、
+  DolphinScheduler 等）负责，内核只提供幂等的 refresh/rebuild API 与拓扑刷新
+  `refresh_view_chain`，不内置定时器/守护进程。SQL 增量入口的后续路线（WHERE、测试深度、
+  算子扩展、框架扩展 checklist）见 §10；M1（spec 驱动）/M2（形状分析）/M3（专用执行器）/
+  M4（sqllogictest + 差分 oracle）均已合并。
 
 ## 0. 背景与边界
 
 为 IVM（增量物化视图）落地补齐 **LakeSoul 核心缺失能力**。改动落在
 `rust/lakesoul-metadata`、`rust/lakesoul-io`、PostgreSQL schema 与测试层面。
-IVM 上层（调度、delta DAG、状态表协议）作为后续阶段，本计划为其定义接口约束。
+IVM 上层（delta DAG、状态表协议）作为后续阶段，本计划为其定义接口约束；刷新触发与调度
+由外部编排负责，内核不内置定时器/调度服务。
 
 ### 已确认决策
 
@@ -67,7 +69,8 @@ IVM 上层（调度、delta DAG、状态表协议）作为后续阶段，本计�
    后续由 JVM 在 `list tables` 时过滤掉内部表使其不可见。
 2. **changelog**：Rust 侧按 version 区间消费，timestamp 仅作水位/发现；显式返回
    `requires_rebuild` 与 `deleted_partitions`，与 JVM 现有语义有意分歧。
-3. **保留策略**：v1 只做文档约束，不做 cursor-aware GC。
+3. **保留策略**：v1 只做文档约束；后续已由 Flink `NewCleanJob` 实现 cursor-aware
+   retention（见 §6 实施记录）。
 4. 先写本计划，再从 P0-1（as-of 读 API）开始实现。
 
 ## 1. 能力矩阵与优先级
@@ -301,14 +304,14 @@ PG 唯一键错误。JVM 侧有完整实现（`integrations/lakesoul-common/src/
 
 - 事实：默认**不自动删除**历史；唯一风险来自 opt-in 的 `partition.ttl` /
   `compaction.ttl` / 异步清理 job / `cleanOldCompaction`。
-- v1 策略：文档约束"IVM 消费的表不配置上述 TTL"，不做 cursor-aware GC。
+- v1 策略：文档约束"IVM 消费的表不配置上述 TTL"，不做 cursor-aware GC（后续已实现，见下）。
 - 后续（P2）：新建 `ivm.cursors` 水位检查点，清理前校验 `min(cursor) - grace`；
-  可参考 `vector_index_lease` 模式（`rust/lakesoul-metadata/src/vector_index.rs:65,149`）。
+  该项已由 Flink `NewCleanJob` 的 cursor-aware retention 实现。
 
 **实施记录（已完成）**：约束写入 crate 级文档
 （`rust/lakesoul-ivm/src/lib.rs` 的 `# Retention` 一节）：IVM 消费的表必须保持默认
 保留策略，不配置 `partition.ttl` / `compaction.ttl` / `dataExpiredTime`，也不启用
-`cleanOldCompaction`；cursor-aware GC 留待后续。
+`cleanOldCompaction`；cursor-aware GC 已由 Flink `NewCleanJob` 实现（见 §6 实施记录）。
 
 **实施记录（2026-11）**：Flink `NewCleanJob` 已按 `ivm.cursors` 的每个
 `(source_table_id, partition_desc)` 最小 `last_version` 保留源版本、commit 和文件；
@@ -936,11 +939,11 @@ pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑�
   保持全量覆盖语义。M1 先补"spec 即状态"的基础设施。
 - `IvmTable::from_table_info` + `IvmRuntime::open_table/open_table_by_id`：按名称/id 从元数据
   重建内部或用户表（schema 优先 Arrow IPC、回退 JSON；解析 PK、桶列、CDC 列、物理格式）。
-- `IvmRuntime::refresh_spec(&ViewSpec)`：从规范 JSON 打开全部相关表并调用对应的 `refresh_*`，
-  并保留 `ivm.views.refresh_interval_ms`（否则 `register_*` 会用 0 覆盖调度区间）；
-  新增 `ViewSpec::view_id()`。
+- `IvmRuntime::refresh_spec(&ViewSpec)`：从规范 JSON 打开全部相关表并调用对应的 `refresh_*`；
+  新增 `ViewSpec::view_id()`。（早期版本还持久化过一个刷新间隔提示，
+  该字段随后因不内置调度而移除。）
 - `ivm.views` 增列 `definition_hash` / `source_sql`（幂等 alter），新增
-  `view_refresh_interval_ms` / `set_view_definition` / `view_definition`；
+  `set_view_definition` / `view_definition`；
   `ivm.states` 新增 `unregister_state` —— 注册表对"同一 role 换表"保持**报错拒绝**，
   重建视图必须先注销再注册（正是定义变化清理旧 state 表所需的语义）。
 - 测试 `tests/spec_dispatch.rs`：open 往返（name/id、各属性）、spec 驱动首跑+增量刷新、
@@ -1067,8 +1070,8 @@ pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑�
      实现（受影响分区重算语义）。
   d. **连接模型**：目前仅单层 join、同名列、每侧一个 payload；多表/外连接需要新的 spec
      形态（join 树/条件列表）。
-  e. **视图级联**：MV 作为另一个 MV 的源（cascading views）尚未验证；调度器需要保证
-     拓扑序刷新。
+  e. **视图级联**：MV 作为另一个 MV 的源（cascading views）尚未验证；外部调度需要保证
+     拓扑序刷新（或调用 `refresh_view_chain`）。
 - 结论：本计划先补 (a) 并顺手验证 (e)（已在 §10.19 验证）；b–e 作为已知扩展点登记在 §10.4。
 
 ### 10.2 W0：过滤谓词表示（与 W1 同一个 PR）
@@ -1380,7 +1383,8 @@ pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑�
     `rowKinds`，上游写下的 `delete` 撤回行会像其它 CDC 标记一样在下游读取时被过滤。
   - 下游增量刷新的窗口/游标机制对上游 MV 同样生效；上游更新/删除经两层传播。
   - 重放（无新文件）在上游/下游都是 no-op；SQL 入口同样可用（executor 自动注册上游 MV）。
-- **契约**：调度方（或未来的调度器）必须按拓扑序刷新；本 PR 只验证语义，不引入调度。
+- **契约**：外部编排必须按拓扑序刷新（或调用 `refresh_view_chain`）；本 PR 只验证语义，
+  不引入调度。
 - **测试**：新增 `tests/cascading_views.rs`：
   1. 运行时两层 SUM/COUNT 链（bootstrap、更新、删除、重放 no-op）；
   2. SQL executor 路径的两层链；
@@ -2777,9 +2781,9 @@ pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑�
 
 - **默认不隐式刷新**：读上游 MV 的语句仍只读取其当前状态（保持原有被动语义，避免"写 mv3
   却改了 mv1"的隐式副作用与时间旅行破坏）。
-- **调度器 API**：`IvmRuntime::refresh_view_chain(view_id)` —— 从目标视图出发按拓扑序
+- **链刷新 API**：`IvmRuntime::refresh_view_chain(view_id)` —— 从目标视图出发按拓扑序
   （显式栈的后序遍历、环安全、每个表一次）刷新自身及其上游，返回 `(view_id, epoch)` 列表
-  （`None` = 无变化），供调度器一次推进整条链。
+  （`None` = 无变化），供外部调度一次推进整条链。
 - **语句内 opt-in**：`IvmSqlExecutor::with_refresh_upstream(true)` 时，语句先对其引用的每个
   注册视图调用 `refresh_view_chain`，再执行本语句；默认 `false`。
 - **实现**：`ViewSpec::source_table_ids()` 汇总 spec 的源表 id（无需重新解析上游 SQL）；

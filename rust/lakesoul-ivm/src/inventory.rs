@@ -133,8 +133,6 @@ pub struct ViewInventory {
     pub last_action: Option<String>,
     /// The last committed epoch.
     pub last_epoch: i64,
-    /// The refresh interval hint in milliseconds (0 when unset).
-    pub refresh_interval_ms: i64,
     /// The sources this view reads, in definition order.
     pub sources: Vec<SourceRef>,
     /// The materialized output followed by every internal state table.
@@ -265,7 +263,7 @@ impl StateInventory {
             }
             let _ = writeln!(
                 out,
-                "[{}/{}] {}{} kind={} status={} epoch={} last={} interval={}ms",
+                "[{}/{}] {}{} kind={} status={} epoch={} last={}",
                 index + 1,
                 self.views.len(),
                 view.table_name,
@@ -273,8 +271,7 @@ impl StateInventory {
                 view.kind,
                 view.status,
                 view.last_epoch,
-                view.last_action.as_deref().unwrap_or("-"),
-                view.refresh_interval_ms
+                view.last_action.as_deref().unwrap_or("-")
             );
             if !view.sources.is_empty() {
                 let sources = view
@@ -660,16 +657,14 @@ impl IvmRuntime {
         };
         let bytes = tables.iter().map(|table| table.bytes).sum();
         let files = tables.iter().map(|table| table.files).sum();
-        let (status, last_action, last_epoch, refresh_interval_ms, fallback) = match info
-        {
+        let (status, last_action, last_epoch, fallback) = match info {
             Some(info) => (
                 info.status.clone(),
                 info.last_action.clone(),
                 info.last_epoch,
-                info.refresh_interval_ms,
                 info.fallback,
             ),
-            None => ("unknown".to_string(), None, 0, 0, false),
+            None => ("unknown".to_string(), None, 0, false),
         };
 
         Ok(ViewInventory {
@@ -683,7 +678,6 @@ impl IvmRuntime {
             status,
             last_action,
             last_epoch,
-            refresh_interval_ms,
             sources,
             tables,
             rows,

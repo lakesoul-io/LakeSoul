@@ -74,12 +74,9 @@ pub struct SemiAntiView {
     /// The rendered comparison predicate over the left row and the aggregate
     /// output column ([`IVM_RIGHT_AGG_COLUMN`]).
     pub match_predicate: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl SemiAntiView {
-    /// A `SEMI` join view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         left: IvmTable,
@@ -117,7 +114,6 @@ impl SemiAntiView {
             right_aggregate: None,
             right_keys: Vec::new(),
             match_predicate: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -243,7 +239,6 @@ fn semi_anti_probe(view: &SemiAntiView, left: &IvmTable, right: &IvmTable) -> Jo
         null_safe: view.null_safe,
         output_columns: Vec::new(),
         state: None,
-        refresh_interval_ms: view.refresh_interval_ms,
     }
 }
 
@@ -948,9 +943,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a value-count view.
@@ -1954,8 +1947,6 @@ pub struct LeftAggregateView {
     /// the rendered expression over [`IVM_RIGHT_AGG_COLUMN`], the MV column
     /// and the result type.
     pub output_exprs: Vec<(String, String, DataType)>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl LeftAggregateView {
@@ -1986,7 +1977,6 @@ impl LeftAggregateView {
             left_filter: None,
             right_filter: None,
             output_exprs: Vec::new(),
-            refresh_interval_ms: 0,
         }
     }
 
@@ -2058,7 +2048,6 @@ fn left_aggregate_probe(view: &LeftAggregateView) -> JoinView {
         null_safe: false,
         output_columns: Vec::new(),
         state: None,
-        refresh_interval_ms: view.refresh_interval_ms,
     }
 }
 
@@ -2424,9 +2413,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec()?)?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a left-aggregate view: the affected left rows are re-evaluated

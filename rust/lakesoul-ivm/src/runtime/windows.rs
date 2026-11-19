@@ -254,12 +254,9 @@ pub struct MultiWindowView {
     pub payload_columns: Vec<String>,
     /// An optional filter applied before windowing.
     pub filter: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl MultiWindowView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -273,7 +270,6 @@ impl MultiWindowView {
             windows,
             payload_columns: Vec::new(),
             filter: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -326,12 +322,9 @@ pub struct WindowView {
     pub columns: Vec<WindowColumn>,
     /// An optional filter applied before windowing.
     pub filter: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl WindowView {
-    /// A `ROW_NUMBER()` view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -412,7 +405,6 @@ impl WindowView {
             payload_columns: Vec::new(),
             columns,
             filter: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -511,8 +503,6 @@ pub struct TopKView {
     pub offset: i64,
     /// An optional filter applied before ranking.
     pub filter: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl TopKView {
@@ -537,7 +527,6 @@ impl TopKView {
             limit,
             offset: 0,
             filter: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -2283,9 +2272,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Persist a top-k view spec (idempotent).
@@ -2293,9 +2280,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// The persisted partition index for a window view.
@@ -2687,9 +2672,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     fn multi_window_index_role(index: usize) -> StateRole {

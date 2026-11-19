@@ -761,7 +761,6 @@ async fn multi_lookup_setup() -> MultiLookupFixture {
         mv: output.clone(),
         join_keys: vec!["jk".to_string()],
         output_columns,
-        refresh_interval_ms: 0,
     };
     MultiLookupFixture {
         runtime,

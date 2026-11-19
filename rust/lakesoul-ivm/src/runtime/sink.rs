@@ -31,8 +31,6 @@ pub struct SinkView {
     pub source_definition: String,
     /// The source view generation last consumed by this sink.
     pub source_generation: i64,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl SinkView {
@@ -130,10 +128,7 @@ pub async fn register_sink_view(runtime: &IvmRuntime, view: &SinkView) -> Result
         .register_state_tables(&view.view_id, &[(StateRole::Mv, &view.target)])
         .await?;
     let spec = serde_json::to_value(view.to_spec())?;
-    runtime
-        .metadata
-        .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-        .await
+    runtime.metadata.upsert_view(&view.view_id, &spec).await
 }
 
 /// Validate that a sink can write its target.
@@ -475,7 +470,6 @@ mod tests {
             range_partition_columns: Vec::new(),
             source_definition: "source-hash".to_string(),
             source_generation: 0,
-            refresh_interval_ms: 0,
         };
         validate_sink_view(&view).unwrap();
         let exprs = view.projection(&SessionContext::new(), 7, false).unwrap();

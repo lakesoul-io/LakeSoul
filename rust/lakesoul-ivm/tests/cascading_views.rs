@@ -9,7 +9,7 @@
 //! The downstream view treats the upstream MV as an ordinary keyed source;
 //! its `rowKinds` column acts as the change column, so the tombstone rows the
 //! upstream refresh writes are filtered like any other CDC marker.  The
-//! caller (or the future scheduler) has to refresh in topological order.
+//! caller has to refresh in topological order.
 
 use std::sync::Arc;
 
@@ -193,7 +193,7 @@ async fn cascade() -> Cascade {
 }
 
 impl Cascade {
-    /// Refresh upstream then downstream, as a scheduler would.
+    /// Refresh upstream then downstream, as an external scheduler would.
     async fn refresh(&self) {
         self.runtime.refresh_sum_count(&self.view1).await.unwrap();
         self.runtime.refresh_sum_count(&self.view2).await.unwrap();
@@ -509,7 +509,7 @@ async fn chained_views_refresh_on_demand() {
     assert_eq!(read_mv(executor.runtime(), &mv1).await, initial);
     assert_eq!(read_mv(executor.runtime(), &mv3).await, initial);
 
-    // A scheduler advances the whole chain with one call, upstream first.
+    // An external scheduler advances the whole chain with one call, upstream first.
     let refreshed = executor
         .runtime()
         .refresh_view_chain(&mv3.table_id)
