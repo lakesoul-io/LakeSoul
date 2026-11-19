@@ -25,6 +25,10 @@ spec:
         app.kubernetes.io/component: metadata-init
     spec:
       restartPolicy: Never
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: psql
           image: {{ .Values.metadata.initImage | quote }}
