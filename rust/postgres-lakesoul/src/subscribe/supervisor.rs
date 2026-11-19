@@ -745,21 +745,21 @@ mod tests {
 
         assert!(
             metadata
-                .acquire_lease(&id, "runner-a", Duration::from_millis(50))
+                .acquire_lease(&id, "runner-a", Duration::from_millis(500))
                 .await
                 .unwrap()
         );
         assert!(
             !metadata
-                .acquire_lease(&id, "runner-b", Duration::from_millis(50))
+                .acquire_lease(&id, "runner-b", Duration::from_millis(500))
                 .await
                 .unwrap(),
             "a live lease must exclude another runner"
         );
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
         assert!(
             metadata
-                .acquire_lease(&id, "runner-b", Duration::from_millis(50))
+                .acquire_lease(&id, "runner-b", Duration::from_millis(500))
                 .await
                 .unwrap(),
             "an expired lease can be taken over"
