@@ -13,6 +13,23 @@ SPDX-License-Identifier: Apache-2.0
 This page starts the LakeSoul engine, exposes it over the PostgreSQL wire
 protocol, and runs a first `CREATE TABLE` / `INSERT` / `SELECT` from `psql`.
 
+## One-container evaluation
+
+If you only want a local endpoint, the repository also ships a single-container
+image with PostgreSQL metadata, one distributed worker and the coordinator:
+
+```bash
+nix build .#all-in-one-image
+./result | docker load
+docker compose -f docker/lakesoul-all-in-one/compose.yaml up -d
+```
+
+The warehouse is `./warehouse` and the metadata data directory is `./pgdata`.
+See
+[`docker/lakesoul-all-in-one`](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-all-in-one)
+for configuration and caveats. The rest of this page describes the manual
+setup.
+
 ## Prerequisites
 
 - A PostgreSQL 14+ database for LakeSoul metadata. The quick start uses Docker.
