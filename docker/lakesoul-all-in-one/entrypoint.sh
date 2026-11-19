@@ -141,7 +141,7 @@ if ! PGPASSWORD="${POSTGRES_PASSWORD}" psql -h /tmp -p 5432 -U "${POSTGRES_USER}
 fi
 
 log "starting LakeSoul worker on ${LAKESOUL_WORKER_BIND}:${LAKESOUL_WORKER_PORT}"
-"${APP_DIR}/lakesoul-worker" \
+run_as "${APP_DIR}/lakesoul-worker" \
     --worker-threads "${WORKER_THREADS}" \
     --memory-limit "${WORKER_MEMORY_LIMIT}" \
     --vortex-decode-budget "${WORKER_VORTEX_DECODE_BUDGET}" &
@@ -165,7 +165,7 @@ if ! (echo >"/dev/tcp/${LAKESOUL_WORKER_BIND}/${LAKESOUL_WORKER_PORT}") \
 fi
 
 log "starting postgres-lakesoul on ${LAKESOUL_PG_BIND}:${LAKESOUL_PG_PORT}"
-"${APP_DIR}/postgres-lakesoul" \
+run_as "${APP_DIR}/postgres-lakesoul" \
     --worker-threads "${COORDINATOR_THREADS}" \
     --memory-limit "${COORDINATOR_MEMORY_LIMIT}" \
     --vortex-decode-budget "${COORDINATOR_VORTEX_DECODE_BUDGET}" &
