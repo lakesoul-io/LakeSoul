@@ -52,17 +52,17 @@
     "auth": {
       "type": "object",
       "properties": {
-        "jwt": {"type": "boolean"},
-        "rbac": {"type": "boolean"}
+        "jwt": { "type": "boolean" },
+        "rbac": { "type": "boolean" }
       },
       "if": {
         "properties": {
-          "rbac": {"const": true}
+          "rbac": { "const": true }
         }
       },
       "then": {
         "properties": {
-          "jwt": {"const": true}
+          "jwt": { "const": true }
         }
       }
     }
