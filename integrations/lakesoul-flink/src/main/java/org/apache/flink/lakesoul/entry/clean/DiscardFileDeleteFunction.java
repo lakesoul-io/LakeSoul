@@ -271,6 +271,12 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
             return protectedPathsGlobal(conn, paths, retainedAfter);
         }
         Array tableIdsArray = conn.createArrayOf("text", tableIds.toArray());
+        String cursorPredicate =
+                CleanUtils.hasIvmCursors(conn) ? CleanUtils.cursorRetentionPredicate("pi") : "";
+        String pendingPredicate =
+                CleanUtils.hasIvmPendingVersions(conn)
+                        ? CleanUtils.pendingEpochRetentionPredicate("pi")
+                        : "";
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "select distinct f.path from data_commit_info dci,"
@@ -292,7 +298,10 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
                                 + "       or pi.version = (select max(p2.version)"
                                 + "           from partition_info p2"
                                 + "          where p2.table_id = pi.table_id"
-                                + "            and p2.partition_desc = pi.partition_desc))")) {
+                                + "            and p2.partition_desc = pi.partition_desc)"
+                                + cursorPredicate
+                                + pendingPredicate
+                                + ")")) {
             ps.setArray(1, tableIdsArray);
             ps.setArray(2, paths);
             ps.setArray(3, tableIdsArray);
@@ -360,6 +369,12 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
     /** Global protected-path probe used when the owning tables are not unambiguous. */
     private static List<String> protectedPathsGlobal(
             Connection conn, Array paths, long retainedAfter) throws SQLException {
+        String cursorPredicate =
+                CleanUtils.hasIvmCursors(conn) ? CleanUtils.cursorRetentionPredicate("pi") : "";
+        String pendingPredicate =
+                CleanUtils.hasIvmPendingVersions(conn)
+                        ? CleanUtils.pendingEpochRetentionPredicate("pi")
+                        : "";
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "SELECT p.path FROM unnest(?::text[]) AS p(path)"
@@ -377,7 +392,10 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
                                 + "        OR pi.version = (SELECT max(p2.version)"
                                 + "            FROM partition_info p2"
                                 + "           WHERE p2.table_id = pi.table_id"
-                                + "             AND p2.partition_desc = pi.partition_desc)))")) {
+                                + "             AND p2.partition_desc = pi.partition_desc)"
+                                + cursorPredicate
+                                + pendingPredicate
+                                + "))")) {
             ps.setArray(1, paths);
             ps.setLong(2, retainedAfter);
             List<String> protectedPaths = new ArrayList<>();

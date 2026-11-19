@@ -199,8 +199,10 @@ create unique index if not exists ivm_epochs_window_key
 - `gc_epochs(view_id, grace)` 删除
   `status='committed' and epoch < min(last_epoch) - grace` 的 epoch 行：没有消费者
   时不删除（保留全部，v1 行为）；pending 行永不删除（仍需恢复/排查）。
-- 只清理元数据 epoch 行；MV 的旧分区版本由 LakeSoul retention/compaction 决定，
-  cursor-aware retention（按消费者水位限制 MV 版本保留）仍待做。
+- 只清理元数据 epoch 行；MV/源表的旧分区版本由 LakeSoul retention/compaction 决定。
+  Flink `NewCleanJob` 已实现 cursor-aware retention：每个 source/partition 按
+  `min(ivm.cursors.last_version)` 保留源版本、commit 和文件；pending epoch 的
+  before image 由 `ivm.pending_versions` 保留。
 
 ## 10. 测试计划
 

@@ -19,18 +19,170 @@ public class CleanUtils {
 
     private static final Logger logger = LoggerFactory.getLogger(CleanUtils.class);
 
+    /**
+     * Whether the IVM metadata schema is present. Cleanup must keep working on a database that has
+     * not been migrated yet, so the cursor condition is added only when {@code ivm.cursors} exists.
+     * A missing table is rechecked on the next call so a clean job that started before the
+     * migration picks the new condition up without a restart.
+     */
+    private static volatile boolean ivmCursorsAvailable;
+
+    public static boolean hasIvmCursors(Connection connection) throws SQLException {
+        if (ivmCursorsAvailable) {
+            return true;
+        }
+        try (PreparedStatement statement =
+                        connection.prepareStatement(
+                                "select to_regclass('ivm.cursors') is not null");
+                ResultSet rows = statement.executeQuery()) {
+            if (rows.next() && rows.getBoolean(1)) {
+                ivmCursorsAvailable = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * SQL predicate retaining a partition version that an IVM view still consumes. {@code alias} is
+     * the {@code partition_info} alias of the surrounding query. The caller checks {@link
+     * #hasIvmCursors(Connection)} first.
+     */
+    public static String cursorRetentionPredicate(String alias) {
+        return " OR EXISTS (SELECT 1 FROM ivm.cursors c"
+                + " WHERE c.source_table_id = "
+                + alias
+                + ".table_id AND c.partition_desc = "
+                + alias
+                + ".partition_desc AND c.last_version <= "
+                + alias
+                + ".version)";
+    }
+
+    private static volatile boolean ivmPendingVersionsAvailable;
+
+    /** Whether the pending-epoch before-image view is present. */
+    public static boolean hasIvmPendingVersions(Connection connection) throws SQLException {
+        if (ivmPendingVersionsAvailable) {
+            return true;
+        }
+        try (PreparedStatement statement =
+                        connection.prepareStatement(
+                                "select to_regclass('ivm.pending_versions') is not null");
+                ResultSet rows = statement.executeQuery()) {
+            if (rows.next() && rows.getBoolean(1)) {
+                ivmPendingVersionsAvailable = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * SQL predicate retaining a version a pending refresh still needs as its before image. {@code
+     * alias} is the {@code partition_info} alias of the surrounding query.
+     */
+    public static String pendingEpochRetentionPredicate(String alias) {
+        return " OR EXISTS (SELECT 1 FROM ivm.pending_versions pv"
+                + " WHERE pv.table_id = "
+                + alias
+                + ".table_id AND pv.partition_desc = "
+                + alias
+                + ".partition_desc AND pv.version = "
+                + alias
+                + ".version)";
+    }
+
+    /**
+     * Whether a pending refresh still needs {@code version} as its before image. Unlike a source
+     * cursor this is not a watermark: only the exact recorded before versions are protected.
+     */
+    public boolean isVersionRetainedByPendingEpoch(
+            Connection connection, String tableId, String partitionDesc, long version)
+            throws SQLException {
+        if (!hasIvmPendingVersions(connection)) {
+            return false;
+        }
+        try (PreparedStatement statement =
+                connection.prepareStatement(
+                        "SELECT EXISTS (SELECT 1 FROM ivm.pending_versions pv"
+                                + " WHERE pv.table_id = ?"
+                                + " AND pv.partition_desc = ?"
+                                + " AND pv.version = ?)")) {
+            statement.setString(1, tableId);
+            statement.setString(2, partitionDesc);
+            statement.setLong(3, version);
+            try (ResultSet rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getBoolean(1);
+            }
+        }
+    }
+
+    /**
+     * Whether some IVM view has not consumed {@code version} yet. Such a version is still needed to
+     * reconstruct that view's next changelog window, so neither its metadata nor its files may be
+     * removed.
+     */
+    public boolean isVersionRetainedByIvmCursor(
+            Connection connection, String tableId, String partitionDesc, long version)
+            throws SQLException {
+        if (!hasIvmCursors(connection)) {
+            return false;
+        }
+        try (PreparedStatement statement =
+                connection.prepareStatement(
+                        "SELECT EXISTS (SELECT 1 FROM ivm.cursors c"
+                                + " WHERE c.source_table_id = ?"
+                                + " AND c.partition_desc = ?"
+                                + " AND c.last_version <= ?)")) {
+            statement.setString(1, tableId);
+            statement.setString(2, partitionDesc);
+            statement.setLong(3, version);
+            try (ResultSet rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getBoolean(1);
+            }
+        }
+    }
+
     public void cleanPartitionInfo(
             String table_id, String partition_desc, int version, Connection connection)
             throws SQLException {
+        boolean cursorAware = hasIvmCursors(connection);
+        boolean pendingAware = hasIvmPendingVersions(connection);
         String sql =
-                "DELETE FROM partition_info where table_id= '"
-                        + table_id
-                        + "' and partition_desc ='"
-                        + partition_desc
-                        + "' and version = '"
-                        + version
-                        + "' and pinned = false";
+                "DELETE FROM partition_info where table_id= ?"
+                        + " and partition_desc = ?"
+                        + " and version = ?"
+                        + " and pinned = false"
+                        + (cursorAware
+                                ? " and not exists (select 1 from ivm.cursors c"
+                                        + " where c.source_table_id = ?"
+                                        + " and c.partition_desc = ?"
+                                        + " and c.last_version <= ?)"
+                                : "")
+                        + (pendingAware
+                                ? " and not exists (select 1 from ivm.pending_versions pv"
+                                        + " where pv.table_id = ?"
+                                        + " and pv.partition_desc = ?"
+                                        + " and pv.version = ?)"
+                                : "");
         try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            int parameter = 1;
+            preparedStatement.setString(parameter++, table_id);
+            preparedStatement.setString(parameter++, partition_desc);
+            preparedStatement.setInt(parameter++, version);
+            if (cursorAware) {
+                preparedStatement.setString(parameter++, table_id);
+                preparedStatement.setString(parameter++, partition_desc);
+                preparedStatement.setLong(parameter++, version);
+            }
+            if (pendingAware) {
+                preparedStatement.setString(parameter++, table_id);
+                preparedStatement.setString(parameter++, partition_desc);
+                preparedStatement.setLong(parameter, version);
+            }
             preparedStatement.executeUpdate();
             logger.info(sql);
         } catch (SQLException e) {
@@ -136,8 +288,8 @@ public class CleanUtils {
      * <p>An UpdateCommit replaces the partition snapshot but re-adds unchanged files with their
      * original paths (see Spark {@code TransactionCommit.createDataCommitInfo}), and leveled
      * compaction reuses paths as well. A file is therefore only removed when no retained partition
-     * version (within the clean job's retention window), the latest version, or a pinned snapshot
-     * references it.
+     * version (within the clean job's retention window), an IVM cursor or pending-epoch before
+     * image, the latest version, or a pinned snapshot references it.
      *
      * <p>When the live file set cannot be resolved reliably (query failure, missing metadata), the
      * cleanup is aborted and both files and data_commit_info rows are kept, so a later run can
@@ -321,6 +473,14 @@ public class CleanUtils {
             String partitionDesc,
             String commitId,
             long retainedAfter) {
+        boolean cursorAware;
+        boolean pendingAware;
+        try {
+            cursorAware = hasIvmCursors(connection);
+            pendingAware = hasIvmPendingVersions(connection);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
         String deleteDataCommitInfoSql =
                 "DELETE FROM data_commit_info d \n"
                         + "WHERE d.table_id = ? \n"
@@ -334,7 +494,10 @@ public class CleanUtils {
                         + "    AND d.commit_id = ANY(p.snapshot) \n"
                         + "    AND (p.timestamp >= ? OR p.pinned \n"
                         + "         OR p.version = (SELECT max(version) FROM partition_info \n"
-                        + "                        WHERE table_id = ? AND partition_desc = ?)))";
+                        + "                        WHERE table_id = ? AND partition_desc = ?)"
+                        + (cursorAware ? cursorRetentionPredicate("p") : "")
+                        + (pendingAware ? pendingEpochRetentionPredicate("p") : "")
+                        + "))";
         try (PreparedStatement preparedStatement =
                 connection.prepareStatement(deleteDataCommitInfoSql)) {
             preparedStatement.setString(1, tableId);
@@ -350,13 +513,15 @@ public class CleanUtils {
     }
 
     /**
-     * All add paths referenced by retained partition versions, the latest version, or a pinned
-     * snapshot. The union of adds is a conservative check: leaking a file is acceptable, deleting a
-     * referenced one is not.
+     * All add paths referenced by retained partition versions, IVM cursor/pending-epoch versions,
+     * the latest version, or a pinned snapshot. The union of adds is a conservative check: leaking
+     * a file is acceptable, deleting a referenced one is not.
      */
     private Set<String> getRetainedSnapshotPaths(
             Connection connection, String tableId, String partitionDesc, long retainedAfter)
             throws SQLException {
+        boolean cursorAware = hasIvmCursors(connection);
+        boolean pendingAware = hasIvmPendingVersions(connection);
         String sql =
                 "SELECT DISTINCT file_op.path \n"
                         + "FROM partition_info p \n"
@@ -369,7 +534,10 @@ public class CleanUtils {
                         + "  AND p.partition_desc = ? \n"
                         + "  AND (p.timestamp >= ? OR p.pinned \n"
                         + "       OR p.version = (SELECT max(version) FROM partition_info \n"
-                        + "                       WHERE table_id = ? AND partition_desc = ?)) \n"
+                        + "                       WHERE table_id = ? AND partition_desc = ?)"
+                        + (cursorAware ? cursorRetentionPredicate("p") : "")
+                        + (pendingAware ? pendingEpochRetentionPredicate("p") : "")
+                        + ") \n"
                         + "  AND file_op.file_op = 'add'";
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, tableId);
@@ -394,6 +562,8 @@ public class CleanUtils {
     private boolean hasMissingLiveCommit(
             Connection connection, String tableId, String partitionDesc, long retainedAfter)
             throws SQLException {
+        boolean cursorAware = hasIvmCursors(connection);
+        boolean pendingAware = hasIvmPendingVersions(connection);
         String sql =
                 "SELECT count(*) \n"
                         + "FROM partition_info p, unnest(p.snapshot) c \n"
@@ -401,7 +571,10 @@ public class CleanUtils {
                         + "  AND p.partition_desc = ? \n"
                         + "  AND (p.timestamp >= ? OR p.pinned \n"
                         + "       OR p.version = (SELECT max(version) FROM partition_info \n"
-                        + "                       WHERE table_id = ? AND partition_desc = ?)) \n"
+                        + "                       WHERE table_id = ? AND partition_desc = ?)"
+                        + (cursorAware ? cursorRetentionPredicate("p") : "")
+                        + (pendingAware ? pendingEpochRetentionPredicate("p") : "")
+                        + ") \n"
                         + "  AND NOT EXISTS (SELECT 1 FROM data_commit_info d \n"
                         + "                  WHERE d.table_id = p.table_id \n"
                         + "                    AND d.partition_desc = p.partition_desc \n"

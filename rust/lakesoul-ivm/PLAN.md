@@ -43,7 +43,8 @@
   ~~`ivm.states` 注册表~~、~~Window 扩展（RANK/DENSE_RANK/聚合窗口、源按分区裁剪）~~、
   ~~SEMI/ANTI 扩展（非等值、投影下推）~~、~~投影/Filter/Union ALL 视图~~、
   ~~TOP-K~~（P1 已完成）→ P2 见下
-- **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 联动待做）→
+- **P2**：~~consumer 水位 GC（`ivm.consumers`）~~（已完成；cursor-aware retention 已接入
+  Flink `NewCleanJob`，按 `min(ivm.cursors.last_version)` 保留源版本）→
   ~~JVM `list tables` 过滤 internal 表~~、~~epoch 发布 commit_id~~、
   ~~as-of 下沉 TableProvider~~、~~changelog 表级单扫描~~（已完成）→
   changelog 表级单扫描 → CDC `update_before`/`update_after` → 聚合状态按 key/桶裁剪、
@@ -308,6 +309,12 @@ PG 唯一键错误。JVM 侧有完整实现（`integrations/lakesoul-common/src/
 （`rust/lakesoul-ivm/src/lib.rs` 的 `# Retention` 一节）：IVM 消费的表必须保持默认
 保留策略，不配置 `partition.ttl` / `compaction.ttl` / `dataExpiredTime`，也不启用
 `cleanOldCompaction`；cursor-aware GC 留待后续。
+
+**实施记录（2026-11）**：Flink `NewCleanJob` 已按 `ivm.cursors` 的每个
+`(source_table_id, partition_desc)` 最小 `last_version` 保留源版本、commit 和文件；
+pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑与
+`dataExpiredTime`、pinned 和 latest 规则共同生效；详见
+`rust/lakesoul-ivm/README.md` 的 Sources/Retention 一节。
 
 ## 7. P2 预研项（明确暂缓）
 

@@ -471,11 +471,18 @@ needs none).  A typical trap: the two branches of a
   changelog event. IVM-created internal tables never set `partition.ttl`; a
   property added later is ignored.
 * The Flink `NewCleanJob` keeps partition versions inside `dataExpiredTime`
-  together with their files and `data_commit_info` rows. Refresh each view
-  inside that retention window; older history may be cleaned and the view then
-  rebuilds from the current state. The legacy Spark `CleanExpiredData` and
-  `cleanOldCompaction` paths are not covered. See the retention notes in
-  [`lib.rs`](src/lib.rs).
+  together with their files and `data_commit_info` rows. It is also cursor
+  aware: for every source table and partition it keeps all versions at or
+  after the oldest `ivm.cursors.last_version` among the views consuming that
+  partition, so a view may refresh less often than the clean job's retention
+  window. Once all consumers advance past a version, the next cleanup cycle
+  can reclaim it; there is no per-view lease TTL.
+* A pending epoch's before-image versions are retained through
+  `ivm.pending_versions` until the epoch commits, aborts or is rebuilt.
+  `ivm.source_streams` exposes the cursor watermark, latest version and lag for
+  alerting; a long-paused view keeps its history until it advances or is
+  dropped. The legacy Spark `CleanExpiredData` and `cleanOldCompaction` paths
+  are not covered. See the retention notes in [`lib.rs`](src/lib.rs).
 
 ## Reading materialized views
 
