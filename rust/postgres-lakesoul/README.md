@@ -440,6 +440,8 @@ psql "host=127.0.0.1 port=5432 user=alice dbname=default"
 
 A shared cluster can fix the domain it writes in with `--rbac-domain` (`LAKESOUL_PG_RBAC_DOMAIN`, requires `--rbac`). Without it, the token's group remains the write domain. Clients from other domains may read granted tables but cannot create tables or write private data.
 
+The server also accepts a table-level subset of PostgreSQL `GRANT` / `REVOKE` once `--rbac` is on. `SELECT` maps to `ro`; `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` and `ALL` map to `rw` (write implies read). A bare grantee stays in the table's domain; `domain.user` is a LakeSoul extension for a cross-domain read-only grant, and `PUBLIC` writes the domain-wide grant. `REVOKE` of a write privilege leaves `ro`; revoking read/all hides a same-domain user with an explicit `none`. Only the creator or a space administrator may grant; `GRANT`/`REVOKE` commit immediately, so they are refused inside a transaction block. They apply at once to the current connection and within the 5-second ACL cache to other sessions and the S3 proxy. A refresh that changes visibility invalidates prepared plans on the connection, so a revoke cannot be bypassed by an old plan. `WITH GRANT OPTION`, column privileges, role membership, group ACLs and catalog reflection of grants are not implemented.
+
 | Path | Under `--rbac` |
 | --- | --- |
 | `pg_database` | Lists namespaces in the visible domain and public namespaces, plus a namespace with a table granted to this user. Connecting to anything else fails at startup exactly like a missing one (`database "…" does not exist`). |
@@ -451,10 +453,11 @@ A shared cluster can fix the domain it writes in with `--rbac-domain` (`LAKESOUL
 | IVM-maintained `INSERT … SELECT` | `42501`: maintenance can refresh on sessions of the IVM runtime's own, which carry no connection's filter. |
 | Foreign tables (federation) | Unchanged: per-user rules of their own. |
 | `COPY` | `COPY TO STDOUT` follows the read ACL; `COPY FROM STDIN` follows the write ACL. |
+| `GRANT` / `REVOKE` | Table-level subset: `SELECT`, write privileges, `ALL`, `TO PUBLIC`, `ON ALL TABLES IN SCHEMA public`. Cross-domain grants are read-only. Unsupported clauses are `0A000`; non-owners are `42501`; hidden tables are `42P01`. |
 
 - Queries resolve a table's domain and ACL live when a miss is not in the session's ACL view, so a table another engine has just created is usable at once by its creator/domain and never by an ungranted user. The ACL view is refreshed every 5 s and after DDL; new connections refresh it immediately. Because the view can be stale, `DROP` authorizes again on the exact row it deletes (resolved once, deleted by `table_id`): a name dropped and recreated in another domain since the last refresh is reported as absent and left alone (`rbac_contract`, `rbac-stale-drop`).
 - `CREATE TABLE` of a name another domain already uses in the namespace is `42P07`, as in PostgreSQL: names are unique per namespace across domains.
-- A token carries one group. A user who needs several domains connects with one token per domain. Table ACLs are covered by `tests/acl_contract.rs` and `lakesoul-metadata/tests/acl_resolution.rs`.
+- A token carries one group. A user who needs several domains connects with one token per domain. Table ACLs are covered by `tests/acl_contract.rs` and `lakesoul-metadata/tests/acl_resolution.rs`; atomic mutations and the SQL GRANT/REVOKE subset by `lakesoul-metadata/tests/acl_mutation.rs` and `src/grant.rs` unit tests.
 - Covered by `auth::domain_tests`, `server::tests::rbac_*`, `catalog::snapshot::tests` (lakesoul-datafusion) and `rbac_contract::rbac_domain_enforcement_contract`, against a real `--jwt-auth --rbac` child with one namespace per team plus the public fixtures: database visibility and the hidden-equals-missing startup error, `create-sets-domain` read back from the metadata database, every statement above refused for another team and for a `public` token while the authoritative snapshot (metadata rows and warehouse bytes) stays unchanged, extended Parse, detached jobs (including the same `sub` under another group: its jobs, results and `job_key`s stay apart), the `42501` refusals, and a table inserted straight into the metadata database (resolved at once by its team, listed after the refresh, never visible to the other team).
 
 ```sh

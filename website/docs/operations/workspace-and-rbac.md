@@ -43,6 +43,29 @@ The first script adds the ACL objects and grants same-workspace rw to pre-existi
 
 A shared pg-wire cluster can fix its write workspace with `--rbac-domain` (or `LAKESOUL_PG_RBAC_DOMAIN`); clients from other workspaces can only read granted tables. The cluster's metadata account is a trusted catalog reader with access to metadata/ACL across workspaces; clients never receive its credentials, and the application enforces each client's ACL. The S3 proxy enforces the same table ACL for direct Spark/Flink/Python access to object storage, which is required because metadata RLS alone cannot stop arbitrary code from reading files; its sidecar needs a catalog-reader metadata account for cross-workspace grants.
 
+### GRANT and REVOKE from SQL
+
+A pg-wire server started with `--rbac` accepts a table-level subset of PostgreSQL `GRANT` / `REVOKE`:
+
+```sql
+GRANT SELECT ON t TO bob;
+GRANT INSERT, UPDATE ON t TO bob;
+GRANT SELECT ON t TO team_b.carol;          -- cross-workspace: read-only
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO bob;
+REVOKE INSERT ON t FROM bob;
+REVOKE ALL ON t FROM bob;
+```
+
+- `SELECT` maps to `ro`; `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` and `ALL` map to `rw`. A write grant implies read access.
+- A bare grantee stays in the table's workspace. `domain.user` is a LakeSoul extension for a cross-workspace **read-only** grant; `ALL` or a write privilege across workspaces is refused.
+- `PUBLIC` writes the workspace-wide grant (`grantee_kind = 'domain'`). `REVOKE ALL ... FROM PUBLIC` makes the table private to its owner and space administrators.
+- `REVOKE` of a write privilege leaves `ro`; revoking read/all hides the table from a same-workspace user with an explicit `none`.
+- The owner or a space administrator may grant. A hidden table is `42P01`; a visible table the user does not own is `42501`; public tables take no ACL.
+- Grantee names are stored as written; there is no global user directory to validate them against, so a grant may be created before that user first connects.
+- `ON ALL TABLES IN SCHEMA public` covers the tables of the current database (workspace) only.
+- `GRANT`/`REVOKE` commit immediately and are refused inside a transaction block, like DDL. They take effect at once for the current connection and within the five-second ACL cache for other sessions and the S3 proxy. When a refresh changes visibility, prepared statements on that connection are replanned before execution, so a revoke cannot be bypassed by an old plan.
+- Role membership, column privileges, `WITH GRANT OPTION`, group ACLs and `information_schema`/`psql \dp` reflection are not implemented.
+
 ## Enable Multi-Tenancy and Role Permission Control
 By default, LakeSoul does not enable this feature. This feature can be enabled by executing `script/meta_rbac_init.sql`:
 ```shell

@@ -581,7 +581,7 @@ pub(crate) fn refuse_ddl_in_batch(statements: &[String]) -> PgWireResult<()> {
 /// LakeSoul table metadata is written immediately through the metadata client
 /// and cannot be rolled back; executing DDL in a block would silently break
 /// that contract, so it is refused instead.
-fn reject_in_transaction(
+pub(crate) fn reject_in_transaction(
     transaction_status: TransactionStatus,
     verb: &str,
 ) -> PgWireResult<()> {
@@ -601,7 +601,7 @@ fn reject_in_transaction(
 /// change is refused because LakeSoul stores lower-case names (the provider
 /// folds the schema and the table name itself, which would silently rename a
 /// quoted mixed-case table).
-fn name_parts(name: &ObjectName) -> PgWireResult<Vec<String>> {
+pub(crate) fn name_parts(name: &ObjectName) -> PgWireResult<Vec<String>> {
     name.0
         .iter()
         .map(|part| match part {

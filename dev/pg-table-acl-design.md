@@ -1,6 +1,7 @@
 # PostgreSQL 表级 ACL 设计
 
-Status: implemented in PR #1316; this note records the model and the decisions behind it.
+Status: implemented in PR #1316; table-level SQL `GRANT` / `REVOKE` added in
+PR #1317. This note records the model and the decisions behind it.
 
 ## 1. 目标
 
@@ -230,6 +231,40 @@ DB 用户。因此：
 - DDL 建表检查 namespace 写权限，写入 `creator = 客户端用户`，domain 使用
   cluster domain。
 
+### 5.1 SQL GRANT/REVOKE
+
+pg-wire 在应用层实现表级 `GRANT` / `REVOKE` 子集，不追求完整 PostgreSQL：
+
+```sql
+GRANT { SELECT | INSERT | UPDATE | DELETE | TRUNCATE | ALL }
+  ON [TABLE] table [, ...] TO grantee [, ...];
+
+REVOKE { SELECT | INSERT | UPDATE | DELETE | TRUNCATE | ALL }
+  ON [TABLE] table [, ...] FROM grantee [, ...];
+```
+
+- grantee 可以是同 domain 用户名、`domain.user`（跨 domain，只读）或
+  `PUBLIC`（写入 table 所在 domain 的 domain grant）。
+- `SELECT` -> `ro`；`INSERT/UPDATE/DELETE/TRUNCATE/ALL` -> `rw`。跨 domain
+  的写权限直接拒绝（`0A000`）。
+- `REVOKE` 写权限把 `rw` 降为 `ro`；`REVOKE SELECT`/`ALL` 对同 domain 用户
+  写显式 `none`，对跨 domain 用户删除 ACL 行。
+- owner 或 domain admin 才能执行；不可见表返回 `42P01`，可见但无管理权返回
+  `42501`；public 表不接受 ACL。grantee 名字按原样保存，没有全局用户目录做
+  存在性校验，允许先授权、后建用户。
+- `ON ALL TABLES IN SCHEMA public` 枚举当前 namespace 的表，public 表跳过；
+  任一非 public 表不可管理则整条语句失败。
+- 语句在 metadata 中单事务提交，但 pg-wire 事务块内不支持（与 DDL 一致）。
+- 不支持角色成员、列级权限、`WITH GRANT OPTION`、group ACL；ACL 变更当前
+  连接立即生效，其他连接和 S3 proxy 在 5 秒 TTL 内生效。
+- ACL 视图刷新后如果可见权限发生变化，连接会 bump prepared-plan generation；
+  `Execute` 前重新 plan，避免 revoke 之后旧 plan 继续读表。
+- `information_schema` / `pg_class.relacl` / `psql \dp` 暂不反射 ACL。
+
+实现位于 `rust/postgres-lakesoul/src/grant.rs`，ACL 写入通过
+`lakesoul-metadata::acl::apply_acl_changes` 在一个事务里完成；它按
+`table_id` 排序并 `FOR SHARE` 锁表，避免与 `DROP TABLE` 竞态或批量语句死锁。
+
 ## 6. S3 proxy
 
 S3 proxy 对表路径的访问增加 ACL 检查：
@@ -290,6 +325,9 @@ S3 proxy 对表路径的访问增加 ACL 检查：
 - PG wire：`acl_contract.rs` 覆盖同 domain ro/rw/none、跨 domain ro/写拒绝、
   public 开放、SHOW DATABASES/TABLES、`42P01` vs `42501`、owner/domain admin、
   creator=客户端用户、跨 domain 授权不依赖 cluster、ACL 变更后的刷新。
+- SQL GRANT/REVOKE：`acl_contract.rs` 覆盖 GRANT/REVOKE 的读写、跨 domain、
+  PUBLIC、ALL TABLES、非 owner、public 表、事务块和扩展协议；
+  `lakesoul-metadata/tests/acl_mutation.rs` 覆盖原子性与折叠语义。
 - 回归：现有 `rbac_contract`、`session_contract`、`sql_compat`、`copy_contract`
   等。测试 harness 的 out-of-band 表需要补 domain rw ACL，模拟旧表。
 - S3 proxy：单元测试 path ACL 读写判断；跨 domain ro 读通过、写 403。
@@ -298,7 +336,8 @@ S3 proxy 对表路径的访问增加 ACL 检查：
 ## 9. 边界
 
 - v1 不做 group ACL（表结构预留 `grantee_kind`）。
-- v1 不实现 SQL `GRANT/REVOKE`；ACL 由控制台/管理 API 或直接元数据操作维护。
+- SQL `GRANT/REVOKE` 只覆盖表级子集；namespace ACL 仍由管理 API/直接元数据
+  操作维护。角色成员、列级权限、`WITH GRANT OPTION` 不做。
 - v1 不做列级权限、用户自定义 RLS、`SET ROLE`。
 - HDFS 存储层授权暂不做；对象存储必须通过 S3 proxy 访问。
 - `public` / `lake-public` 表完全开放读写；DDL 仍由 creator / space admin

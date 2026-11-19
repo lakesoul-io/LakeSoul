@@ -42,6 +42,9 @@ pub(crate) struct AclEntry {
     domains: Vec<String>,
     interval: Duration,
     view: RwLock<Arc<AclView>>,
+    /// Fingerprint of [`Self::view`], used to tell the connection whether a
+    /// refresh changed visibility and prepared plans must be replanned.
+    fingerprint: Mutex<Option<u64>>,
     refreshed_at: Mutex<Option<Instant>>,
     refresh_lock: AsyncMutex<()>,
 }
@@ -63,6 +66,7 @@ impl AclEntry {
             domains,
             interval: ACL_REFRESH_INTERVAL,
             view: RwLock::new(Arc::new(AclView::default())),
+            fingerprint: Mutex::new(None),
             refreshed_at: Mutex::new(None),
             refresh_lock: AsyncMutex::new(()),
         }
@@ -87,21 +91,31 @@ impl AclEntry {
             .is_some_and(|at| at.elapsed() < self.interval)
     }
 
-    /// Refresh when the view is older than [`ACL_REFRESH_INTERVAL`].
+    /// Refresh when the view is older than [`ACL_REFRESH_INTERVAL`]. Returns
+    /// whether the visible privileges changed.
     pub(crate) async fn refresh_if_stale(&self) -> lakesoul_metadata::Result<bool> {
         if self.is_fresh() {
             return Ok(false);
         }
-        self.refresh().await?;
-        Ok(true)
+        self.refresh().await
     }
 
-    pub(crate) async fn refresh(&self) -> lakesoul_metadata::Result<()> {
+    /// Reload the view. Returns whether the visible privileges changed.
+    pub(crate) async fn refresh(&self) -> lakesoul_metadata::Result<bool> {
         let _guard = self.refresh_lock.lock().await;
         let view = AclView::load(&self.client, &self.user, &self.domains).await?;
-        *self.view.write() = Arc::new(view);
+        let fingerprint = view.fingerprint();
+        let changed = {
+            let mut stored = self.fingerprint.lock();
+            let changed = *stored != Some(fingerprint);
+            // Publish the view before the new fingerprint: a concurrent reader
+            // must never pair a new fingerprint with the old visibility.
+            *self.view.write() = Arc::new(view);
+            *stored = Some(fingerprint);
+            changed
+        };
         *self.refreshed_at.lock() = Some(Instant::now());
-        Ok(())
+        Ok(changed)
     }
 }
 
@@ -130,7 +144,7 @@ impl AclCache {
         if let Some(entry) = existing {
             // A new connection must observe grants made since the cached entry
             // was built; existing sessions still use the short TTL refresh.
-            entry.refresh().await?;
+            let _ = entry.refresh().await?;
             return Ok(entry);
         }
         let entry = Arc::new(AclEntry::new(
@@ -138,7 +152,7 @@ impl AclCache {
             user.to_string(),
             domains.to_vec(),
         ));
-        entry.refresh().await?;
+        let _ = entry.refresh().await?;
         self.entries.lock().insert(key, Arc::clone(&entry));
         Ok(entry)
     }
@@ -280,7 +294,9 @@ pub(crate) fn require_table_ddl(
     }
 }
 
-fn refresh_error(error: lakesoul_metadata::LakeSoulMetaDataError) -> PgWireError {
+pub(crate) fn refresh_error(
+    error: lakesoul_metadata::LakeSoulMetaDataError,
+) -> PgWireError {
     PgWireError::UserError(Box::new(ErrorInfo::new(
         "ERROR".to_string(),
         "XX000".to_string(),
@@ -299,6 +315,9 @@ async fn refresh_for(client: &(impl ClientInfo + ?Sized)) -> PgWireResult<()> {
         session
             .session
             .replace_visible_databases(acl.view().visible_namespaces());
+        // A plan prepared under the old visibility must not keep reading a
+        // table after a revoke (or keep missing one after a grant).
+        session.settings.bump();
     }
     Ok(())
 }

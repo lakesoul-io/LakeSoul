@@ -42,6 +42,29 @@ PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test \
 
 共享 pg-wire cluster 可以用 `--rbac-domain`（或 `LAKESOUL_PG_RBAC_DOMAIN`）固定写入空间；其他空间的客户端只能读取被授权的表。cluster 的 metadata 账号是受信任的 catalog reader，可读取所有空间的元数据/ACL；客户端拿不到该账号，应用层按每个客户端的 ACL 执行。S3 proxy 对直接访问对象存储的 Spark/Flink/Python 作业执行同一套表 ACL，因为仅靠元数据 RLS 无法阻止任意代码直接读取文件；跨空间授权时 sidecar 也需要 catalog-reader 的 metadata 账号。
 
+### 通过 SQL 执行 GRANT / REVOKE
+
+以 `--rbac` 启动的 pg-wire 服务接受 PostgreSQL `GRANT` / `REVOKE` 的表级子集：
+
+```sql
+GRANT SELECT ON t TO bob;
+GRANT INSERT, UPDATE ON t TO bob;
+GRANT SELECT ON t TO team_b.carol;          -- 跨空间，只读
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO bob;
+REVOKE INSERT ON t FROM bob;
+REVOKE ALL ON t FROM bob;
+```
+
+- `SELECT` 映射为 `ro`；`INSERT`、`UPDATE`、`DELETE`、`TRUNCATE`、`ALL` 映射为 `rw`。写权限隐含读权限。
+- 裸用户名属于表所在空间；`domain.user` 是 LakeSoul 扩展，用于跨空间**只读**授权；跨空间的 `ALL` 或写权限会被拒绝。
+- `PUBLIC` 写入空间级授权（`grantee_kind = 'domain'`）。`REVOKE ALL ... FROM PUBLIC` 会让表只对 owner 和空间管理员可见。
+- `REVOKE` 写权限会降为 `ro`；`REVOKE SELECT`/`ALL` 会给同空间用户写显式 `none`，从而隐藏该表。
+- owner 或空间管理员才能授权。不可见的表返回 `42P01`；可见但无管理权返回 `42501`；public 表不接受 ACL。
+- grantee 名字按原样保存；LakeSoul 没有全局用户目录做存在性校验，因此可以先授权、后建用户。
+- `ON ALL TABLES IN SCHEMA public` 只覆盖当前 database（即当前 namespace）中的表。
+- `GRANT`/`REVOKE` 立即提交，和 DDL 一样不支持在事务块内执行。当前连接立即生效；其他连接和 S3 proxy 在 5 秒 ACL 缓存内生效。ACL 视图刷新后如果可见权限发生变化，连接上的 prepared statement 会在执行前重新 plan，避免 revoke 后旧 plan 继续读表。
+- 角色成员、列级权限、`WITH GRANT OPTION`、group ACL，以及 `information_schema` / `psql \dp` 反射暂不支持。
+
 ## 启用多工作空间和角色权限控制功能
 默认情况下，LakeSoul 并不会开启该功能。可以通过执行 `script/meta_rbac_init.sql` 启用该功能：
 ```shell

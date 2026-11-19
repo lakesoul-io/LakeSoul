@@ -21,7 +21,9 @@
 //!   domain users may create tables. A cross-domain namespace is visible ro
 //!   only when at least one of its tables is visible.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::metadata_client::MetaDataClient;
@@ -70,6 +72,70 @@ impl Privilege {
             self
         } else {
             other
+        }
+    }
+}
+
+/// Kind of principal an ACL row applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AclGranteeKind {
+    /// One user identified by `(grantee_domain, grantee)`.
+    User,
+    /// Every user of `grantee_domain`; `grantee` is `*`.
+    Domain,
+}
+
+impl AclGranteeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Domain => "domain",
+        }
+    }
+}
+
+/// Which part of an existing table grant a `REVOKE` removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AclRevokeScope {
+    /// Remove read and write: hide the table from a same-domain user, or
+    /// delete a cross-domain grant.
+    All,
+    /// Remove read (and therefore write, which implies read in this model).
+    Read,
+    /// Remove write only, leaving read when it was granted.
+    Write,
+}
+
+/// One atomic table ACL mutation.
+#[derive(Debug, Clone)]
+pub enum AclChange {
+    /// Grant read (`ro`) or write (`rw`). Granting read to a user who already
+    /// has write keeps write, matching PostgreSQL's additive GRANT.
+    GrantTable {
+        table_id: String,
+        grantee_domain: String,
+        grantee_kind: AclGranteeKind,
+        grantee: String,
+        privilege: Privilege,
+        granted_by: String,
+    },
+    /// Revoke all, read, or write from one table grant.
+    RevokeTable {
+        table_id: String,
+        grantee_domain: String,
+        grantee_kind: AclGranteeKind,
+        grantee: String,
+        scope: AclRevokeScope,
+        granted_by: String,
+    },
+}
+
+impl AclChange {
+    fn table_id(&self) -> &str {
+        match self {
+            Self::GrantTable { table_id, .. } | Self::RevokeTable { table_id, .. } => {
+                table_id
+            }
         }
     }
 }
@@ -444,6 +510,52 @@ impl AclView {
     pub fn tables(&self) -> impl Iterator<Item = &TableAccess> {
         self.tables.values()
     }
+
+    /// A deterministic fingerprint of every namespace and table privilege in
+    /// this view. The pg-wire server uses it to notice that a background ACL
+    /// refresh changed what the connection may see, so plans prepared under
+    /// the old view are replanned before they execute.
+    pub fn fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        let mut namespaces: Vec<&NamespaceAccess> = self
+            .namespaces
+            .values()
+            .filter(|access| access.privilege.can_read())
+            .collect();
+        namespaces.sort_by(|left, right| left.namespace.cmp(&right.namespace));
+        for access in namespaces {
+            access.namespace.hash(&mut hasher);
+            access.domain.hash(&mut hasher);
+            access.creator.hash(&mut hasher);
+            access.owner.hash(&mut hasher);
+            access.admin.hash(&mut hasher);
+            access.privilege.as_str().hash(&mut hasher);
+        }
+
+        // Only visible tables affect a plan. An invisible table is invisible
+        // whether or not it exists, so a table created in another tenant does
+        // not force this connection to replan.
+        let mut tables: Vec<&TableAccess> = self
+            .tables
+            .values()
+            .filter(|access| access.privilege.can_read())
+            .collect();
+        tables.sort_by(|left, right| {
+            (left.namespace.as_str(), left.table.as_str())
+                .cmp(&(right.namespace.as_str(), right.table.as_str()))
+        });
+        for access in tables {
+            access.table_id.hash(&mut hasher);
+            access.namespace.hash(&mut hasher);
+            access.table.hash(&mut hasher);
+            access.domain.hash(&mut hasher);
+            access.creator.hash(&mut hasher);
+            access.owner.hash(&mut hasher);
+            access.admin.hash(&mut hasher);
+            access.privilege.as_str().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
 }
 
 fn table_privilege(
@@ -572,6 +684,227 @@ impl MetaDataClient {
                 .await?
                 .map(|access| access.privilege),
         )
+    }
+
+    /// Apply table ACL mutations atomically.
+    ///
+    /// The SQL front end computes one statement's changes, then calls this so
+    /// a multi-table or multi-grantee statement either lands completely or not
+    /// at all. All touched `table_info` rows are share-locked in `table_id`
+    /// order before anything is written:
+    ///
+    /// - a concurrent `DROP TABLE` waits for this transaction instead of
+    ///   removing the row between validation and the ACL write;
+    /// - a deterministic lock order keeps two bulk statements from deadlocking;
+    /// - a missing or public table rejects the whole statement.
+    ///
+    /// Cross-domain write grants and domain-wide grants for another domain are
+    /// refused here too, as the same rules are enforced by the pg-wire layer.
+    pub async fn apply_acl_changes(&self, changes: &[AclChange]) -> Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+
+        let mut table_ids: Vec<&str> = changes.iter().map(AclChange::table_id).collect();
+        table_ids.sort_unstable();
+        table_ids.dedup();
+
+        let pooled = self.pooled_client();
+        let guard = pooled.lock().await;
+        let mut connection = guard.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+
+        let mut domains = HashMap::with_capacity(table_ids.len());
+        for table_id in table_ids {
+            let row = transaction
+                .query_opt(
+                    "select domain from table_info
+                     where table_id = $1::TEXT for share",
+                    &[&table_id],
+                )
+                .await?;
+            let Some(row) = row else {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_id} no longer exists"
+                )));
+            };
+            let domain: String = row.get(0);
+            if is_public_domain(&domain) {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::PermissionDenied(
+                    "public tables are open and take no ACL".to_string(),
+                ));
+            }
+            domains.insert(table_id.to_string(), domain);
+        }
+
+        for change in changes {
+            let table_id = change.table_id();
+            let table_domain = domains.get(table_id).ok_or_else(|| {
+                LakeSoulMetaDataError::Internal(format!(
+                    "ACL change for unvalidated table {table_id}"
+                ))
+            })?;
+
+            let (grantee_domain, grantee_kind, grantee) = match change {
+                AclChange::GrantTable {
+                    grantee_domain,
+                    grantee_kind,
+                    grantee,
+                    ..
+                }
+                | AclChange::RevokeTable {
+                    grantee_domain,
+                    grantee_kind,
+                    grantee,
+                    ..
+                } => (grantee_domain, grantee_kind, grantee),
+            };
+
+            if grantee.is_empty() || grantee_domain.is_empty() {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::PermissionDenied(
+                    "an ACL grantee and its domain cannot be empty".to_string(),
+                ));
+            }
+            if *grantee_kind == AclGranteeKind::Domain
+                && (grantee != "*" || grantee_domain != table_domain)
+            {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::PermissionDenied(
+                    "a domain grant applies to the table's own domain only".to_string(),
+                ));
+            }
+
+            match change {
+                AclChange::GrantTable {
+                    privilege,
+                    granted_by,
+                    ..
+                } => {
+                    if *privilege == Privilege::None {
+                        transaction.rollback().await?;
+                        return Err(LakeSoulMetaDataError::PermissionDenied(
+                            "a grant must be ro or rw".to_string(),
+                        ));
+                    }
+                    if *privilege == Privilege::Write && grantee_domain != table_domain {
+                        transaction.rollback().await?;
+                        return Err(LakeSoulMetaDataError::PermissionDenied(
+                            "a cross-domain grant can only be read-only".to_string(),
+                        ));
+                    }
+                    transaction
+                        .execute(
+                            "insert into table_acl
+                               (table_id, grantee_domain, grantee_kind, grantee,
+                                privilege, granted_by)
+                             values ($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT,
+                                     $5::TEXT, $6::TEXT)
+                             on conflict
+                                 (table_id, grantee_domain, grantee_kind, grantee)
+                             do update set
+                                 privilege = case
+                                     when excluded.privilege = 'rw' then 'rw'
+                                     when table_acl.privilege = 'rw' then 'rw'
+                                     else 'ro'
+                                 end,
+                                 granted_by = excluded.granted_by,
+                                 updated_at = now()",
+                            &[
+                                &table_id,
+                                grantee_domain,
+                                &grantee_kind.as_str(),
+                                grantee,
+                                &privilege.as_str(),
+                                granted_by,
+                            ],
+                        )
+                        .await?;
+                }
+                AclChange::RevokeTable {
+                    scope, granted_by, ..
+                } => {
+                    let same_domain = grantee_domain == table_domain;
+                    match scope {
+                        AclRevokeScope::All | AclRevokeScope::Read if same_domain => {
+                            // An explicit none overrides the same-domain default
+                            // ro; without it, removing the row would make the
+                            // table visible again.
+                            transaction
+                                .execute(
+                                    "insert into table_acl
+                                       (table_id, grantee_domain, grantee_kind,
+                                        grantee, privilege, granted_by)
+                                     values ($1::TEXT, $2::TEXT, $3::TEXT,
+                                             $4::TEXT, 'none', $5::TEXT)
+                                     on conflict
+                                         (table_id, grantee_domain, grantee_kind,
+                                          grantee)
+                                     do update set
+                                         privilege = 'none',
+                                         granted_by = excluded.granted_by,
+                                         updated_at = now()",
+                                    &[
+                                        &table_id,
+                                        grantee_domain,
+                                        &grantee_kind.as_str(),
+                                        grantee,
+                                        granted_by,
+                                    ],
+                                )
+                                .await?;
+                        }
+                        AclRevokeScope::All | AclRevokeScope::Read => {
+                            // A cross-domain user had no default access; drop
+                            // the row instead of leaving a redundant none.
+                            transaction
+                                .execute(
+                                    "delete from table_acl
+                                     where table_id = $1::TEXT
+                                       and grantee_domain = $2::TEXT
+                                       and grantee_kind = $3::TEXT
+                                       and grantee = $4::TEXT",
+                                    &[
+                                        &table_id,
+                                        grantee_domain,
+                                        &grantee_kind.as_str(),
+                                        grantee,
+                                    ],
+                                )
+                                .await?;
+                        }
+                        AclRevokeScope::Write => {
+                            // Write implies read in this model, so removing
+                            // write leaves ro. A missing row already has the
+                            // same-domain ro default, and a legacy cross-domain
+                            // rw row is clamped to ro as well.
+                            transaction
+                                .execute(
+                                    "update table_acl
+                                     set privilege = 'ro', updated_at = now()
+                                     where table_id = $1::TEXT
+                                       and grantee_domain = $2::TEXT
+                                       and grantee_kind = $3::TEXT
+                                       and grantee = $4::TEXT
+                                       and privilege = 'rw'",
+                                    &[
+                                        &table_id,
+                                        grantee_domain,
+                                        &grantee_kind.as_str(),
+                                        grantee,
+                                    ],
+                                )
+                                .await?;
+                        }
+                    }
+                }
+            }
+        }
+
+        transaction.commit().await?;
+        Ok(())
     }
 
     /// Grant (`ro`/`rw`/`none`) one table privilege to a user.

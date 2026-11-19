@@ -41,6 +41,7 @@ mod cursor;
 mod ddl;
 mod failed_transaction;
 mod federation;
+mod grant;
 mod insert;
 mod ivm;
 mod jobs;

@@ -951,17 +951,23 @@ pub(crate) fn connection_statement_hooks(
             database.to_string(),
         )));
     }
+    let cluster_domain = session.cluster_domain().map(str::to_owned).or_else(|| {
+        identity
+            .access
+            .as_ref()
+            .map(|access| access.domain().to_string())
+    });
     hooks.push(Arc::new(crate::acl::AclRefreshHook));
+    hooks.push(Arc::new(crate::grant::AclStatementHook::new(
+        Arc::clone(factory.meta_client()),
+        database.to_string(),
+        identity.user.clone(),
+    )));
     hooks.push(Arc::new(crate::ddl::DdlStatementHook::new(
         Arc::clone(factory.meta_client()),
         database.to_string(),
         factory.warehouse().map(str::to_owned),
-        session.cluster_domain().map(str::to_owned).or_else(|| {
-            identity
-                .access
-                .as_ref()
-                .map(|access| access.domain().to_string())
-        }),
+        cluster_domain,
         identity.user.clone(),
     )));
     hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
@@ -1080,6 +1086,23 @@ impl LakeSoulQueryRouter {
         >,
     {
         let statement = &portal.statement;
+        // This runs before the generation check: a REVOKE or GRANT made in
+        // another session may have changed this connection's visibility since
+        // the portal was planned. Refresh first, then make a changed view
+        // invalidate that plan.
+        if state
+            .session
+            .refresh_acl_if_stale()
+            .await
+            .map_err(|error| {
+                crate::ddl::user_error(
+                    "XX000",
+                    format!("refreshing table ACLs failed: {error}"),
+                )
+            })?
+        {
+            state.settings.bump();
+        }
         if !state.settings.needs_replan(&statement.id) {
             return Ok(());
         }
