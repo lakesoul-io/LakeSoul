@@ -553,6 +553,16 @@ impl PgSessionFactory {
                 cluster_domain: cluster_domain.clone(),
             }));
         }
+        if let Some(federation) = &self.federation {
+            config.set_extension(Arc::new(crate::federation::PgFederationSession {
+                runtime: Arc::clone(federation),
+                user: identity.user.clone(),
+                domain: identity
+                    .access
+                    .as_ref()
+                    .map(|access| access.domain().to_string()),
+            }));
+        }
         // How the next statement treats a key that is already present. The
         // INSERT hook sets it before every write; the sink reads it while
         // planning, so `ON CONFLICT DO NOTHING` drops rows instead of failing.

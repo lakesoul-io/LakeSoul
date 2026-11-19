@@ -115,16 +115,29 @@ enum FederationStatement {
 pub struct FederationStatementHook {
     runtime: Arc<FederationRuntime>,
     database: String,
+    user: String,
+    domain: Option<String>,
 }
 
 impl FederationStatementHook {
-    pub fn new(runtime: Arc<FederationRuntime>, database: String) -> Self {
-        Self { runtime, database }
+    pub fn new(
+        runtime: Arc<FederationRuntime>,
+        database: String,
+        user: String,
+        domain: Option<String>,
+    ) -> Self {
+        Self {
+            runtime,
+            database,
+            user,
+            domain,
+        }
     }
 
     async fn execute(
         &self,
         original: &str,
+        session_context: &datafusion::prelude::SessionContext,
         client: &mut dyn HookClient,
     ) -> PgWireResult<Response> {
         if client.transaction_status() != TransactionStatus::Idle {
@@ -164,6 +177,8 @@ impl FederationStatementHook {
                         &driver,
                         resolved.dialect,
                         &options,
+                        self.domain.as_deref().unwrap_or("public"),
+                        &self.user,
                         if_not_exists,
                     )
                     .await
@@ -183,6 +198,7 @@ impl FederationStatementHook {
                 server,
                 options,
             } => {
+                require_server_write(self, session_context, &server)?;
                 let user = if user.eq_ignore_ascii_case("CURRENT_USER") {
                     current_user(client)?
                 } else {
@@ -229,6 +245,8 @@ impl FederationStatementHook {
                          got {local_schema}.{local_name}"
                     )));
                 }
+                require_server_write(self, session_context, &server)?;
+                crate::acl::require_namespace_write(session_context, &self.database)?;
                 if self.runtime.server_backend(&server)
                     == Some(ServerBackend::ExternalFile)
                 {
@@ -252,6 +270,8 @@ impl FederationStatementHook {
                     remote_table,
                     schema: Arc::new(schema),
                     options,
+                    domain: self.domain.clone().unwrap_or_else(|| "public".to_string()),
+                    creator: self.user.clone(),
                 };
                 let created = self
                     .runtime
@@ -287,6 +307,26 @@ impl FederationStatementHook {
                              got {schema}.{table}"
                         )));
                     }
+                    match foreign_table_privilege(self, session_context, &table) {
+                        Some(lakesoul_metadata::acl::Privilege::Write) | None => {}
+                        Some(lakesoul_metadata::acl::Privilege::Read) => {
+                            return Err(user_error(
+                                "42501",
+                                format!("permission denied for foreign table {table:?}"),
+                            ));
+                        }
+                        Some(lakesoul_metadata::acl::Privilege::None) => {
+                            // A cross-domain table is invisible, so `IF EXISTS`
+                            // treats it like a missing one.
+                            if if_exists {
+                                continue;
+                            }
+                            return Err(user_error(
+                                "42P01",
+                                format!("foreign table {table:?} does not exist"),
+                            ));
+                        }
+                    }
                     let dropped = self
                         .runtime
                         .metadata()
@@ -308,6 +348,37 @@ impl FederationStatementHook {
                 name,
                 cascade,
             } => {
+                match server_privilege(self, session_context, &name) {
+                    Some(lakesoul_metadata::acl::Privilege::Write) => {}
+                    Some(lakesoul_metadata::acl::Privilege::Read) => {
+                        return Err(user_error(
+                            "42501",
+                            format!("permission denied for server {name:?}"),
+                        ));
+                    }
+                    Some(lakesoul_metadata::acl::Privilege::None) => {
+                        // A cross-domain server is invisible, so `IF EXISTS`
+                        // treats it like a missing one.
+                        if if_exists {
+                            return Ok(Response::Execution(Tag::new("DROP SERVER")));
+                        }
+                        return Err(user_error(
+                            "42704",
+                            format!("server {name:?} does not exist"),
+                        ));
+                    }
+                    None => {
+                        if self.runtime.server_backend(&name).is_none() {
+                            if if_exists {
+                                return Ok(Response::Execution(Tag::new("DROP SERVER")));
+                            }
+                            return Err(user_error(
+                                "42704",
+                                format!("server {name:?} does not exist"),
+                            ));
+                        }
+                    }
+                }
                 if !cascade {
                     let tables = self
                         .runtime
@@ -345,6 +416,7 @@ impl FederationStatementHook {
                 user,
                 server,
             } => {
+                require_server_write(self, session_context, &server)?;
                 let user = if user.eq_ignore_ascii_case("CURRENT_USER") {
                     current_user(client)?
                 } else {
@@ -469,7 +541,7 @@ impl QueryHook for FederationStatementHook {
     async fn handle_simple_query(
         &self,
         statement: &Statement,
-        _session_context: &SessionContext,
+        session_context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         let original = match original_ddl(statement) {
@@ -477,7 +549,7 @@ impl QueryHook for FederationStatementHook {
             Ok(None) => return None,
             Err(error) => return Some(Err(error)),
         };
-        Some(self.execute(&original, client).await)
+        Some(self.execute(&original, session_context, client).await)
     }
 
     async fn handle_extended_parse_query(
@@ -509,7 +581,7 @@ impl QueryHook for FederationStatementHook {
         statement: &Statement,
         _logical_plan: &LogicalPlan,
         _params: &datafusion::common::ParamValues,
-        _session_context: &SessionContext,
+        session_context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         let original = match original_ddl(statement) {
@@ -517,7 +589,7 @@ impl QueryHook for FederationStatementHook {
             Ok(None) => return None,
             Err(error) => return Some(Err(error)),
         };
-        Some(self.execute(&original, client).await)
+        Some(self.execute(&original, session_context, client).await)
     }
 }
 
@@ -1051,9 +1123,13 @@ fn statement_kind(tokens: &[Token]) -> Option<()> {
         [first, second, ..]
             if first == "CREATE"
                 && (second == "SERVER"
-                    || second == "USER"
                     || second == "FOREIGN"
                     || second == "EXTENSION") =>
+        {
+            Some(())
+        }
+        [first, second, third, ..]
+            if first == "CREATE" && second == "USER" && third == "MAPPING" =>
         {
             Some(())
         }
@@ -1081,6 +1157,66 @@ fn current_user(client: &dyn ClientInfo) -> PgWireResult<String> {
         .identity
         .user
         .clone())
+}
+
+fn acl_view(
+    session_context: &datafusion::prelude::SessionContext,
+) -> Option<Arc<lakesoul_metadata::acl::AclView>> {
+    crate::acl::pg_acl(session_context).map(|acl| acl.acl.view())
+}
+
+/// The server's effective privilege, or `None` when the session has no ACL
+/// view (`--rbac` is off) and the historical open behaviour applies.
+fn server_privilege(
+    hook: &FederationStatementHook,
+    session_context: &datafusion::prelude::SessionContext,
+    server: &str,
+) -> Option<lakesoul_metadata::acl::Privilege> {
+    let acl = acl_view(session_context)?;
+    Some(hook.runtime.server_privilege(
+        server,
+        &hook.user,
+        hook.domain.as_deref(),
+        Some(&acl),
+    ))
+}
+
+/// The foreign table's effective privilege, or `None` when `--rbac` is off.
+fn foreign_table_privilege(
+    hook: &FederationStatementHook,
+    session_context: &datafusion::prelude::SessionContext,
+    table: &str,
+) -> Option<lakesoul_metadata::acl::Privilege> {
+    let acl = acl_view(session_context)?;
+    Some(hook.runtime.foreign_table_privilege(
+        &hook.database,
+        table,
+        &hook.user,
+        hook.domain.as_deref(),
+        Some(&acl),
+    ))
+}
+
+fn require_server_write(
+    hook: &FederationStatementHook,
+    session_context: &datafusion::prelude::SessionContext,
+    server: &str,
+) -> PgWireResult<()> {
+    let Some(privilege) = server_privilege(hook, session_context, server) else {
+        // Without --rbac there is no ACL view; preserve the old behaviour.
+        return Ok(());
+    };
+    match privilege {
+        lakesoul_metadata::acl::Privilege::Write => Ok(()),
+        lakesoul_metadata::acl::Privilege::Read => Err(user_error(
+            "42501",
+            format!("permission denied for server {server:?}"),
+        )),
+        lakesoul_metadata::acl::Privilege::None => Err(user_error(
+            "42704",
+            format!("server {server:?} does not exist"),
+        )),
+    }
 }
 
 fn dollar_tag(sql: &str) -> String {

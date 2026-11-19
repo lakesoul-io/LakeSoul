@@ -492,8 +492,8 @@ impl ReadOnlyStatementGuard {
     /// like the statement it wraps.
     fn allow(statement: &Statement) -> bool {
         match statement {
-            Statement::Query(_)
-            | Statement::ExplainTable { .. }
+            Statement::Query(query) => !query_selects_into(query),
+            Statement::ExplainTable { .. }
             | Statement::Set(_)
             | Statement::ShowVariable { .. }
             | Statement::ShowStatus { .. }
@@ -542,9 +542,17 @@ impl ReadOnlyStatementGuard {
     }
 }
 
+/// DataFusion plans `SELECT ... INTO` as an in-memory table creation. It is a
+/// session-local DDL bypass in a server that only supports LakeSoul DDL through
+/// `DdlStatementHook`; refuse it explicitly instead of executing a memory table.
+fn query_selects_into(query: &Query) -> bool {
+    matches!(query.body.as_ref(), SetExpr::Select(select) if select.into.is_some())
+}
+
 /// Verb used in rejection messages.
 fn verb(statement: &Statement) -> &'static str {
     match statement {
+        Statement::Query(query) if query_selects_into(query) => "SELECT INTO",
         Statement::Insert { .. } => "INSERT",
         Statement::Update { .. } => "UPDATE",
         Statement::Delete { .. } => "DELETE",

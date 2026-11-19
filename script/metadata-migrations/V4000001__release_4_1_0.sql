@@ -289,6 +289,10 @@ alter table if exists federation.servers
     add column if not exists backend text not null default 'adbc';
 alter table if exists federation.servers
     add column if not exists dialect text not null default 'postgres';
+alter table if exists federation.servers
+    add column if not exists domain text not null default 'public';
+alter table if exists federation.servers
+    add column if not exists creator text not null default current_user;
 
 -- Backfill rows created before the dialect column existed. The old code
 -- always generated PostgreSQL SQL, so anything else was unusable anyway.
@@ -325,10 +329,17 @@ create table if not exists federation.foreign_tables
     remote_table  text not null,
     schema_json   text not null,
     options       text not null default '{}',
+    domain        text not null default 'public',
+    creator       text not null default current_user,
     created_at    bigint not null,
     updated_at    bigint not null,
     primary key (database, local_schema, local_name)
 );
+
+alter table if exists federation.foreign_tables
+    add column if not exists domain text not null default 'public';
+alter table if exists federation.foreign_tables
+    add column if not exists creator text not null default current_user;
 
 -- ---------------------------------------------------------------------------
 -- Detached query jobs
@@ -694,6 +705,37 @@ create table if not exists domain_admin
 
 create index if not exists domain_admin_user_index
     on domain_admin (user_name, domain);
+
+-- Domain registry and the pg-wire user directory. Domains are created by
+-- script/meta_rbac_add_domain.sql; existing deployments backfill users with
+-- script/migrate_users.sql.
+create table if not exists domain
+(
+    domain      text primary key,
+    creator     text not null,
+    created_at  timestamptz not null default now(),
+    properties  json not null default '{}'::json
+);
+
+create table if not exists lakesoul_user
+(
+    user_name         text primary key,
+    created_by_domain text not null,
+    created_at        timestamptz not null default now()
+);
+
+create table if not exists domain_user
+(
+    domain       text not null references domain (domain) on delete cascade,
+    user_name    text not null references lakesoul_user (user_name) on delete cascade,
+    created_by   text not null,
+    created_at   timestamptz not null default now(),
+    disabled     boolean not null default false,
+    primary key (domain, user_name)
+);
+
+create index if not exists domain_user_user_index
+    on domain_user (user_name, domain);
 
 -- The domain is the tenant boundary and cannot be changed on an existing
 -- namespace or table, even by the space administrator.

@@ -57,6 +57,7 @@ mod session_settings;
 mod subscribe;
 mod transaction;
 mod update;
+mod user;
 use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;
@@ -241,8 +242,8 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Command {
     /// Print a LakeSoul JWT for connecting to a server started with
-    /// `--jwt-auth`. Needs only the metadata connection settings, from which
-    /// the signing secret is derived.
+    /// `--jwt-auth`. The signing secret comes from the metadata connection
+    /// settings; an RBAC deployment also reads the user directory.
     Token(TokenArgs),
 }
 
@@ -264,12 +265,24 @@ struct TokenArgs {
 /// Prints one token on stdout and nothing else, so it can be captured as
 /// `PGPASSWORD=$(postgres-lakesoul token ...)`.
 ///
-/// The signing secret comes from the metadata settings alone: minting never
-/// connects to the metadata database, so it works offline and during a
-/// metadata outage.
-fn print_token(args: &TokenArgs) -> Result<()> {
+/// The signing secret comes from the metadata settings. An RBAC deployment
+/// keeps its users in `domain_user`, so minting also connects once to validate
+/// `(user, group)`; a legacy metadata database without that table keeps the
+/// old offline signing behaviour.
+async fn print_token(args: &TokenArgs) -> Result<()> {
     let secret = lakesoul_metadata::client_secret_from_env()?;
     let jwt = lakesoul_metadata::JwtServer::new(&secret);
+
+    // An RBAC deployment keeps its users in metadata. Validate the pair before
+    // issuing a token; a legacy JWT-only metadata database without the table
+    // keeps the old offline behaviour.
+    let metadata = lakesoul_metadata::MetaDataClient::from_env().await?;
+    if metadata.has_user_directory().await?
+        && !metadata.is_domain_user(&args.group, &args.user).await?
+    {
+        rootcause::bail!("user {} is not enabled in domain {}", args.user, args.group);
+    }
+
     let token = auth::mint_token(&jwt, &args.user, &args.group, args.ttl)
         .map_err(|error| rootcause::report!("{error}"))?;
     println!("{token}");
@@ -354,7 +367,15 @@ async fn main_inner(cli: Cli) -> Result<()> {
             "JWT authentication enabled: every connection must send a LakeSoul \
              token for its user as the password"
         );
-        auth::AuthSettings::jwt(meta_client.get_client_secret()).with_rbac(cli.rbac)
+        let settings =
+            auth::AuthSettings::jwt(meta_client.get_client_secret()).with_rbac(cli.rbac);
+        if cli.rbac {
+            settings.with_user_directory(Arc::new(auth::UserDirectory::new(Arc::clone(
+                &meta_client,
+            ))))
+        } else {
+            settings
+        }
     } else {
         auth::AuthSettings::default()
     };
@@ -559,7 +580,10 @@ async fn shutdown_signal() {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Some(Command::Token(args)) = &cli.command {
-        return print_token(args);
+        let rt = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        return rt.block_on(print_token(args));
     }
     let subscriber = cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some();
     let worker_threads = if subscriber {

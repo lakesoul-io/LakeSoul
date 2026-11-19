@@ -168,6 +168,7 @@ fn rewrite_special_statements(sql: &str) -> PgWireResult<String> {
     // `SET (k = NULL)` form `DdlStatementHook` reads as a reset.
     let sql = crate::alter::rewrite_reset_options(sql).unwrap_or_else(|| sql.to_string());
     let sql = crate::federation::rewrite(&sql)?.unwrap_or(sql);
+    let sql = crate::user::rewrite_create_user(&sql).unwrap_or(sql);
     let sql = crate::subscribe::sql::rewrite(&sql)?.unwrap_or(sql);
     // psycopg2 and other libpq clients send bytea parameters as text
     // literals (`'\\x...'::bytea`). Decode them before DataFusion's raw
@@ -231,6 +232,9 @@ fn map_statement_error(error: PgWireError) -> PgWireError {
         if let Some(incompatible) = incompatible_column_type(cause) {
             return incompatible_file_type_error(incompatible);
         }
+        if let Some(missing) = missing_table_error(cause) {
+            return missing;
+        }
         current = cause.source();
     }
     error
@@ -254,6 +258,38 @@ fn incompatible_column_type<'a>(
         DataFusionError::External(inner) => inner.downcast_ref(),
         _ => None,
     }
+}
+
+/// DataFusion reports a catalog miss as a planning error. PostgreSQL reports
+/// the same case as `42P01`; the pg-wire catalog hides ACL-invisible tables by
+/// returning no provider, so those reads must not look like `XX000`.
+fn missing_table_error(cause: &(dyn std::error::Error + 'static)) -> Option<PgWireError> {
+    let message = cause.to_string();
+    // DataFusion phrases a catalog miss as `table '…' not found` (and some
+    // paths as `No table named '…'`). Match only those forms: other errors
+    // mention a table name too, and must keep their own SQLSTATE.
+    let (needle, found) = if message.contains("No table named '") {
+        ("No table named '", true)
+    } else if message.contains("table '") && message.contains("not found") {
+        ("table '", true)
+    } else {
+        ("", false)
+    };
+    if !found {
+        return None;
+    }
+    let relation = message
+        .split(needle)
+        .nth(1)
+        .and_then(|rest| rest.split('\'').next())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("?");
+    let table = relation.rsplit('.').next().unwrap_or(relation);
+    Some(PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        "42P01".to_string(),
+        format!("relation \"{table}\" does not exist"),
+    ))))
 }
 
 /// PostgreSQL `datatype_mismatch`: the table's data files disagree on a column
@@ -689,7 +725,7 @@ impl LakeSoulStartupHandler {
     /// verifier, and returns the domain the connection is confined to when
     /// domain enforcement is on. The reason for a refusal is logged, never
     /// sent.
-    fn authenticate<C: ClientInfo>(
+    async fn authenticate<C: ClientInfo>(
         &self,
         client: &C,
         jwt: &JwtServer,
@@ -698,15 +734,8 @@ impl LakeSoulStartupHandler {
         let Some(user) = client.metadata().get(METADATA_USER).cloned() else {
             return Err(PgWireError::UserNameRequired);
         };
-        match crate::auth::verify_token(jwt, &user, password) {
-            Ok(claims) => {
-                info!(user = %user, group = %claims.group, "token authenticated");
-                Ok(self
-                    .session_factory
-                    .auth()
-                    .rbac
-                    .then(|| DomainAccess::new(claims.group)))
-            }
+        let claims = match crate::auth::verify_token(jwt, &user, password) {
+            Ok(claims) => claims,
             Err(failure) => {
                 crate::auth::record_failure(&failure);
                 warn!(
@@ -716,9 +745,49 @@ impl LakeSoulStartupHandler {
                     detail = %failure,
                     "token authentication failed"
                 );
-                Err(PgWireError::InvalidPassword(user))
+                return Err(PgWireError::InvalidPassword(user));
             }
+        };
+        let settings = self.session_factory.auth();
+        let listed = if settings.rbac {
+            match settings.user_directory() {
+                Some(directory) => match directory.is_user(&claims.group, &user).await {
+                    Ok(listed) => listed,
+                    Err(error) => {
+                        // Fail closed, but keep the cause in the log: the
+                        // client still only sees a generic password failure.
+                        warn!(
+                            user = %user,
+                            group = %claims.group,
+                            %error,
+                            "user directory lookup failed"
+                        );
+                        false
+                    }
+                },
+                None => true,
+            }
+        } else {
+            true
+        };
+        if !listed {
+            let failure = crate::auth::AuthFailure::UnknownUser {
+                user: user.clone(),
+                group: claims.group.clone(),
+            };
+            crate::auth::record_failure(&failure);
+            warn!(
+                user = %user,
+                group = %claims.group,
+                peer = %client.socket_addr(),
+                reason = failure.reason(),
+                detail = %failure,
+                "token authentication failed"
+            );
+            return Err(PgWireError::InvalidPassword(user));
         }
+        info!(user = %user, group = %claims.group, "token authenticated");
+        Ok(settings.rbac.then(|| DomainAccess::new(claims.group)))
     }
 
     /// Ends a successful handshake: registers the connection, sends
@@ -922,7 +991,7 @@ impl StartupHandler for LakeSoulStartupHandler {
                     return Ok(());
                 };
                 let password = password.into_password()?;
-                let access = self.authenticate(client, jwt, &password.password)?;
+                let access = self.authenticate(client, jwt, &password.password).await?;
                 self.complete_startup(client, access).await?;
             }
             _ => {}
@@ -945,12 +1014,6 @@ pub(crate) fn connection_statement_hooks(
     let identity = &session.identity;
     let database = identity.database.as_str();
     let mut hooks = crate::pg_vector::statement_hooks();
-    if let Some(federation) = factory.federation() {
-        hooks.push(Arc::new(crate::federation::FederationStatementHook::new(
-            Arc::clone(federation),
-            database.to_string(),
-        )));
-    }
     let cluster_domain = session.cluster_domain().map(str::to_owned).or_else(|| {
         identity
             .access
@@ -958,6 +1021,18 @@ pub(crate) fn connection_statement_hooks(
             .map(|access| access.domain().to_string())
     });
     hooks.push(Arc::new(crate::acl::AclRefreshHook));
+    if let Some(federation) = factory.federation() {
+        hooks.push(Arc::new(crate::federation::FederationStatementHook::new(
+            Arc::clone(federation),
+            database.to_string(),
+            identity.user.clone(),
+            cluster_domain.clone(),
+        )));
+    }
+    hooks.push(Arc::new(crate::user::UserStatementHook::new(
+        Arc::clone(factory.meta_client()),
+        identity.user.clone(),
+    )));
     hooks.push(Arc::new(crate::grant::AclStatementHook::new(
         Arc::clone(factory.meta_client()),
         database.to_string(),
@@ -1026,6 +1101,7 @@ impl QueryParser for __ConnectionParser {
         let rewritten = crate::session_settings::rewrite_reset_time_zone(sql);
         let sql = rewritten.as_deref().unwrap_or(sql);
         let sql = crate::federation::rewrite(sql)?.unwrap_or_else(|| sql.to_string());
+        let sql = crate::user::rewrite_create_user(&sql).unwrap_or(sql);
         let sql =
             crate::subscribe::sql::rewrite(&sql)?.unwrap_or_else(|| sql.to_string());
         let state = connection_session(client)?;

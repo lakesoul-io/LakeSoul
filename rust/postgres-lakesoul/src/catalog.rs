@@ -164,7 +164,13 @@ impl SchemaProvider for PgPublicSchema {
             names.retain(|name| self.visible_in_snapshot(name));
         }
         if let Some(federation) = &self.federation {
-            for name in federation.foreign_names(&self.database) {
+            let acl = self.acl.as_ref().map(|acl| acl.view());
+            for name in federation.visible_foreign_names(
+                &self.database,
+                &self.user,
+                self.access.as_ref().map(DomainAccess::domain),
+                acl.as_deref(),
+            ) {
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -193,11 +199,27 @@ impl SchemaProvider for PgPublicSchema {
             }
         }
         if let Some(federation) = &self.federation
-            && let Some(table) = federation
+            && federation.is_foreign(&self.database, name)
+        {
+            if let Some(acl) = &self.acl
+                && !federation
+                    .foreign_table_privilege(
+                        &self.database,
+                        name,
+                        &self.user,
+                        self.access.as_ref().map(DomainAccess::domain),
+                        Some(&acl.view()),
+                    )
+                    .can_read()
+            {
+                return Ok(None);
+            }
+            if let Some(table) = federation
                 .provider(&self.database, &self.user, name)
                 .map_err(|error| DataFusionError::External(error.into()))?
-        {
-            return Ok(Some(table));
+            {
+                return Ok(Some(table));
+            }
         }
         let table = self.local.table(name).await?;
         Ok(table.filter(|table| self.visible_provider(table)))
@@ -207,7 +229,17 @@ impl SchemaProvider for PgPublicSchema {
         if let Some(federation) = &self.federation
             && federation.is_foreign(&self.database, name)
         {
-            return true;
+            return self.acl.as_ref().is_none_or(|acl| {
+                federation
+                    .foreign_table_privilege(
+                        &self.database,
+                        name,
+                        &self.user,
+                        self.access.as_ref().map(DomainAccess::domain),
+                        Some(&acl.view()),
+                    )
+                    .can_read()
+            });
         }
         self.local.table_exist(name) && self.visible_in_snapshot(name)
     }

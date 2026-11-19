@@ -22,7 +22,7 @@
 //!   only when at least one of its tables is visible.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::error::{LakeSoulMetaDataError, Result};
@@ -186,11 +186,29 @@ fn is_public_domain(domain: &str) -> bool {
     matches!(domain, "public" | "lake-public")
 }
 
+/// SQL identifier subset accepted for domain/user names. PostgreSQL folds
+/// unquoted names to lower case and truncates identifiers over 63 bytes; the
+/// directory uses the same strings as role names, so reject anything that
+/// would make the stored name differ from the role.
+fn valid_acl_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 63
+        && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
 /// A resolved view of one user's ACLs.
 #[derive(Debug, Clone, Default)]
 pub struct AclView {
     namespaces: HashMap<String, NamespaceAccess>,
     tables: HashMap<(String, String), TableAccess>,
+    /// Domains in which this user is a space administrator. Kept separately
+    /// from the per-object `admin` flags so federation objects can use the same
+    /// rule even when the domain has no LakeSoul table or namespace.
+    domain_admins: HashSet<String>,
 }
 
 impl AclView {
@@ -251,6 +269,15 @@ impl AclView {
                 },
             );
         }
+
+        let admin_rows = connection
+            .query(
+                "select domain from domain_admin where user_name = $1",
+                &[&user],
+            )
+            .await?;
+        let domain_admins: HashSet<String> =
+            admin_rows.iter().map(|row| row.get(0)).collect();
 
         let table_rows = connection
             .query(
@@ -317,7 +344,16 @@ impl AclView {
             }
         }
 
-        Ok(Self { namespaces, tables })
+        Ok(Self {
+            namespaces,
+            tables,
+            domain_admins,
+        })
+    }
+
+    /// Whether this user is a space administrator in `domain`.
+    pub fn is_domain_admin(&self, domain: &str) -> bool {
+        self.domain_admins.contains(domain)
     }
 
     /// Resolve one table live, bypassing the cached view. Used when a table
@@ -554,6 +590,11 @@ impl AclView {
             access.admin.hash(&mut hasher);
             access.privilege.as_str().hash(&mut hasher);
         }
+        let mut admins: Vec<&String> = self.domain_admins.iter().collect();
+        admins.sort();
+        for domain in admins {
+            domain.hash(&mut hasher);
+        }
         hasher.finish()
     }
 }
@@ -630,6 +671,210 @@ impl MetaDataClient {
             )
             .await?;
         Ok(row.get(0))
+    }
+
+    /// Whether the pg-wire user directory is installed in this metadata
+    /// database. A legacy JWT-only deployment may not have it yet.
+    pub async fn has_user_directory(&self) -> Result<bool> {
+        let pooled = self.pooled_client();
+        let locked = pooled.lock().await;
+        let connection = locked.get(QueryType::RW).await?;
+        Ok(connection
+            .query_one("select to_regclass('public.domain_user') is not null", &[])
+            .await?
+            .get(0))
+    }
+
+    /// Whether `user` is an enabled member of `domain` in the pg-wire user
+    /// directory. The token issuer and the `--rbac` connection handshake use
+    /// this to reject tokens for users that no domain administrator created.
+    pub async fn is_domain_user(&self, domain: &str, user: &str) -> Result<bool> {
+        let pooled = self.pooled_client();
+        let locked = pooled.lock().await;
+        let connection = locked.get(QueryType::RW).await?;
+        let row = connection
+            .query_one(
+                "select exists (
+                     select 1 from domain_user
+                     where domain = $1::TEXT and user_name = $2::TEXT
+                       and not disabled
+                 )",
+                &[&domain, &user],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Create a PostgreSQL login role and its LakeSoul directory entry.
+    ///
+    /// The role is always a member of `<domain>` and `<domain>_users`; this is
+    /// the same role shape `script/meta_rbac_add_user.sql` creates. The
+    /// directory rows and the role/grants are written in one transaction, so a
+    /// failed grant cannot leave a half-created user.
+    ///
+    /// Returns `Ok(true)` when the role was created, `Ok(false)` when an
+    /// existing LakeSoul-managed role only gained this domain membership.
+    pub async fn create_domain_user(
+        &self,
+        domain: &str,
+        user: &str,
+        password: &str,
+        if_not_exists: bool,
+        created_by: &str,
+    ) -> Result<bool> {
+        if !valid_acl_name(domain) || !valid_acl_name(user) {
+            return Err(LakeSoulMetaDataError::PermissionDenied(
+                "domain and user names must be valid SQL identifiers".to_string(),
+            ));
+        }
+        if user == domain
+            || user.starts_with("base_")
+            || user.starts_with("pg_")
+            || user == "postgres"
+            || user.ends_with("_admins")
+            || user.ends_with("_users")
+        {
+            return Err(LakeSoulMetaDataError::PermissionDenied(format!(
+                "user name {user:?} is reserved"
+            )));
+        }
+        if password.is_empty() {
+            return Err(LakeSoulMetaDataError::PermissionDenied(
+                "CREATE USER requires a non-empty PASSWORD".to_string(),
+            ));
+        }
+
+        let pooled = self.pooled_client();
+        let locked = pooled.lock().await;
+        let mut connection = locked.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+
+        let domain_exists: bool = transaction
+            .query_one(
+                "select exists (select 1 from domain where domain = $1::TEXT)",
+                &[&domain],
+            )
+            .await?
+            .get(0);
+        if !domain_exists {
+            transaction.rollback().await?;
+            return Err(LakeSoulMetaDataError::NotFound(format!(
+                "domain {domain:?} is not initialized"
+            )));
+        }
+
+        for role in [domain, &format!("{domain}_users")] {
+            let exists: bool = transaction
+                .query_one("select to_regrole($1::TEXT) is not null", &[&role])
+                .await?
+                .get(0);
+            if !exists {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::NotFound(format!(
+                    "domain role {role:?} is missing; create the domain first"
+                )));
+            }
+        }
+
+        let managed: bool = transaction
+            .query_one(
+                "select exists (select 1 from lakesoul_user where user_name = $1::TEXT)",
+                &[&user],
+            )
+            .await?
+            .get(0);
+        let role_row = transaction
+            .query_opt(
+                "select rolsuper, rolcreaterole, rolbypassrls, rolcanlogin
+                 from pg_roles where rolname = $1::TEXT",
+                &[&user],
+            )
+            .await?;
+
+        let created = match (role_row, managed) {
+            (Some(row), true) => {
+                let superuser: bool = row.get(0);
+                let create_role: bool = row.get(1);
+                let bypass_rls: bool = row.get(2);
+                if superuser || create_role || bypass_rls {
+                    transaction.rollback().await?;
+                    return Err(LakeSoulMetaDataError::PermissionDenied(format!(
+                        "role {user:?} has elevated PostgreSQL attributes"
+                    )));
+                }
+                if !if_not_exists {
+                    transaction.rollback().await?;
+                    return Err(LakeSoulMetaDataError::AlreadyExists(format!(
+                        "role {user:?} already exists"
+                    )));
+                }
+                false
+            }
+            (Some(_), false) => {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::AlreadyExists(format!(
+                    "role {user:?} already exists but is not managed by LakeSoul"
+                )));
+            }
+            (None, true) => {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::AlreadyExists(format!(
+                    "user {user:?} exists but its PostgreSQL role is missing"
+                )));
+            }
+            (None, false) => {
+                let quoted_user: String = transaction
+                    .query_one("select quote_ident($1::TEXT)", &[&user])
+                    .await?
+                    .get(0);
+                let quoted_password: String = transaction
+                    .query_one("select quote_literal($1::TEXT)", &[&password])
+                    .await?
+                    .get(0);
+                transaction
+                    .execute(
+                        &format!(
+                            "create role {quoted_user} login password {quoted_password}"
+                        ),
+                        &[],
+                    )
+                    .await?;
+                transaction
+                    .execute(
+                        "insert into lakesoul_user (user_name, created_by_domain)
+                         values ($1::TEXT, $2::TEXT)
+                         on conflict (user_name) do nothing",
+                        &[&user, &domain],
+                    )
+                    .await?;
+                true
+            }
+        };
+
+        let quoted_user: String = transaction
+            .query_one("select quote_ident($1::TEXT)", &[&user])
+            .await?
+            .get(0);
+        for role in [domain.to_string(), format!("{domain}_users")] {
+            let quoted_role: String = transaction
+                .query_one("select quote_ident($1::TEXT)", &[&role])
+                .await?
+                .get(0);
+            transaction
+                .execute(&format!("grant {quoted_role} to {quoted_user}"), &[])
+                .await?;
+        }
+        transaction
+            .execute(
+                "insert into domain_user (domain, user_name, created_by)
+                 values ($1::TEXT, $2::TEXT, $3::TEXT)
+                 on conflict (domain, user_name) do nothing",
+                &[&domain, &user, &created_by],
+            )
+            .await?;
+
+        transaction.commit().await?;
+        Ok(created)
     }
 
     /// Resolve a table path to its effective privilege for `user`.

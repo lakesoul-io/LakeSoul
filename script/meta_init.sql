@@ -105,6 +105,36 @@ create table if not exists domain_admin
 );
 CREATE INDEX CONCURRENTLY IF NOT EXISTS domain_admin_user_index ON domain_admin (user_name, domain);
 
+-- Domain registry and the pg-wire user directory. Domains remain created by
+-- script/meta_rbac_add_domain.sql; the tables let a domain administrator
+-- create users without inventing a SQL CREATE DOMAIN statement.
+create table if not exists domain
+(
+    domain      text primary key,
+    creator     text not null,
+    created_at  timestamptz not null default now(),
+    properties  json not null default '{}'::json
+);
+
+create table if not exists lakesoul_user
+(
+    user_name         text primary key,
+    created_by_domain text not null,
+    created_at        timestamptz not null default now()
+);
+
+create table if not exists domain_user
+(
+    domain       text not null references domain (domain) on delete cascade,
+    user_name    text not null references lakesoul_user (user_name) on delete cascade,
+    created_by   text not null,
+    created_at   timestamptz not null default now(),
+    disabled     boolean not null default false,
+    primary key (domain, user_name)
+);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS domain_user_user_index
+    ON domain_user (user_name, domain);
+
 -- The domain is the tenant boundary and cannot be changed on an existing
 -- namespace or table, even by the space administrator.
 CREATE OR REPLACE FUNCTION lakesoul_prevent_domain_change()
@@ -486,6 +516,8 @@ create table if not exists federation.servers
     driver      text not null default 'postgresql',
     dialect     text not null default 'postgres',
     options     text not null default '{}',
+    domain      text not null default 'public',
+    creator     text not null default current_user,
     created_at  bigint not null,
     updated_at  bigint not null
 );
@@ -509,6 +541,8 @@ create table if not exists federation.foreign_tables
     remote_table  text not null,
     schema_json   text not null,
     options       text not null default '{}',
+    domain        text not null default 'public',
+    creator       text not null default current_user,
     created_at    bigint not null,
     updated_at    bigint not null,
     primary key (database, local_schema, local_name)

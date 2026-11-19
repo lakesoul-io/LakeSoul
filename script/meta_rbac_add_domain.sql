@@ -7,8 +7,18 @@ DO
 $$
     DECLARE role_name text;
     BEGIN
-        -- Create a role with name=domain, used as a group name
         role_name := current_setting('domain.name');
+        IF role_name !~ '^[A-Za-z_][A-Za-z0-9_]*$' THEN
+            RAISE EXCEPTION 'invalid domain name: %', role_name;
+        END IF;
+        IF EXISTS (SELECT 1 FROM public.lakesoul_user WHERE user_name = role_name) THEN
+            RAISE EXCEPTION 'domain % conflicts with an existing user', role_name;
+        END IF;
+        INSERT INTO public.domain (domain, creator)
+        VALUES (role_name, current_user)
+        ON CONFLICT (domain) DO NOTHING;
+
+        -- Create a role with name=domain, used as a group name
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
             EXECUTE 'CREATE ROLE ' || role_name || ' WITH INHERIT';
         END IF;

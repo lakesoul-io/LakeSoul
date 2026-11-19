@@ -422,23 +422,34 @@ COMMIT;
 Off by default: the startup `user` is trusted and the handshake completes on the `Startup` message, exactly as before. With `--jwt-auth` (`LAKESOUL_PG_JWT_AUTH=true`) the server asks every connection for a cleartext password and accepts only a LakeSoul JWT, the same token the Flight server and the S3 proxy accept: HS256 signed with the metadata client secret (derived from `LAKESOUL_PG_USERNAME`/`LAKESOUL_PG_PASSWORD`), claims `{sub, group, exp}`. The token's `sub` must equal the connection's `user`; `group` is the LakeSoul domain, logged on connect and enforced only with `--rbac` (below).
 
 ```sh
-# Mint a token (prints only the token). It reads the metadata settings
-# (LAKESOUL_PG_URL/USERNAME/PASSWORD or lakesoul_home) but never connects,
-# so it also works offline or while the metadata database is down.
+# Mint a token (prints only the token). In an RBAC deployment it checks the
+# domain_user directory and therefore needs metadata connectivity; a legacy
+# metadata database without that table keeps the old offline signing path.
 export PGPASSWORD=$(postgres-lakesoul token --user alice --group team_a --ttl 1h)
 psql "host=127.0.0.1 port=5432 user=alice dbname=default"
 ```
 
-- An empty, malformed, expired (`exp` plus the validator's 60 s leeway), wrongly signed, or other-user token is `FATAL 28P01` and the connection closes. The client is not told why; the server logs `token authentication failed` with a `reason` (`missing_token`, `invalid_token`, `expired`, `user_mismatch`) and the peer address. No session is built and no connection slot is taken before the token is accepted. Refusals are counted in `lakesoul_auth_failures_total{reason}`.
+- An empty, malformed, expired (`exp` plus the validator's 60 s leeway), wrongly signed, or other-user token is `FATAL 28P01` and the connection closes. The client is not told why; the server logs `token authentication failed` with a `reason` (`missing_token`, `invalid_token`, `expired`, `user_mismatch`, `unknown_user`) and the peer address. No session is built and no connection slot is taken before the token is accepted. Refusals are counted in `lakesoul_auth_failures_total{reason}`.
 - The token travels in clear like any cleartext password. Terminate TLS in front of the server or keep it on a trusted network. Tokens are short-lived by design; there is no revocation list, so `exp` is the only way a token stops working.
 - Rotating the metadata password rotates the signing secret and invalidates every token for every LakeSoul service at once.
-- Covered by `auth::tests` (verification branches, TTL parsing), `server::tests::jwt_*` and `startup_without_jwt_completes_on_the_startup_message` (the handshake, message by message), and `tests/rbac_contract.rs`: `token_command_needs_no_metadata_database` mints with the metadata URL unreachable and verifies the token with the configured secret; against a real `--jwt-auth` child, each bad password above is `28P01` with a message that does not name the cause, a client without a password cannot connect, a valid token for any user connects, and authentication alone hides no namespace (a namespace in a domain the token does not carry is listed in `pg_database` and connectable).
+- Covered by `auth::tests` (verification branches, TTL parsing), `server::tests::jwt_*` and `startup_without_jwt_completes_on_the_startup_message` (the handshake, message by message), and `tests/rbac_contract.rs`: `token_command_requires_metadata_directory` verifies that minting refuses when the user directory cannot be read; against a real `--jwt-auth` child, each bad password above is `28P01` with a message that does not name the cause, a client without a password cannot connect, a valid token for any user connects, and authentication alone hides no namespace (a namespace in a domain the token does not carry is listed in `pg_database` and connectable).
 
 #### Domain enforcement (`--rbac`)
 
 `--rbac` (`LAKESOUL_PG_RBAC=true`, requires `--jwt-auth`) confines each connection to the domain in its token's `group`, by the row-level-security rule of `script/meta_rbac_init.sql` without role inheritance: a connection sees objects in its own domain, `public` and `lake-public`, plus tables granted to it across domains. Table-level ACLs refine access inside a domain: the creator and space administrators can write, other same-domain users are read-only by default, and an explicit `none` hides a table. A cross-domain grant can only be read-only. Hidden objects do not exist for it (`42P01`); a visible read-only table rejects writes with `42501`.
 
 A shared cluster can fix the domain it writes in with `--rbac-domain` (`LAKESOUL_PG_RBAC_DOMAIN`, requires `--rbac`). Without it, the token's group remains the write domain. Clients from other domains may read granted tables but cannot create tables or write private data.
+
+In an RBAC deployment the token's `(sub, group)` is checked against the `domain_user` directory when a token is minted and when a connection starts (five-second cache). A space administrator can create an ordinary user with an explicit password:
+
+```sql
+CREATE USER alice WITH PASSWORD 'secret';
+CREATE USER IF NOT EXISTS alice WITH PASSWORD 'secret';
+```
+
+`CREATE USER` creates a real PostgreSQL login role, grants `<domain>` and `<domain>_users`, records the directory entry, and never grants `<domain>_admins`. The pg-wire metadata account needs `CREATEROLE` and ADMIN OPTION on the domain roles; the account used to mint tokens needs `SELECT` on `domain_user`. `ALTER USER`/`DROP USER` are not implemented.
+
+Federation servers and foreign tables use the same domain default: same domain read-only, `public` readable by every domain, creator/domain admin write. `CREATE FOREIGN TABLE` also requires write access to the current namespace, and cross-domain federation objects are invisible.
 
 The server also accepts a table-level subset of PostgreSQL `GRANT` / `REVOKE` once `--rbac` is on. `SELECT` maps to `ro`; `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` and `ALL` map to `rw` (write implies read). A bare grantee stays in the table's domain; `domain.user` is a LakeSoul extension for a cross-domain read-only grant, and `PUBLIC` writes the domain-wide grant. `REVOKE` of a write privilege leaves `ro`; revoking read/all hides a same-domain user with an explicit `none`. Only the creator or a space administrator may grant; `GRANT`/`REVOKE` commit immediately, so they are refused inside a transaction block. They apply at once to the current connection and within the 5-second ACL cache to other sessions and the S3 proxy. A refresh that changes visibility invalidates prepared plans on the connection, so a revoke cannot be bypassed by an old plan. `WITH GRANT OPTION`, column privileges, role membership, group ACLs and catalog reflection of grants are not implemented.
 

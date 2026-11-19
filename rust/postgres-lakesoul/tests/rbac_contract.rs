@@ -41,11 +41,11 @@ async fn jwt_authentication_contract() -> Result<()> {
     .await
 }
 
-/// `postgres-lakesoul token` signs from the metadata settings alone: with the
-/// metadata database unreachable it still prints a token that a server
-/// configured with the same settings accepts.
+/// `postgres-lakesoul token` validates the user directory, so it requires the
+/// metadata database in an RBAC deployment. A connection failure must not fall
+/// back to minting an unchecked token.
 #[test]
-fn token_command_needs_no_metadata_database() -> Result<()> {
+fn token_command_requires_metadata_directory() -> Result<()> {
     // Port 1 on loopback: a connection attempt would be refused at once.
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_postgres-lakesoul"))
         .args([
@@ -68,21 +68,12 @@ fn token_command_needs_no_metadata_database() -> Result<()> {
         .output()
         .context("run postgres-lakesoul token")?;
     ensure!(
-        output.status.success(),
-        "token-offline: the token command failed without a metadata database: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "token-offline: token issuance must fail when the user directory cannot be read"
     );
-    let token = String::from_utf8(output.stdout)?.trim().to_string();
-    let secret = lakesoul_metadata::client_secret_from_config(
-        "host=127.0.0.1 port=1 dbname=offline_metadata user=offline_user \
-         password=offline_password",
-    )?;
-    let claims = JwtServer::new(&secret)
-        .decode_token(&token)
-        .context("token-offline: the token must verify with the configured secret")?;
     ensure!(
-        claims.sub == "alice" && claims.group == RBAC_TEAM_A,
-        "token-offline: claims {claims:?}"
+        output.stdout.is_empty(),
+        "token-offline: a failed validation must not print a token"
     );
     Ok(())
 }
@@ -803,6 +794,7 @@ async fn connect(
     user: &str,
     token: &str,
 ) -> Result<Client> {
+    h.ensure_token_user(token).await?;
     h.connect_attempt(&h.lake_config_as(database, user, Some(token)))
         .await?
         .with_context(|| format!("{id}: a valid token for {user:?} must connect"))
