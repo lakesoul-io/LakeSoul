@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Helm chart
+
+on:
+  push:
+    paths:
+      - ".github/workflows/helm-lint.yml"
+      - "rust/postgres-lakesoul/helm/**"
+    branches:
+      - main
+      - "release/**"
+  pull_request:
+    paths:
+      - ".github/workflows/helm-lint.yml"
+      - "rust/postgres-lakesoul/helm/**"
+    branches:
+      - main
+      - "release/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Lint
+        run: |
+          helm lint rust/postgres-lakesoul/helm/lakesoul-pg \
+            --set metadata.url='jdbc:postgresql://metadata:5432/lakesoul?stringtype=unspecified' \
+            --set metadata.username=lakesoul \
+            --set metadata.password=secret \
+            --set warehouse.s3.endpoint=https://s3.example.com \
+            --set warehouse.s3.bucket=bucket \
+            --set warehouse.s3.accessKeyId=key \
+            --set warehouse.s3.secretAccessKey=secret
+          helm lint rust/postgres-lakesoul/helm/lakesoul-pg \
+            -f rust/postgres-lakesoul/helm/lakesoul-pg/values-dev.yaml
+      - name: Render production values
+        run: |
+          helm template lakesoul rust/postgres-lakesoul/helm/lakesoul-pg \
+            --namespace lakesoul --kube-version 1.29.0 \
+            --set metadata.url='jdbc:postgresql://metadata:5432/lakesoul?stringtype=unspecified' \
+            --set metadata.username=lakesoul \
+            --set metadata.password=secret \
+            --set warehouse.s3.endpoint=https://s3.example.com \
+            --set warehouse.s3.bucket=bucket \
+            --set warehouse.s3.accessKeyId=key \
+            --set warehouse.s3.secretAccessKey=secret \
+            > /tmp/lakesoul-production.yaml
+      - name: Render development values
+        run: |
+          helm template lakesoul rust/postgres-lakesoul/helm/lakesoul-pg \
+            --namespace lakesoul --kube-version 1.29.0 \
+            -f rust/postgres-lakesoul/helm/lakesoul-pg/values-dev.yaml \
+            > /tmp/lakesoul-dev.yaml

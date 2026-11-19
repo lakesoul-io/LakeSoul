@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Self-contained single-node / kind evaluation profile. Not production:
+# PostgreSQL is a one-replica StatefulSet, the warehouse is a local PVC, and
+# there is one worker. Use it to exercise the chart and the subscription
+# runner without external infrastructure.
+
+metadata:
+  postgresql:
+    enabled: true
+    password: lakesoul
+
+warehouse:
+  type: pvc
+  pvc:
+    size: 20Gi
+
+worker:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  execution:
+    memoryLimit: 2Gi
+    vortexDecodeBudget: 512Mi
+
+coordinator:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  execution:
+    memoryLimit: 1Gi
+    vortexDecodeBudget: 256Mi
+
+subscriptions:
+  mode: runner
+  runner:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+    execution:
+      memoryLimit: 1Gi
+      vortexDecodeBudget: 256Mi
+
+auth:
+  jwt: false
+  rbac: false

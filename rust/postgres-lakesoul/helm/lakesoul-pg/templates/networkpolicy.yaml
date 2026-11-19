@@ -1,0 +1,151 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+Opt-in baseline. The coordinator needs the Kubernetes API (EndpointSlice
+discovery), metadata PostgreSQL and object storage; workers need object
+storage and each other; the subscription runner needs the metadata PostgreSQL,
+the source PostgreSQL and object storage. Adjust the CIDRs for your cluster.
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-coordinator
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: coordinator
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 19090
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+    {{- with .Values.networkPolicy.apiServerCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- with .Values.networkPolicy.metadataCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- with .Values.networkPolicy.objectStoreCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-worker
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.worker.service.port }}
+        - protocol: TCP
+          port: 19091
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+    {{- with .Values.networkPolicy.objectStoreCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+    {{- end }}
+{{- if eq .Values.subscriptions.mode "runner" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-subscription-runner
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: subscription-runner
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+    {{- with .Values.networkPolicy.metadataCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- with .Values.networkPolicy.sourcePostgresCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- with .Values.networkPolicy.objectStoreCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+    {{- end }}
+{{- end }}
+{{- end }}

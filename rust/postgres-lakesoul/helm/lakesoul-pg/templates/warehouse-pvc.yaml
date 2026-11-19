@@ -1,0 +1,22 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if and (eq .Values.warehouse.type "pvc") (not .Values.warehouse.pvc.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-warehouse
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.warehouse.pvc.accessModes | nindent 4 }}
+  {{- if .Values.warehouse.pvc.storageClassName }}
+  storageClassName: {{ .Values.warehouse.pvc.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.warehouse.pvc.size | quote }}
+{{- end }}

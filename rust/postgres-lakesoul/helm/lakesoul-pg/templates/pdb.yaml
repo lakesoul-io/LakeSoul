@@ -1,0 +1,20 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if .Values.pdb.worker.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-worker
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  minAvailable: {{ .Values.pdb.worker.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+{{- end }}

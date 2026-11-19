@@ -70,7 +70,11 @@ includes = ["*.yml", "*.yaml"]
 # indented env block, so the unrendered file is not valid YAML and prettier
 # rejects it. Keep the template out of the parser; every other manifest still
 # formats.
-excludes = ["rust/postgres-lakesoul/benchmark/k8s/jobs/console-job.yaml"]
+excludes = [
+  "rust/postgres-lakesoul/benchmark/k8s/jobs/console-job.yaml",
+  # Helm templates contain Go actions and are not plain YAML.
+  "rust/postgres-lakesoul/helm/**",
+]
 
 # JSON ─────────────────────────────────────────────────
 [formatter.json]

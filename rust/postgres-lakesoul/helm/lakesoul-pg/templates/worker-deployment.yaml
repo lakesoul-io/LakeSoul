@@ -1,0 +1,102 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-worker
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "lakesoul-pg.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      {{- with .Values.worker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "lakesoul-pg.workerServiceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: lakesoul-worker
+          image: {{ include "lakesoul-pg.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/lakesoul-worker"]
+          args:
+            - --worker-threads
+            - {{ .Values.worker.threads | quote }}
+            - --memory-limit
+            - {{ .Values.worker.execution.memoryLimit | quote }}
+            - --vortex-decode-budget
+            - {{ .Values.worker.execution.vortexDecodeBudget | quote }}
+            {{- range .Values.worker.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.worker.service.port }}
+            - name: metrics
+              containerPort: 19091
+          envFrom:
+            - configMapRef:
+                name: {{ include "lakesoul-pg.fullname" . }}-config
+          env:
+            {{- include "lakesoul-pg.warehouseEnv" . | nindent 12 }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/scratch
+            {{- include "lakesoul-pg.warehouseVolumeMount" . | nindent 12 }}
+      volumes:
+        - name: scratch
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                {{- if .Values.worker.scratch.storageClass }}
+                storageClassName: {{ .Values.worker.scratch.storageClass | quote }}
+                {{- end }}
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: {{ .Values.worker.scratch.size | quote }}
+        {{- include "lakesoul-pg.warehouseVolume" . | nindent 8 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,46 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+Initialize an external metadata database. Only needed when the database has
+not been initialized by script/meta_init.sql or the metadata migration tool.
+*/}}
+{{- if .Values.metadata.initSchema }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-meta-init
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "lakesoul-pg.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: metadata-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: {{ .Values.metadata.initImage | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PSQL_URL
+              value: {{ required "metadata.psqlUrl is required when metadata.initSchema=true" .Values.metadata.psqlUrl | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f /sql/meta_init.sql
+          volumeMounts:
+            - name: init
+              mountPath: /sql
+      volumes:
+        - name: init
+          configMap:
+            name: {{ include "lakesoul-pg.fullname" . }}-meta-init
+{{- end }}

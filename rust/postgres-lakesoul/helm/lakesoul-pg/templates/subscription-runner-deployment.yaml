@@ -1,0 +1,117 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+The external subscription executor. It owns `--subscribe` child processes and
+is intentionally single-replica until the metadata lease grows into a full HA
+protocol.
+*/}}
+{{- if eq .Values.subscriptions.mode "runner" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-subscription-runner
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: subscription-runner
+spec:
+  replicas: {{ .Values.subscriptions.runner.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: subscription-runner
+  template:
+    metadata:
+      labels:
+        {{- include "lakesoul-pg.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: subscription-runner
+      {{- with .Values.subscriptions.runner.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "lakesoul-pg.runnerServiceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: subscription-runner
+          image: {{ include "lakesoul-pg.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/postgres-lakesoul"]
+          args:
+            - --subscription-runner
+            - --no-metrics
+            - --worker-threads
+            - {{ .Values.subscriptions.runner.threads | quote }}
+            - --memory-limit
+            - {{ .Values.subscriptions.runner.execution.memoryLimit | quote }}
+            - --vortex-decode-budget
+            - {{ .Values.subscriptions.runner.execution.vortexDecodeBudget | quote }}
+            {{- range .Values.subscriptions.runner.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "lakesoul-pg.fullname" . }}-config
+          env:
+            {{- include "lakesoul-pg.metadataEnv" . | nindent 12 }}
+            {{- include "lakesoul-pg.warehouseEnv" . | nindent 12 }}
+            - name: LAKESOUL_PG_SUBSCRIPTION_LOG_DIR
+              value: {{ .Values.subscriptions.logDir | quote }}
+            - name: LAKESOUL_PG_RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LAKESOUL_PG_RUNNER_POLL_MS
+              value: {{ .Values.subscriptions.runner.pollMs | quote }}
+            {{- with .Values.subscriptions.runner.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.subscriptions.runner.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/scratch
+            - name: subscription-logs
+              mountPath: {{ .Values.subscriptions.logDir | quote }}
+            {{- include "lakesoul-pg.warehouseVolumeMount" . | nindent 12 }}
+      volumes:
+        - name: scratch
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: 20Gi
+        - name: subscription-logs
+          emptyDir: {}
+        {{- include "lakesoul-pg.warehouseVolume" . | nindent 8 }}
+      {{- with .Values.subscriptions.runner.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.subscriptions.runner.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.subscriptions.runner.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
