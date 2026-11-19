@@ -42,7 +42,7 @@
 //! assignment-castable (`42804`). `SELECT` expression casts keep their own
 //! documented boundary.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -54,7 +54,9 @@ use datafusion::datasource::{DefaultTableSource, MemTable};
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::ExprSchemable;
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder, TableSource};
+use datafusion::logical_expr::{
+    LogicalPlan, LogicalPlanBuilder, Projection, TableSource,
+};
 use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
@@ -1275,6 +1277,32 @@ async fn returning_plan(
     returning_projection(&write_plan, spec)
 }
 
+/// The wire schema of a `RETURNING` result: the target table fields, renamed
+/// to the statement's output names.
+fn returning_schema(
+    write_plan: &LogicalPlan,
+    spec: &ReturningSpec,
+) -> PgWireResult<SchemaRef> {
+    let LogicalPlan::Dml(dml) = write_plan else {
+        return Err(internal("the INSERT plan is not a DML node"));
+    };
+    let target_schema = dml.target.schema();
+    let mut fields = Vec::with_capacity(spec.columns.len());
+    for column in &spec.columns {
+        let field = target_schema
+            .fields()
+            .get(column.target_index)
+            .ok_or_else(|| internal("RETURNING target is outside the table schema"))?;
+        fields.push(Arc::new(
+            field
+                .as_ref()
+                .clone()
+                .with_name(column.output_name.as_str()),
+        ));
+    }
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// Projects the RETURNING columns from the DML input plan.
 ///
 /// The insert planner has already reordered and cast the source to the target
@@ -1290,22 +1318,45 @@ fn returning_projection(
     };
     let input = dml.input.as_ref();
     let input_schema = input.schema();
+    let target_schema = dml.target.schema();
 
     let mut projections = Vec::with_capacity(spec.columns.len());
+    let mut fields = Vec::with_capacity(spec.columns.len());
     for column in &spec.columns {
-        let field = input_schema
+        let input_field =
+            input_schema
+                .fields()
+                .get(column.target_index)
+                .ok_or_else(|| {
+                    internal("RETURNING target is outside the INSERT input schema")
+                })?;
+        let target_field = target_schema
             .fields()
             .get(column.target_index)
-            .ok_or_else(|| {
-                internal("RETURNING target is outside the INSERT input schema")
-            })?;
-        projections.push(col(field.name()).alias(column.output_name.as_str()));
+            .ok_or_else(|| internal("RETURNING target is outside the table schema"))?;
+        // The table schema is the source of truth for the result type and its
+        // metadata: JSON columns must keep `arrow.json` / `pg.json` so the
+        // wire layer reports jsonb instead of falling back to text.
+        let output_field = Arc::new(
+            target_field
+                .as_ref()
+                .clone()
+                .with_name(column.output_name.as_str()),
+        );
+        projections.push(col(input_field.name()).alias(column.output_name.as_str()));
+        fields.push((None, output_field));
     }
-    let projected = LogicalPlanBuilder::from(input.clone())
-        .project(projections)
-        .and_then(|builder| builder.build())
-        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-    Ok(projected)
+    let output_schema = Arc::new(
+        DFSchema::new_with_metadata(fields, HashMap::new())
+            .map_err(|error| PgWireError::ApiError(Box::new(error)))?,
+    );
+    let projection = Projection::try_new_with_schema(
+        projections,
+        Arc::new(input.clone()),
+        output_schema,
+    )
+    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    Ok(LogicalPlan::Projection(projection))
 }
 
 /// The result format of the current extended-protocol portal; simple queries
@@ -1335,15 +1386,16 @@ async fn execute_returning(
             .map_err(insert_error)?,
         None => plan,
     };
+    // RowDescription at Execute must be the schema Describe advertised at
+    // Parse. The optimizer may rebuild the projection's fields (and drop
+    // logical-type metadata), so build the wire schema from the target table
+    // schema instead of the optimized dataframe schema.
+    let schema = returning_schema(write_plan, spec)?;
     let dataframe = session_context
         .execute_logical_plan(plan)
         .await
         .map_err(insert_error)?;
-    let fields = Arc::new(arrow_schema_to_pg_fields(
-        dataframe.schema().as_arrow(),
-        format,
-        None,
-    )?);
+    let fields = Arc::new(arrow_schema_to_pg_fields(&schema, format, None)?);
     let batches = dataframe.collect().await.map_err(insert_error)?;
     Ok(Some((fields, batches)))
 }

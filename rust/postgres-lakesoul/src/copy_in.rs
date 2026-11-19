@@ -111,6 +111,9 @@ pub(crate) struct CopyOptions {
 struct CopyColumn {
     name: String,
     data_type: DataType,
+    /// `Some("json")` / `Some("jsonb")` for a JSON column, whose text must be
+    /// validated (and, for `jsonb`, normalized) before it is stored.
+    json_kind: Option<&'static str>,
 }
 
 /// A `COPY ... FROM STDIN` statement, validated down to the target columns.
@@ -397,6 +400,7 @@ fn resolve_columns(
     let field = |index: usize| CopyColumn {
         name: schema.field(index).name().clone(),
         data_type: schema.field(index).data_type().clone(),
+        json_kind: crate::ddl::field_json_kind(schema.field(index)),
     };
     if requested.is_empty() {
         return Ok((0..schema.fields().len()).map(field).collect());
@@ -1120,7 +1124,10 @@ fn decode_value(column: &CopyColumn, value: Option<&[u8]>) -> PgWireResult<Scala
             &column.name,
             "double precision",
         )?)),
-        DataType::Utf8 => ScalarValue::Utf8(Some(parse_utf8(bytes, &column.name)?)),
+        DataType::Utf8 => {
+            let text = parse_utf8(bytes, &column.name)?;
+            ScalarValue::Utf8(Some(apply_json_kind(column, text)?))
+        }
         DataType::LargeUtf8 => {
             ScalarValue::LargeUtf8(Some(parse_utf8(bytes, &column.name)?))
         }
@@ -1191,6 +1198,59 @@ fn decode_value(column: &CopyColumn, value: Option<&[u8]>) -> PgWireResult<Scala
                 column.name, column.data_type
             ))
         })
+    }
+}
+
+/// Sort object keys recursively so `jsonb` has a stable text form even when
+/// `serde_json` is built with `preserve_order` (feature unification in the
+/// workspace can turn it on).
+fn canonicalize_jsonb(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            serde_json::Value::Object(entries.into_iter().collect())
+        }
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(canonicalize_jsonb).collect())
+        }
+        other => other,
+    }
+}
+
+/// Validate (and for `jsonb`, canonicalize) a JSON column value.
+fn apply_json_kind(column: &CopyColumn, text: String) -> PgWireResult<String> {
+    match column.json_kind {
+        Some("jsonb") => {
+            let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                user_error(
+                    INVALID_TEXT,
+                    format!(
+                        "invalid input syntax for type jsonb in column \"{}\": {error}",
+                        column.name
+                    ),
+                )
+            })?;
+            serde_json::to_string(&canonicalize_jsonb(value)).map_err(|error| {
+                internal(format!(
+                    "cannot serialize jsonb value for column \"{}\": {error}",
+                    column.name
+                ))
+            })
+        }
+        Some("json") => {
+            serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+                user_error(
+                    INVALID_TEXT,
+                    format!(
+                        "invalid input syntax for type json in column \"{}\": {error}",
+                        column.name
+                    ),
+                )
+            })?;
+            Ok(text)
+        }
+        _ => Ok(text),
     }
 }
 
@@ -1850,6 +1910,7 @@ mod tests {
         let column = |data_type| CopyColumn {
             name: "c".to_string(),
             data_type,
+            json_kind: None,
         };
         assert_eq!(
             decode_value(&column(DataType::Int32), Some(b"42")).unwrap(),
@@ -1870,10 +1931,33 @@ mod tests {
     }
 
     #[test]
+    fn json_values_are_validated_and_normalized() {
+        let jsonb = CopyColumn {
+            name: "payload".to_string(),
+            data_type: DataType::Utf8,
+            json_kind: Some("jsonb"),
+        };
+        assert_eq!(
+            decode_value(&jsonb, Some(b"{\"b\": 2, \"a\": 1}")).unwrap(),
+            ScalarValue::Utf8(Some(r#"{"a":1,"b":2}"#.to_string()))
+        );
+        let json = CopyColumn {
+            json_kind: Some("json"),
+            ..jsonb.clone()
+        };
+        assert_eq!(
+            decode_value(&json, Some(b"{ \"b\": 2, \"a\": 1 }")).unwrap(),
+            ScalarValue::Utf8(Some(r#"{ "b": 2, "a": 1 }"#.to_string()))
+        );
+        assert!(decode_value(&jsonb, Some(b"{not json")).is_err());
+    }
+
+    #[test]
     fn timestamps_apply_their_offset() {
         let column = CopyColumn {
             name: "ts".to_string(),
             data_type: DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
+            json_kind: None,
         };
         let value = decode_value(&column, Some(b"1970-01-01 05:30:00+05:30")).unwrap();
         assert_eq!(
@@ -1887,6 +1971,7 @@ mod tests {
         let column = CopyColumn {
             name: "n".to_string(),
             data_type: DataType::Decimal128(10, 2),
+            json_kind: None,
         };
         assert_eq!(
             decode_value(&column, Some(b"1.239")).unwrap(),
@@ -1904,10 +1989,12 @@ mod tests {
             CopyColumn {
                 name: "a".to_string(),
                 data_type: DataType::Int32,
+                json_kind: None,
             },
             CopyColumn {
                 name: "b".to_string(),
                 data_type: DataType::Int32,
+                json_kind: None,
             },
         ];
         let fewer = check_arity(&[None], &columns).unwrap_err();

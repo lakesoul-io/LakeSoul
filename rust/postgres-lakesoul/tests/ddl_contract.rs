@@ -45,6 +45,7 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             drop_table_removes_metadata(h).await?;
             drop_absent_and_if_exists(h).await?;
             options_and_column_types(h).await?;
+            json_columns_publish_metadata(h).await?;
             cdc_options_reach_properties(h).await?;
             refusal_matrix_creates_nothing(h).await?;
             extended_protocol_creates_and_drops(h).await?;
@@ -438,6 +439,118 @@ async fn options_and_column_types(h: &Harness) -> Result<()> {
         )
     );
     command(h, "DROP TABLE ddl_append_false").await?;
+    Ok(())
+}
+
+/// `json` / `jsonb` columns keep their logical type in the stored schema and
+/// report it through `pg_attribute`; adding a jsonb column works and changing
+/// an existing one with `ALTER COLUMN ... TYPE` is refused.
+async fn json_columns_publish_metadata(h: &Harness) -> Result<()> {
+    let table = "ddl_json";
+    command(
+        h,
+        "CREATE TABLE ddl_json (id BIGINT PRIMARY KEY, doc JSON, docb JSONB)",
+    )
+    .await?;
+
+    let schema: String = h
+        .reference
+        .query_one(
+            "SELECT table_schema::text FROM public.table_info \
+             WHERE table_namespace = $1 AND table_name = $2",
+            &[&h.lake_namespace, &table],
+        )
+        .await
+        .with_context(|| context(table, "after CREATE TABLE", "table_schema"))?
+        .get(0);
+    let schema: serde_json::Value = serde_json::from_str(&schema)
+        .with_context(|| context(table, "table_schema JSON", "parse"))?;
+    let fields = schema["fields"]
+        .as_array()
+        .with_context(|| context(table, "table_schema", "fields array"))?;
+    let json_field = fields
+        .iter()
+        .find(|field| field["name"] == "doc")
+        .with_context(|| context(table, "table_schema", "doc field"))?;
+    let jsonb_field = fields
+        .iter()
+        .find(|field| field["name"] == "docb")
+        .with_context(|| context(table, "table_schema", "docb field"))?;
+    for (field, kind) in [(json_field, "json"), (jsonb_field, "jsonb")] {
+        let metadata = field["metadata"]
+            .as_array()
+            .with_context(|| context(table, "field metadata", "array"))?;
+        let value = |key: &str| {
+            metadata.iter().find_map(|entry| {
+                (entry["key"] == key)
+                    .then(|| entry["value"].as_str())
+                    .flatten()
+            })
+        };
+        ensure!(
+            value("ARROW:extension:name") == Some("arrow.json"),
+            "{}",
+            detail(table, "JSON extension", &format!("{field:?}"))
+        );
+        ensure!(
+            value("pg.json") == Some(kind),
+            "{}",
+            detail(table, "pg.json marker", &format!("{field:?}"))
+        );
+    }
+
+    let rows = h
+        .lake
+        .query(
+            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             WHERE c.relname = $1 AND a.attnum > 0 \
+             ORDER BY a.attnum",
+            &[&table],
+        )
+        .await
+        .with_context(|| context(table, "pg_attribute", "query"))?;
+    let types: Vec<(String, String)> =
+        rows.iter().map(|row| (row.get(0), row.get(1))).collect();
+    ensure!(
+        types
+            == vec![
+                ("id".to_string(), "bigint".to_string()),
+                ("doc".to_string(), "json".to_string()),
+                ("docb".to_string(), "jsonb".to_string()),
+            ],
+        "{}",
+        detail(table, "pg_attribute types", &format!("{types:?}"))
+    );
+
+    command(h, "ALTER TABLE ddl_json ADD COLUMN note JSONB").await?;
+    let schema: String = h
+        .reference
+        .query_one(
+            "SELECT table_schema::text FROM public.table_info \
+             WHERE table_namespace = $1 AND table_name = $2",
+            &[&h.lake_namespace, &table],
+        )
+        .await
+        .with_context(|| context(table, "after ALTER TABLE", "table_schema"))?
+        .get(0);
+    ensure!(
+        schema.contains("\"pg.json\"") && schema.contains("\"jsonb\""),
+        "{}",
+        detail(table, "ALTER ADD COLUMN jsonb", &schema)
+    );
+
+    let code = error_code(h, "ALTER TABLE ddl_json ALTER COLUMN doc TYPE JSONB")
+        .await
+        .with_context(|| context(table, "ALTER COLUMN TYPE jsonb", "SQLSTATE"))?;
+    ensure!(
+        code == "0A000",
+        "{}",
+        detail(table, "ALTER COLUMN TYPE jsonb", &code)
+    );
+
+    command(h, "DROP TABLE ddl_json").await?;
     Ok(())
 }
 

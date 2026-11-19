@@ -128,7 +128,8 @@ forward:
   read time;
 - `DROP NOT NULL` relaxes the target column to nullable;
 - text/varchar/char, json/jsonb and uuid/text changes that share Arrow `Utf8`
-  need no target change;
+  need no target change; a target created or extended by the subscriber keeps
+  the `arrow.json` / `pg.json` markers for `json` and `jsonb` sources;
 - a source type that becomes narrower keeps the already wider target type.
 
 The subscriber learns about a change from the next pgoutput `Relation` message,
@@ -344,7 +345,9 @@ The subscriber supports these PostgreSQL source types:
 `timestamp`, `timestamptz`, `uuid`, `json` and `jsonb`.
 
 Target columns use the matching LakeSoul/Arrow types and the same column names.
-The CDC change column is an extra target column. With
+`json` and `jsonb` targets are stored as UTF-8 text with the JSON logical-type
+markers, so the PostgreSQL front end reports OIDs 114 and 3802 and `jsonb`
+values are normalized. The CDC change column is an extra target column. With
 `schema_evolution = 'auto'`, new nullable columns and safe type widenings are
 applied to the target as the source evolves.
 

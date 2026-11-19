@@ -24,6 +24,8 @@ SPDX-License-Identifier: Apache-2.0
 | `float(p)` | `Float32` for `p <= 24`, `Float64` for `p <= 53` | Precision only |
 | `boolean`, `bool` | `Boolean` | |
 | `text`, `varchar`, `char` | `Utf8` | |
+| `json` | `Utf8` + `arrow.json` | Original JSON text is preserved |
+| `jsonb` | `Utf8` + `arrow.json` + `pg.json` | Canonical JSON text; duplicates and key order are normalized |
 | `date` | `Date32` | |
 | `timestamp` | Microsecond timestamp, no time zone | `timestamp(6)` only |
 | `timestamptz` | Microsecond timestamp in UTC | |
@@ -35,9 +37,29 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Types that are not column types
 
-`uuid`, `json`, `jsonb`, `interval`, `time`, `inet`, `money`, enums and array
-column types are not part of the DDL mapping. A table with such a column is
-rejected with `0A000`.
+`uuid`, `interval`, `time`, `inet`, `money`, enums and array column types are
+not part of the DDL mapping. A table with such a column is rejected with
+`0A000`.
+
+## JSON columns
+
+`json` and `jsonb` are stored as UTF-8 text with the Arrow canonical
+`arrow.json` extension. The PostgreSQL front end additionally stores a
+`pg.json` marker so it reports the original OID (114 for `json`, 3802 for
+`jsonb`) on `SELECT` and through `pg_attribute`.
+
+- `json` keeps the document exactly as written.
+- `jsonb` is parsed and canonicalized when it enters through the PostgreSQL
+  front end (parameters, `COPY ... FROM STDIN`, subscription writes): duplicate
+  object keys keep their last value, keys are sorted, and insignificant
+  whitespace is removed.
+- `->`, `->>`, `#>`, `#>>` and `?` are available over both types.
+- Spark 3.5 and Flink 1.20 see these columns as ordinary strings, so the same
+  table remains readable and writable outside PostgreSQL.
+
+`jsonb` equality and ordering in LakeSoul are string equality and ordering over
+the canonical text, not PostgreSQL's binary jsonb comparison. Comparison
+operators such as `@>` are not implemented yet.
 
 Arrays are still usable in expressions and results (`ARRAY[...]`, `INTEGER[]`,
 1-based indexing), and the wire protocol decodes them. They are not a supported

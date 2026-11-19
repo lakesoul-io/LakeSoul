@@ -663,8 +663,9 @@ const MAX_WRITE_ID_LEN: usize = 64;
 /// position 3 [`LakeSoulWriteCodec`] (distributed write stages), position 4
 /// [`crate::federation::FederationPlanCodec`] (ADBC foreign scans and writes),
 /// position 5 the IVM refresh codec when the `ivm` feature is enabled, then
-/// [`ExternalFileScanCodec`], [`ExternalFileWriteCodec`] and finally
-/// [`UpsertExecCodec`] for the ordered per-key upsert state machine. A worker
+/// [`ExternalFileScanCodec`], [`ExternalFileWriteCodec`], [`UpsertExecCodec`],
+/// [`NativeBatchProbeCodec`] for vector probes, and finally
+/// [`crate::udf::json::JsonUdfCodec`] for the JSON scalar functions. A worker
 /// registers a different list either fails to decode a stage or would hand a
 /// payload to the wrong codec, so the list is part of the wire generation
 /// ([`CODEC_VERSION`]).
@@ -686,6 +687,8 @@ pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
     codecs.push(Arc::new(ExternalFileWriteCodec));
     codecs.push(Arc::new(UpsertExecCodec));
     codecs.push(Arc::new(super::vector_batch_codec::NativeBatchProbeCodec));
+    // Appended: the position of every existing codec stays stable.
+    codecs.push(Arc::new(crate::udf::json::JsonUdfCodec));
     codecs
 }
 

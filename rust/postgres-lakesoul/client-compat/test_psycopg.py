@@ -151,6 +151,36 @@ def test_parameterized_types_round_trip(driver, connector, table_factory):
             assert row[5] is True
 
 
+def test_jsonb_parameter_and_result_round_trip(driver, connector, table_factory):
+    table = table_factory("id bigint primary key, payload jsonb", "client_jsonb")
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            if driver == "psycopg2":
+                from psycopg2.extras import Json
+
+                parameter = Json({"b": 2, "a": 1})
+            else:
+                from psycopg.types.json import Jsonb
+
+                parameter = Jsonb({"b": 2, "a": 1})
+            cursor.execute(
+                f"INSERT INTO {table} (id, payload) VALUES (%s, %s)",
+                (1, parameter),
+            )
+            connection.commit()
+
+            cursor.execute(f"SELECT payload FROM {table} WHERE id = 1")
+            assert rows(cursor)[0][0] == {"a": 1, "b": 2}
+
+            cursor.execute(
+                f"SELECT payload->>'a', payload ? 'b' FROM {table} WHERE id = 1"
+            )
+            assert rows(cursor)[0] == ("1", True)
+
+            cursor.execute(f"SELECT payload->>'missing' FROM {table} WHERE id = 1")
+            assert rows(cursor)[0][0] is None
+
+
 def test_bytea_parameter_round_trip(driver, connector, table_factory):
     table = table_factory("id bigint primary key, payload bytea", "client_bytea")
     with closing(connector(driver)) as connection:

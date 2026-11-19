@@ -875,11 +875,18 @@ impl LakeSoulTableProvider {
 
         let mut schema_builder = SchemaBuilder::new();
         for field in cmd.schema.as_ref().fields() {
-            schema_builder.push(Field::new(
+            let metadata = field.metadata().clone();
+            let field = Field::new(
                 case_fold_column_name(field.name()),
                 field.data_type().clone(),
                 field.is_nullable() && !primary_keys.contains(field.name()),
-            ));
+            )
+            // `CREATE EXTERNAL TABLE` is also how the PostgreSQL front end
+            // publishes a schema, and its field metadata carries logical types
+            // such as the canonical `arrow.json` extension and `pg.json`.
+            // Keep it: rebuilding the field with `Field::new` used to drop it.
+            .with_metadata(metadata);
+            schema_builder.push(field);
         }
 
         let (cdc_column, use_cdc) = if cmd.options.contains_key("format.use_cdc") {

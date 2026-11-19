@@ -57,7 +57,8 @@ use pgwire::messages::PgWireBackendMessage;
 use pgwire::messages::response::NoticeResponse;
 
 use crate::ddl::{
-    arrow_type, feature_not_supported, normalize_column_ident, table_option, user_error,
+    PG_JSON_KEY, arrow_type, feature_not_supported, normalize_column_ident, pg_json_kind,
+    table_option, user_error, with_json_metadata,
 };
 
 const UNDEFINED_COLUMN: &str = "42703";
@@ -180,7 +181,13 @@ fn action(operation: &AlterTableOperation) -> PgWireResult<AlterAction> {
                 }
             }
             Ok(AlterAction::AddColumn {
-                field: Field::new(name, data_type, true),
+                field: {
+                    let mut field = Field::new(name, data_type, true);
+                    if let Some(kind) = pg_json_kind(&column_def.data_type) {
+                        field = with_json_metadata(field, kind);
+                    }
+                    field
+                },
                 if_not_exists: *if_not_exists,
             })
         }
@@ -194,6 +201,12 @@ fn action(operation: &AlterTableOperation) -> PgWireResult<AlterAction> {
                         return Err(feature_not_supported(format!(
                             "ALTER COLUMN \"{column}\" TYPE ... USING is not \
                              supported: existing files are not rewritten"
+                        )));
+                    }
+                    if let Some(kind) = pg_json_kind(data_type) {
+                        return Err(feature_not_supported(format!(
+                            "ALTER COLUMN \"{column}\" TYPE {kind} is not supported: \
+                             add a new column instead"
                         )));
                     }
                     Ok(AlterAction::SetType {
@@ -466,6 +479,16 @@ pub(crate) fn plan_alter(
                 Err(error) => return Err(evolution_error(table, error)),
             },
             AlterAction::SetType { column, to } => {
+                if schema
+                    .field_with_name(column)
+                    .ok()
+                    .is_some_and(|field| field.metadata().contains_key(PG_JSON_KEY))
+                {
+                    return Err(feature_not_supported(format!(
+                        "ALTER COLUMN \"{column}\" TYPE ... is not supported for a \
+                         json/jsonb column: add a new column instead"
+                    )));
+                }
                 schema = check_evolution(
                     &schema,
                     &ColumnChange::Widen {

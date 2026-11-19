@@ -22,6 +22,7 @@ use super::super::SchemaEvolution;
 use super::super::plan::decode_mysql_watermark;
 use super::super::schema::{TargetOptions, publish_evolved_schema};
 use super::catalog::MySqlTable;
+use super::types::MySqlType;
 use crate::Result;
 
 const DEFAULT_HASH_BUCKET_NUM: &str = "4";
@@ -464,7 +465,11 @@ pub(crate) fn source_schema(source: &MySqlTable, cdc_column: &str) -> Result<Sch
     for column in &source.columns {
         let data_type = column.data_type.arrow_type()?;
         let nullable = column.nullable && !column.primary_key;
-        fields.push(Field::new(column.name.clone(), data_type, nullable));
+        let mut field = Field::new(column.name.clone(), data_type, nullable);
+        if matches!(column.data_type, MySqlType::Json) {
+            field = crate::ddl::with_json_metadata(field, "json");
+        }
+        fields.push(field);
     }
     fields.push(Field::new(cdc_column, DataType::Utf8, true));
     Ok(Arc::new(Schema::new(fields)))
@@ -523,10 +528,11 @@ fn evolved_schema(
                     column.name
                 );
             }
-            schema = apply(
-                &schema,
-                ColumnChange::Add(Field::new(column.name.clone(), source_type, true)),
-            )?;
+            let mut field = Field::new(column.name.clone(), source_type, true);
+            if matches!(column.data_type, MySqlType::Json) {
+                field = crate::ddl::with_json_metadata(field, "json");
+            }
+            schema = apply(&schema, ColumnChange::Add(field))?;
             changed = true;
         }
     }

@@ -58,6 +58,8 @@ CREATE TABLE orders (
 | `double precision`、`float8` | `Float64` |
 | `boolean` | `Boolean` |
 | `text`、`varchar`、`char` | `Utf8` |
+| `json` | `Utf8`，带 `arrow.json` 扩展 |
+| `jsonb` | `Utf8`，带 `arrow.json` 和 `pg.json` 标记 |
 | `date` | `Date32` |
 | `timestamp` | 微秒精度、无时区时间戳 |
 | `timestamptz` | 微秒精度、UTC 时间戳 |

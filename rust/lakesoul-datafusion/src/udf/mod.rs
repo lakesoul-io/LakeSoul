@@ -4,6 +4,7 @@
 //! SQL functions and session options for LakeSoul.
 
 pub mod drop_index;
+pub mod json;
 pub mod text_search_marker;
 pub mod vector_batch;
 pub mod vector_distance_handle;

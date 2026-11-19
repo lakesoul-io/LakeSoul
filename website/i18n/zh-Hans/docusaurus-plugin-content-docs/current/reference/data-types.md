@@ -25,6 +25,8 @@ SPDX-License-Identifier: Apache-2.0
 | `float(p)` | `p <= 24` 为 `Float32`，`p <= 53` 为 `Float64` | 只接受精度 |
 | `boolean`、`bool` | `Boolean` | |
 | `text`、`varchar`、`char` | `Utf8` | |
+| `json` | `Utf8` + `arrow.json` | 保留原始 JSON 文本 |
+| `jsonb` | `Utf8` + `arrow.json` + `pg.json` | 规范化 JSON 文本；重复 key 和 key 顺序会被归一 |
 | `date` | `Date32` | |
 | `timestamp` | 微秒精度、无时区 | 只接受 `timestamp(6)` |
 | `timestamptz` | 微秒精度、UTC | |
@@ -35,7 +37,18 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 不能作为列类型的类型
 
-`uuid`、`json`、`jsonb`、`interval`、`time`、`inet`、`money`、枚举和数组列类型不在 DDL 映射里。包含这些列的表会以 `0A000` 拒绝。
+`uuid`、`interval`、`time`、`inet`、`money`、枚举和数组列类型不在 DDL 映射里。包含这些列的表会以 `0A000` 拒绝。
+
+## JSON 列
+
+`json` 和 `jsonb` 以 UTF-8 文本存储，并带有 Arrow canonical `arrow.json` 扩展；PostgreSQL 前端还会写入 `pg.json` 标记，因此 `SELECT` 和 `pg_attribute` 会分别报告 OID 114（`json`）或 3802（`jsonb`）。
+
+- `json` 保留写入时的原始文档。
+- `jsonb` 从 PostgreSQL 前端进入时（参数、`COPY ... FROM STDIN`、订阅写入）会解析并规范化：重复 key 保留最后一个值、key 排序、去除无意义空白。
+- 两种类型都支持 `->`、`->>`、`#>`、`#>>` 和 `?`。
+- Spark 3.5 和 Flink 1.20 会把这类列看作普通字符串，因此同一张表仍可跨引擎读写。
+
+LakeSoul 中 `jsonb` 的相等和排序是规范化文本上的字符串语义，不是 PostgreSQL 的二进制 jsonb 比较；`@>` 等比较操作符尚未实现。
 
 数组仍然可以用在表达式和结果里（`ARRAY[...]`、`INTEGER[]`、1-based 下标），wire protocol 也能解码。它们不是受支持的列类型。
 

@@ -63,6 +63,8 @@ An unknown option is rejected with `0A000` rather than ignored.
 | `double precision`, `float8` | `Float64` |
 | `boolean` | `Boolean` |
 | `text`, `varchar`, `char` | `Utf8` |
+| `json` | `Utf8` with the `arrow.json` extension |
+| `jsonb` | `Utf8` with `arrow.json` and `pg.json` markers |
 | `date` | `Date32` |
 | `timestamp` | Microsecond timestamp without time zone |
 | `timestamptz` | Microsecond timestamp in UTC |

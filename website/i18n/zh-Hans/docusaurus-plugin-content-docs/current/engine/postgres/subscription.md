@@ -104,7 +104,7 @@ CREATE TABLE users (
 - `smallint → integer → bigint`、`real → double precision` 以及 decimal
   精度/scale 放宽会更新目标类型；旧数据文件在读取时 cast；
 - 源端 `DROP NOT NULL` 会把目标列放宽为 nullable；
-- text/varchar/char、json/jsonb、uuid/text 等 Arrow 表示都是 `Utf8` 的变化不需要改目标；
+- text/varchar/char、json/jsonb、uuid/text 等 Arrow 表示都是 `Utf8` 的变化不需要改目标；订阅创建或新增的 `json`/`jsonb` 目标会保留 `arrow.json` / `pg.json` 标记；
 - 源端类型变窄时，保留已经更宽的目标类型。
 
 订阅端在下一次 pgoutput `Relation` 消息（该表下一次被使用时）获知 schema
@@ -269,7 +269,7 @@ DROP SUBSCRIPTION IF EXISTS users_from_app;
 
 `boolean`、`smallint`、`integer`、`bigint`、`real`、`double precision`、`numeric(p,s)`、`text`、`varchar`、`char`、`name`、`bytea`、`date`、`time`、`timestamp`、`timestamptz`、`uuid`、`json` 和 `jsonb`。
 
-目标列使用对应的 LakeSoul/Arrow 类型和相同列名；CDC 变更列是目标表额外的一列。设置 `schema_evolution = 'auto'` 后，源端新增 nullable 列和安全类型放宽会自动应用到目标表。
+目标列使用对应的 LakeSoul/Arrow 类型和相同列名；`json`/`jsonb` 目标以 UTF-8 文本存储并带 JSON 逻辑类型标记，因此 PostgreSQL 前端会报告 OID 114/3802，`jsonb` 值会被规范化。CDC 变更列是目标表额外的一列。设置 `schema_evolution = 'auto'` 后，源端新增 nullable 列和安全类型放宽会自动应用到目标表。
 
 ## CLI 模式
 

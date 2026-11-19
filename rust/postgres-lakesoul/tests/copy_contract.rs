@@ -44,6 +44,7 @@ async fn copy_scenarios(h: &Harness) -> Result<()> {
     custom_options(h).await?;
     whole_table_and_omitted_columns(h).await?;
     typed_columns(h).await?;
+    json_copy(h).await?;
     empty_copy_writes_nothing(h).await?;
     transaction_rollback(h).await?;
     failed_copy_leaves_no_rows(h).await?;
@@ -312,6 +313,77 @@ async fn typed_columns(h: &Harness) -> Result<()> {
     );
     ensure_eq!(row.get::<_, Vec<u8>>(4), vec![0xde, 0xad], "bytea");
     eprintln!("PASS case=copy-types bool=ok numeric=ok date=ok timestamptz=ok bytea=ok");
+    Ok(())
+}
+
+async fn json_copy(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute("CREATE TABLE copy_json (id BIGINT, doc JSON, docb JSONB)")
+        .await
+        .context("CREATE TABLE copy_json")?;
+
+    let mut sink = pin!(
+        h.lake
+            .copy_in("COPY copy_json FROM STDIN")
+            .await
+            .context("start JSON COPY")?
+    );
+    sink.send(Bytes::from_static(
+        b"1\t{\"b\": 2, \"a\": 1}\t{\"b\": 2, \"a\": 1}\n",
+    ))
+    .await
+    .context("send JSON COPY row")?;
+    let rows = sink.finish().await.context("finish JSON COPY")?;
+    ensure_eq!(rows, 1, "JSON COPY tag row count");
+
+    let row = h
+        .lake
+        .query_one(
+            "SELECT doc, docb, docb::text AS docb_text FROM copy_json WHERE id = 1",
+            &[],
+        )
+        .await
+        .context("read JSON COPY row")?;
+    ensure_eq!(
+        row.get::<_, serde_json::Value>(0),
+        serde_json::json!({"b": 2, "a": 1}),
+        "json keeps its document"
+    );
+    ensure_eq!(
+        row.get::<_, serde_json::Value>(1),
+        serde_json::json!({"a": 1, "b": 2}),
+        "jsonb is normalized"
+    );
+    let text = row.get::<_, String>(2);
+    ensure!(
+        text == "{\"a\":1,\"b\":2}",
+        "jsonb text form: expected canonical jsonb, actual {text:?}"
+    );
+
+    let mut sink = pin!(
+        h.lake
+            .copy_in::<_, Bytes>("COPY copy_json (id, docb) FROM STDIN")
+            .await
+            .context("start invalid JSON COPY")?
+    );
+    sink.send(Bytes::from_static(b"2\t{not json\n"))
+        .await
+        .context("send invalid JSON COPY row")?;
+    let error = sink
+        .finish()
+        .await
+        .expect_err("invalid jsonb COPY must fail");
+    ensure_eq!(
+        error.code(),
+        Some(&tokio_postgres::error::SqlState::INVALID_TEXT_REPRESENTATION),
+        "invalid jsonb COPY is 22P02"
+    );
+
+    h.lake
+        .batch_execute("DROP TABLE copy_json")
+        .await
+        .context("DROP TABLE copy_json")?;
+    eprintln!("PASS case=copy-json json=ok jsonb-normalized=ok invalid=22P02");
     Ok(())
 }
 

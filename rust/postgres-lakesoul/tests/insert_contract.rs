@@ -63,6 +63,7 @@ async fn distributed_insert_contract() -> Result<()> {
 async fn insert_scenarios(h: &Harness) -> Result<()> {
     plain_insert_writes_rows_metadata_and_files(h).await?;
     parameterized_insert_executes_twice(h).await?;
+    jsonb_insert_and_returning(h).await?;
     returning_returns_inserted_rows(h).await?;
     cdc_delete_marker_hides_the_key(h).await?;
     duplicate_key_leaves_no_state(h).await?;
@@ -274,6 +275,162 @@ async fn parameterized_insert_executes_twice(h: &Harness) -> Result<()> {
         lake_i64(h, "SELECT count(*) FROM pk_items WHERE id >= 9001").await?,
         2,
     )?;
+    Ok(())
+}
+
+/// `jsonb` parameters are described as the PostgreSQL jsonb type, decoded from
+/// the binary wire format, normalized, and returned as jsonb.
+async fn jsonb_insert_and_returning(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute("CREATE TABLE jsonb_docs (id BIGINT PRIMARY KEY, payload JSONB)")
+        .await
+        .context("CREATE TABLE jsonb_docs")?;
+
+    let statement = h
+        .lake
+        .prepare("INSERT INTO jsonb_docs (id, payload) VALUES ($1, $2)")
+        .await
+        .context("prepare jsonb INSERT")?;
+    ensure_eq("jsonb parameter count", statement.params().len(), 2)?;
+    ensure_eq("jsonb parameter type", &statement.params()[1], &Type::JSONB)?;
+
+    h.lake
+        .execute(&statement, &[&1i64, &serde_json::json!({"b": 2, "a": 1})])
+        .await
+        .context("execute jsonb INSERT")?;
+
+    let select = h
+        .lake
+        .prepare("SELECT payload FROM jsonb_docs WHERE id = 1")
+        .await
+        .context("prepare jsonb SELECT")?;
+    eprintln!(
+        "jsonb result type: {:?} / {}",
+        select.columns()[0].type_(),
+        select.columns()[0].type_().oid()
+    );
+    ensure_eq(
+        "jsonb result type",
+        select.columns()[0].type_(),
+        &Type::JSONB,
+    )?;
+
+    let row = h
+        .lake
+        .query_one(&select, &[])
+        .await
+        .context("read jsonb row")?;
+    let value = match row.try_get::<_, serde_json::Value>(0) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("jsonb decode error: {error}");
+            let mut source = std::error::Error::source(&error);
+            while let Some(error) = source {
+                eprintln!("jsonb decode cause: {error}");
+                source = std::error::Error::source(error);
+            }
+            return Err(error.into());
+        }
+    };
+    ensure_eq("jsonb value", value, serde_json::json!({"a": 1, "b": 2}))?;
+
+    let returning = h
+        .lake
+        .prepare("INSERT INTO jsonb_docs (id, payload) VALUES ($1, $2) RETURNING payload")
+        .await
+        .context("prepare jsonb INSERT ... RETURNING")?;
+    eprintln!(
+        "jsonb RETURNING type: {:?} / {}",
+        returning.columns()[0].type_(),
+        returning.columns()[0].type_().oid()
+    );
+    let row = h
+        .lake
+        .query_one(&returning, &[&2i64, &serde_json::json!({"x": [1, 2]})])
+        .await
+        .context("execute jsonb INSERT ... RETURNING")?;
+    let value = match row.try_get::<_, serde_json::Value>(0) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("jsonb RETURNING decode error: {error}");
+            let mut source = std::error::Error::source(&error);
+            while let Some(error) = source {
+                eprintln!("jsonb RETURNING decode cause: {error}");
+                source = std::error::Error::source(error);
+            }
+            if let Ok(row) = h
+                .lake
+                .query_one("SELECT payload::text FROM jsonb_docs WHERE id = 2", &[])
+                .await
+            {
+                eprintln!("stored id=2 text: {:?}", row.get::<_, String>(0));
+            }
+            return Err(error.into());
+        }
+    };
+    ensure_eq(
+        "jsonb RETURNING value",
+        value,
+        serde_json::json!({"x": [1, 2]}),
+    )?;
+
+    let text: Option<String> = h
+        .lake
+        .query_one("SELECT payload->>'a' FROM jsonb_docs WHERE id = 1", &[])
+        .await
+        .context("jsonb ->> operator")?
+        .get(0);
+    ensure_eq("jsonb ->> value", text.as_deref(), Some("1"))?;
+    let value: serde_json::Value = h
+        .lake
+        .query_one("SELECT payload->'a' FROM jsonb_docs WHERE id = 1", &[])
+        .await
+        .context("jsonb -> operator")?
+        .get(0);
+    ensure_eq("jsonb -> value", value, serde_json::json!(1))?;
+    let exists: bool = h
+        .lake
+        .query_one("SELECT payload ? 'a' FROM jsonb_docs WHERE id = 1", &[])
+        .await
+        .context("jsonb ? operator")?
+        .get(0);
+    ensure_eq("jsonb ? value", exists, true)?;
+    let missing: Option<String> = h
+        .lake
+        .query_one(
+            "SELECT payload->>'missing' FROM jsonb_docs WHERE id = 1",
+            &[],
+        )
+        .await
+        .context("jsonb missing key")?
+        .get(0);
+    ensure_eq("jsonb missing key", missing, None)?;
+
+    let path_text: Option<String> = h
+        .lake
+        .query_one(
+            "SELECT payload #>> ARRAY['x', '0'] FROM jsonb_docs WHERE id = 2",
+            &[],
+        )
+        .await
+        .context("jsonb #>> operator")?
+        .get(0);
+    ensure_eq("jsonb #>> value", path_text.as_deref(), Some("1"))?;
+    let path_json: serde_json::Value = h
+        .lake
+        .query_one(
+            "SELECT payload #> ARRAY['x'] FROM jsonb_docs WHERE id = 2",
+            &[],
+        )
+        .await
+        .context("jsonb #> operator")?
+        .get(0);
+    ensure_eq("jsonb #> value", path_json, serde_json::json!([1, 2]))?;
+
+    h.lake
+        .batch_execute("DROP TABLE jsonb_docs")
+        .await
+        .context("DROP TABLE jsonb_docs")?;
     Ok(())
 }
 
