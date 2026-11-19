@@ -11,7 +11,7 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-增量 SQL 在主键源表上维护查询。下面这些形状会增量维护；列表之外的形状回退到全量重算，append-only 源会被拒绝。
+增量 SQL 在主键源表上维护查询。下面这些形状会增量维护；列表之外的形状回退到全量重算。仅追加的 append-only 源不能增量维护，但可以走 Tier-2 全量重算；带删除标记的 append-only 源不在维护范围内。
 
 ## 投影、过滤、去重
 

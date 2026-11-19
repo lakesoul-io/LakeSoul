@@ -119,12 +119,9 @@ pub struct JoinView {
     pub output_columns: Vec<JoinOutputColumn>,
     /// Optional keyed output state table (same schema and keys as the output).
     pub state: Option<IvmTable>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl JoinView {
-    /// A new join view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         left: IvmTable,
@@ -171,7 +168,6 @@ impl JoinView {
             pair_filter: None,
             null_safe: false,
             state: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1297,12 +1293,9 @@ pub struct LeftJoinView {
     /// Whether a NULL join key matches another NULL join key
     /// (`IS NOT DISTINCT FROM` keys).
     pub null_safe: bool,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl LeftJoinView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         left: IvmTable,
@@ -1348,7 +1341,6 @@ impl LeftJoinView {
             left_filter: None,
             right_filter: None,
             null_safe: false,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1438,12 +1430,9 @@ pub struct FullJoinView {
     /// Whether a NULL join key matches another NULL join key
     /// (`IS NOT DISTINCT FROM` keys).
     pub null_safe: bool,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl FullJoinView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         left: IvmTable,
@@ -1489,7 +1478,6 @@ impl FullJoinView {
             left_filter: None,
             right_filter: None,
             null_safe: false,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1589,12 +1577,9 @@ pub struct CrossJoinView {
     pub pair_filter: Option<String>,
     /// The wide output columns; empty means the compact payload shape.
     pub output_columns: Vec<JoinOutputColumn>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl CrossJoinView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         left: IvmTable,
@@ -1614,7 +1599,6 @@ impl CrossJoinView {
             left_filter: None,
             right_filter: None,
             pair_filter: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1715,8 +1699,6 @@ pub struct LookupJoinView {
     pub output_columns: Vec<JoinOutputColumn>,
     /// Optional keyed output state table (same schema and keys as the output).
     pub state: Option<IvmTable>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 /// A keyed left source joined to several unique right sources with one shared
@@ -1735,8 +1717,6 @@ pub struct MultiLookupJoinView {
     pub join_keys: Vec<String>,
     /// The output columns: source 0 is the left, source `i + 1` is `rights[i]`.
     pub output_columns: Vec<MultiLookupColumn>,
-    /// The refresh interval hint.
-    pub refresh_interval_ms: i64,
 }
 
 impl MultiLookupJoinView {
@@ -1755,13 +1735,11 @@ impl MultiLookupJoinView {
                 })
                 .collect(),
             output_columns: self.output_columns.clone(),
-            refresh_interval_ms: self.refresh_interval_ms,
         }
     }
 }
 
 impl LookupJoinView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         left: IvmTable,
@@ -1806,7 +1784,6 @@ impl LookupJoinView {
             right_value: right_value.into(),
             output_columns: Vec::new(),
             state: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -2110,7 +2087,6 @@ fn validate_full_join_view(view: &FullJoinView) -> Result<()> {
         left_filter: view.left_filter.clone(),
         right_filter: view.right_filter.clone(),
         null_safe: view.null_safe,
-        refresh_interval_ms: view.refresh_interval_ms,
     };
     validate_left_join_view(&left)
 }
@@ -2337,7 +2313,6 @@ fn left_join_probe(view: &LeftJoinView) -> JoinView {
         null_safe: view.null_safe,
         output_columns: view.output_columns.clone(),
         state: None,
-        refresh_interval_ms: view.refresh_interval_ms,
     }
 }
 
@@ -2359,7 +2334,6 @@ fn full_join_probe(view: &FullJoinView) -> JoinView {
         null_safe: view.null_safe,
         output_columns: view.output_columns.clone(),
         state: None,
-        refresh_interval_ms: view.refresh_interval_ms,
     }
 }
 
@@ -2381,7 +2355,6 @@ fn lookup_join_probe(view: &LookupJoinView) -> JoinView {
         null_safe: false,
         output_columns: Vec::new(),
         state: view.state.clone(),
-        refresh_interval_ms: view.refresh_interval_ms,
     }
 }
 
@@ -5677,9 +5650,7 @@ impl IvmRuntime {
         }
         self.register_state_tables(&view.view_id, &tables).await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh an inner equi-join view over two append-only sources.
@@ -6897,9 +6868,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     fn multi_lookup_probe<'a>(
@@ -6923,7 +6892,6 @@ impl IvmRuntime {
             right_value: String::new(),
             output_columns: Vec::new(),
             state: None,
-            refresh_interval_ms: view.refresh_interval_ms,
         }
     }
 
@@ -7562,9 +7530,7 @@ impl IvmRuntime {
         }
         self.register_state_tables(&view.view_id, &tables).await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a left join view: rewrite every pair of the affected left rows
@@ -8155,9 +8121,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.output)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a full join view: rewrite the pairs of the affected left rows
@@ -9171,9 +9135,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.output)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a cross join view over two keyed sources.
@@ -9543,9 +9505,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.output)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Rebuild an inner-join view from the full state of both sources.

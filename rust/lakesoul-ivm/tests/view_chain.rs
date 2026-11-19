@@ -280,7 +280,7 @@ async fn chain_reports_a_stuck_view_without_dirtying_its_state() {
     broken["source_table_id"] = serde_json::json!("table_missing");
     runtime
         .metadata()
-        .upsert_view(&mv1.table_id, &broken, 0)
+        .upsert_view(&mv1.table_id, &broken)
         .await
         .unwrap();
     source
@@ -325,7 +325,7 @@ async fn chain_reports_a_stuck_view_without_dirtying_its_state() {
     // failed attempt did not mark the state dirty.
     runtime
         .metadata()
-        .upsert_view(&mv1.table_id, &original, 0)
+        .upsert_view(&mv1.table_id, &original)
         .await
         .unwrap();
     let refreshed = runtime.refresh_view_chain(&mv2.table_id).await.unwrap();

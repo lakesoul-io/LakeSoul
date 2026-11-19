@@ -2354,7 +2354,6 @@ impl IvmSqlExecutor {
                 },
             ],
             output_columns: columns,
-            refresh_interval_ms: 0,
         };
         let Ok(expected) = expected_mv_schema(spec, tables) else {
             return Ok(None);

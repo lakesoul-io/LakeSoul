@@ -46,6 +46,12 @@ SPDX-License-Identifier: Apache-2.0
 
 一次性转换用普通的 `INSERT ... SELECT` 更简单。
 
+## 为什么目标表仍是普通表
+
+LakeSoul 不引入 `CREATE MATERIALIZED VIEW`，也不引入物化视图、流表、动态表等概念和语法。增量 SQL 只是普通表上的一条语句。同一张表可以被 Spark、Flink、Python 等引擎读写；同一张表可以按分区、按轮次选择批写、流写或 IVM 增量，心智负担更小。
+
+没有内置定时触发或 refresh 守护进程。一次运行是幂等的语句/API 调用，由 Airflow、DolphinScheduler、cron 或应用决定何时运行，并负责 DAG、重试、SLA 与告警。把调度做进内核意味着引入有状态服务和各种部署形态适配；成熟调度器已经解决这些问题。历史分区用批模式回灌，新分区开始增量维护；范围 backfill 同样由外部编排负责。
+
 ## 下一步
 
 - [上手](getting-started.md)

@@ -62,8 +62,6 @@ pub struct LookupChainView {
     pub mv: IvmTable,
     /// Every step compares its keys null-safely.
     pub null_safe: bool,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl LookupChainView {
@@ -82,7 +80,6 @@ impl LookupChainView {
             output_columns,
             mv,
             null_safe: false,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -804,9 +801,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Project a base source down to the columns the index needs.  The index

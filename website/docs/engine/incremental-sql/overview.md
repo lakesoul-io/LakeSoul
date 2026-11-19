@@ -58,6 +58,22 @@ target from the full source in one atomic commit.
 
 For a one-off transformation, a normal `INSERT ... SELECT` is simpler.
 
+## Why the target stays an ordinary table
+
+LakeSoul does not add `CREATE MATERIALIZED VIEW`, stream tables or dynamic-table
+syntax. Incremental SQL is a statement over an ordinary LakeSoul table. The same
+table can be read and written by Spark, Flink, Python and other engines; a
+pipeline can write it in batch, streaming or IVM mode and switch per partition
+or per run. This keeps one table model and avoids a second set of concepts.
+
+There is no built-in trigger or scheduler. A run is an idempotent statement or
+API call; Airflow, DolphinScheduler, cron or an application decides when to run
+it and owns DAGs, retries, SLAs and alerting. Building a scheduler into the
+engine would add a stateful service and deployment-specific orchestration;
+mature schedulers already solve this. Historical partitions are backfilled in
+batch mode and new partitions are maintained incrementally; range backfill also
+belongs to the external orchestrator.
+
 ## Next
 
 - [Getting started](getting-started.md)

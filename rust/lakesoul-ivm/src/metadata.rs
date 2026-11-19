@@ -283,8 +283,6 @@ pub struct ViewInfo {
     pub view_id: String,
     /// The lifecycle status (`active` / `rebuilding` / `dirty`).
     pub status: String,
-    /// The registered refresh interval (0 when unset).
-    pub refresh_interval_ms: i64,
     /// The last committed epoch.
     pub last_epoch: i64,
     /// The last chain failure, until the next successful refresh.
@@ -584,15 +582,13 @@ impl IvmMetadata {
         &self,
         view_id: &str,
         spec: &serde_json::Value,
-        refresh_interval_ms: i64,
     ) -> Result<()> {
         self.execute_rw(
-            "insert into ivm.views(view_id, spec, refresh_interval_ms, created_at)
-                 values ($1::TEXT, $2::JSONB, $3::BIGINT, $4::BIGINT)
+            "insert into ivm.views(view_id, spec, created_at)
+                 values ($1::TEXT, $2::JSONB, $3::BIGINT)
                  on conflict (view_id) do update
-                 set spec = excluded.spec,
-                     refresh_interval_ms = excluded.refresh_interval_ms",
-            &[&view_id, spec, &refresh_interval_ms, &crate::now_ms()],
+                 set spec = excluded.spec",
+            &[&view_id, spec, &crate::now_ms()],
         )
         .await?;
         Ok(())
@@ -767,19 +763,6 @@ impl IvmMetadata {
         Ok(row.map(|row| row.get(0)))
     }
 
-    /// The persisted refresh interval of a view (0 when unset).
-    pub async fn view_refresh_interval_ms(&self, view_id: &str) -> Result<Option<i64>> {
-        let row = self
-            .client
-            .query_opt(
-                "select refresh_interval_ms from ivm.views where view_id = $1::TEXT",
-                QueryType::RO,
-                &[&view_id],
-            )
-            .await?;
-        Ok(row.map(|row| row.get(0)))
-    }
-
     /// Persist the canonical definition identity of a view: the hash of the
     /// normalized query shape and the SQL it came from.
     pub async fn set_view_definition(
@@ -921,7 +904,7 @@ impl IvmMetadata {
         let rows = self
             .client
             .query(
-                "select view_id, status, refresh_interval_ms, last_epoch, last_error,
+                "select view_id, status, last_epoch, last_error,
                         (spec->>'kind' = 'fallback') as fallback,
                         spec->>'reason' as fallback_reason,
                         last_refresh_at, last_check_at, last_action,
@@ -937,20 +920,19 @@ impl IvmMetadata {
             .map(|row| ViewInfo {
                 view_id: row.get(0),
                 status: row.get(1),
-                refresh_interval_ms: row.get(2),
-                last_epoch: row.get(3),
-                last_error: row.get(4),
-                fallback: row.get(5),
-                fallback_reason: row.get(6),
-                last_refresh_at: row.get(7),
-                last_check_at: row.get(8),
-                last_action: row.get(9),
-                last_duration_ms: row.get(10),
-                last_source_lag_ms: row.get(11),
-                last_rows_read: row.get(12),
-                last_rows_written: row.get(13),
-                last_error_at: row.get(14),
-                consecutive_failures: row.get(15),
+                last_epoch: row.get(2),
+                last_error: row.get(3),
+                fallback: row.get(4),
+                fallback_reason: row.get(5),
+                last_refresh_at: row.get(6),
+                last_check_at: row.get(7),
+                last_action: row.get(8),
+                last_duration_ms: row.get(9),
+                last_source_lag_ms: row.get(10),
+                last_rows_read: row.get(11),
+                last_rows_written: row.get(12),
+                last_error_at: row.get(13),
+                consecutive_failures: row.get(14),
             })
             .collect())
     }

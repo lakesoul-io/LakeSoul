@@ -688,8 +688,6 @@ pub struct MultiAggView {
     pub state: Option<IvmTable>,
     /// Whether the MV is also the per-group accumulator state.
     pub mv_state: bool,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 /// A resolved [`crate::runtime::HavingLookupSpec`].
@@ -710,7 +708,6 @@ pub struct HavingLookup {
 }
 
 impl MultiAggView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -730,7 +727,6 @@ impl MultiAggView {
             having_lookup: None,
             state: None,
             mv_state: false,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -899,12 +895,9 @@ pub struct VarianceView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl VarianceView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -943,7 +936,6 @@ impl VarianceView {
             statistic: kind,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1104,12 +1096,9 @@ pub struct BoolAggView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl BoolAggView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -1129,7 +1118,6 @@ impl BoolAggView {
             kind,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1153,7 +1141,6 @@ impl BoolAggView {
             kind,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1314,12 +1301,9 @@ pub struct ApproxDistinctView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl ApproxDistinctView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -1354,7 +1338,6 @@ impl ApproxDistinctView {
             value_expr: None,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1502,12 +1485,9 @@ pub struct ApproxPercentileView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl ApproxPercentileView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -1527,7 +1507,6 @@ impl ApproxPercentileView {
             percentile: percentile.into(),
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1551,7 +1530,6 @@ impl ApproxPercentileView {
             percentile: percentile.into(),
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1740,12 +1718,9 @@ pub struct ComputedAggView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl ComputedAggView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -1769,7 +1744,6 @@ impl ComputedAggView {
             result,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -1906,12 +1880,9 @@ pub struct MedianView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl MedianView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -1946,7 +1917,6 @@ impl MedianView {
             value_expr: None,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -2218,12 +2188,9 @@ pub struct StringAggView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized column.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl StringAggView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -2266,7 +2233,6 @@ impl StringAggView {
             order_by,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -2442,12 +2408,9 @@ pub struct ArrayAggView {
     pub order_by: Vec<String>,
     /// An optional filter the contributing rows must satisfy.
     pub filter: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl ArrayAggView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -2485,7 +2448,6 @@ impl ArrayAggView {
             value_expr: None,
             order_by,
             filter: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -3346,9 +3308,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a variance/stddev view.
@@ -3454,9 +3414,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Persist a `STRING_AGG` view spec (idempotent).
@@ -3464,9 +3422,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a recomputed-aggregate view (variance family or median) by
@@ -3874,9 +3830,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a `BOOL_AND`/`BOOL_OR` view.
@@ -3913,9 +3867,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh an `APPROX_DISTINCT` view.
@@ -3958,9 +3910,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh an `APPROX_PERCENTILE_CONT` view.
@@ -4000,9 +3950,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a computed-aggregate view.
@@ -4030,9 +3978,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Persist a multi-aggregate view spec (idempotent).
@@ -4043,9 +3989,7 @@ impl IvmRuntime {
         }
         self.register_state_tables(&view.view_id, &tables).await?;
         let spec = serde_json::to_value(view.to_spec()?)?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Whether a multi-aggregate view can use the keyed accumulator state.

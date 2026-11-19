@@ -43,8 +43,6 @@ pub struct FallbackView {
     pub partition_scope: Option<PartitionScope>,
     /// The materialized view table.
     pub mv: IvmTable,
-    /// The registered refresh interval.
-    pub refresh_interval_ms: i64,
 }
 
 impl FallbackView {
@@ -519,9 +517,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a fallback view: recompute the whole statement when any source

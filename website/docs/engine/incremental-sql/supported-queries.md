@@ -11,8 +11,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 Incremental SQL maintains a query over keyed (primary-key) sources. The shapes
-below are maintained incrementally; a shape outside the list falls back to a full
-recompute, and an append-only source is rejected for an incremental run.
+below are maintained incrementally; a shape outside the list falls back to a
+full recompute. An insert-only append-only source is also rejected for
+incremental maintenance but can run through Tier-2 full recompute; a
+delete-bearing append-only source is not maintained.
 
 ## Projection, filter, distinct
 

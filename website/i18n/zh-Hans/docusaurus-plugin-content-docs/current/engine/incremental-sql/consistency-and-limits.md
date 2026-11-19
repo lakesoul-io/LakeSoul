@@ -39,7 +39,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 保留期
 
-一次运行需要游标到当前之间的源表历史。不要对增量 SQL 消费的表开启 `partition.ttl`、`compaction.ttl` 或 `dataExpiredTime` 清理：删除历史会让游标不可读。
+一次运行需要游标到当前之间的源表历史。Flink `NewCleanJob` 已经感知游标：除了 `dataExpiredTime`、pinned 版本和最新版本，它还会保留从最慢游标到当前之间的版本，因此视图的刷新周期可以长于 `dataExpiredTime`。这类表不要使用旧的 Spark `CleanExpiredData` / `cleanOldCompaction` 路径，它们不感知游标。
 
 如果历史缺失，运行会失败；下一次运行会从当前源表状态重建。
 
@@ -49,16 +49,16 @@ SPDX-License-Identifier: Apache-2.0
 | --- | --- |
 | **只支持 autocommit** | 显式事务和多语句 batch 会被拒绝 |
 | **只支持 `INSERT ... SELECT`** | `INSERT ... VALUES` 始终是普通插入 |
-| **源表必须有主键** | 没有主键的源会被拒绝 |
+| **增量维护要求源表有主键** | 仅追加的 append-only 源可走 Tier-2 全量重算；带删除标记的 append-only 源不在维护范围内 |
 | **目标表必须有主键** | 目标需要主键、`rowKinds` 和 `use_cdc = true` |
-| **v1 单机** | `--ivm` 与分布式执行互斥 |
+| **分布式执行** | 可以做分布式刷新，但每个 worker 都必须启用 IVM，并使用相同的协议版本 |
 | **支持的形状** | 列表之外的形状报告 `unsupported incremental view shape`，不写入任何内容 |
 
 ## 失败模式
 
 | 现象 | 原因 |
 | --- | --- |
-| `source table ... has no primary key` | 源表是 append-only；改用主键源 |
+| `source table ... has no primary key` | 源表是 append-only；改用主键源，或为仅追加数据开启 Tier-2 全量回退 |
 | `unsupported incremental view shape` | 查询形状不在支持列表内 |
 | `target table ... needs the internal rowKinds/__ivm_epoch columns` | 目标缺少 `rowKinds`（或引擎无法添加 epoch 列） |
 | `target table ... needs a primary key` | 目标不是主键表 |

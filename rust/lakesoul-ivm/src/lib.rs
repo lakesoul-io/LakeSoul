@@ -15,20 +15,21 @@
 //! tables for materialized views and state, and a refresh engine that consumes
 //! the source changelog by partition version.
 //!
-//! The supported view shapes are `SUM`/`COUNT` over an append-only or
-//! primary-key (upsert) source ([`runtime::SumCountView`]), `MIN`/`MAX` over
-//! the same source kinds backed by a value-count state table
+//! The typed view kinds include `SUM`/`COUNT` ([`runtime::SumCountView`]),
+//! `MIN`/`MAX` backed by a value-count state table
 //! ([`runtime::MinMaxView`]), `COUNT(DISTINCT)`/`SUM(DISTINCT)` sharing that
 //! state table ([`runtime::DistinctAggView`]), `ROW_NUMBER()` maintained by
 //! recomputing the affected partitions ([`runtime::WindowView`]),
 //! `SEMI`/`ANTI` joins recomputing the affected left rows
-//! ([`runtime::SemiAntiView`]), and an inner equi-join of two append-only or
-//! two keyed sources ([`runtime::JoinView`]). Refreshes are incremental and
-//! replay safe: every window is recorded in `ivm.epochs` (see `EPOCH.md`), so
-//! a retry skips data that is already written. A view whose source history
-//! cannot be consumed incrementally (updates/deletes in the window, or an
-//! unaligned cursor rewind) can be rebuilt from the full source state with
-//! [`runtime::IvmRuntime::rebuild_sum_count`] /
+//! ([`runtime::SemiAntiView`]), inner equi-joins ([`runtime::JoinView`]) and
+//! the outer-join view kinds. The typed runtime also has append-only paths for
+//! callers that build specs directly; the SQL entry requires keyed sources
+//! and uses the Tier-2 fallback for unsupported shapes. Refreshes are
+//! incremental and replay safe: every window is recorded in `ivm.epochs` (see
+//! `EPOCH.md`), so a retry skips data that is already written. A view whose
+//! source history cannot be consumed incrementally (updates/deletes in the
+//! window, or an unaligned cursor rewind) can be rebuilt from the full source
+//! state with [`runtime::IvmRuntime::rebuild_sum_count`] /
 //! [`runtime::IvmRuntime::rebuild_join`].
 //!
 //! All view kinds are type generic: aggregate group keys and `MIN`/`MAX`/
@@ -53,6 +54,14 @@
 //! [`runtime::IvmRuntime::table_provider`] (or its as-of / pinned-epoch
 //! variants) scans the table on demand with projection pushdown and hides CDC
 //! tombstones.
+//!
+//! The crate does not embed a refresh trigger or scheduler. A refresh is an
+//! ordinary, idempotent statement or API call; an external orchestrator decides
+//! when to run it. Historical partitions are backfilled through the normal
+//! batch path, while new partitions are maintained incrementally. Sources
+//! advance independently: a refresh may read different source tables at
+//! different versions, exactly like a direct query at that moment; it does not
+//! invent a cross-table transaction boundary.
 //!
 //! A keyed source may declare a CDC change column through
 //! [`table::IvmTableOptions::with_cdc_column`] (persisted as the LakeSoul
@@ -82,10 +91,10 @@
 //!
 //! The supported cleanup path is the Flink `NewCleanJob`: it keeps partition
 //! versions inside `dataExpiredTime` together with the files and
-//! `data_commit_info` rows referenced by those versions. A source or target
-//! must therefore be refreshed inside that retention window; older history can
-//! be removed and the view then rebuilds from the current state. The legacy
-//! Spark `CleanExpiredData` and `cleanOldCompaction` paths are not covered.
+//! `data_commit_info` rows referenced by those versions. Older history can be
+//! removed once no cursor or pending epoch needs it; in that case the view
+//! rebuilds from the current state. The legacy Spark `CleanExpiredData` and
+//! `cleanOldCompaction` paths are not covered.
 //!
 //! The Flink `NewCleanJob` is cursor aware: for each source table and
 //! partition it retains every version at or after the oldest

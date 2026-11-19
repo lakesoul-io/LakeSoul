@@ -41,8 +41,6 @@ pub struct UnionAllView {
     pub mv: IvmTable,
     /// The branch-index column name.
     pub source_column: String,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 /// One source of a [`UnionAllView`], optionally filtered.
@@ -106,7 +104,6 @@ impl UnionAllView {
             sources,
             mv,
             source_column: IVM_SOURCE_COLUMN.to_string(),
-            refresh_interval_ms: 0,
         }
     }
 
@@ -132,8 +129,6 @@ pub struct UnionDistinctView {
     pub sources: Vec<UnionSource>,
     /// The materialized view table.
     pub mv: IvmTable,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl UnionDistinctView {
@@ -147,7 +142,6 @@ impl UnionDistinctView {
             view_id: view_id.into(),
             sources,
             mv,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -816,9 +810,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Persist a union-distinct view spec (idempotent).
@@ -829,9 +821,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a `UNION ALL` view over keyed or append-only sources.

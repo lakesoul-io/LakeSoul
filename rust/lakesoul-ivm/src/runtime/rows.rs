@@ -56,8 +56,6 @@ pub struct RowView {
     /// The scalar subqueries of the filter, when it has any.  Their tables
     /// are registered (and watched) in addition to the source.
     pub scalar: Option<RowScalarView>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl RowView {
@@ -71,7 +69,6 @@ impl RowView {
             output_exprs: Vec::new(),
             filter: None,
             scalar: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -547,9 +544,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// A session with the row view's scalar subquery tables registered in

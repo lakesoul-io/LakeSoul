@@ -43,12 +43,9 @@ pub struct SumCountView {
     /// `true` for an `AVG` view: the MV additionally holds
     /// [`IVM_AVG_COLUMN`].
     pub average: bool,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl SumCountView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -69,7 +66,6 @@ impl SumCountView {
             filter: None,
             having: None,
             average: false,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -94,7 +90,6 @@ impl SumCountView {
             filter: None,
             having: None,
             average: false,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -359,12 +354,9 @@ pub struct MinMaxView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl MinMaxView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -386,7 +378,6 @@ impl MinMaxView {
             min_max,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -412,7 +403,6 @@ impl MinMaxView {
             min_max,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -490,12 +480,9 @@ pub struct DistinctAggView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl DistinctAggView {
-    /// A new view with no refresh interval hint.
     pub fn new(
         view_id: impl Into<String>,
         source: IvmTable,
@@ -517,7 +504,6 @@ impl DistinctAggView {
             agg,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -543,7 +529,6 @@ impl DistinctAggView {
             agg,
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -655,8 +640,6 @@ pub struct GroupingSetsView {
     pub filter: Option<String>,
     /// An optional `HAVING` predicate over the materialized columns.
     pub having: Option<String>,
-    /// The refresh interval hint persisted with the view.
-    pub refresh_interval_ms: i64,
 }
 
 impl GroupingSetsView {
@@ -685,7 +668,6 @@ impl GroupingSetsView {
             aggregates: Vec::new(),
             filter: None,
             having: None,
-            refresh_interval_ms: 0,
         }
     }
 
@@ -2348,9 +2330,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a `SUM`/`COUNT` view over the source changelog.
@@ -2679,9 +2659,7 @@ impl IvmRuntime {
         )
         .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Persist a distinct aggregate view spec (idempotent).
@@ -2692,9 +2670,7 @@ impl IvmRuntime {
         )
         .await?;
         let spec = serde_json::to_value(view.to_spec())?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Persist a grouping-sets view spec (idempotent).
@@ -2705,9 +2681,7 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
             .await?;
         let spec = serde_json::to_value(view.to_spec()?)?;
-        self.metadata
-            .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
-            .await
+        self.metadata.upsert_view(&view.view_id, &spec).await
     }
 
     /// Refresh a grouping-sets view: the affected group tuples drive every

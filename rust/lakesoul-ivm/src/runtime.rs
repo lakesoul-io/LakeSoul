@@ -315,9 +315,6 @@ pub enum ViewSpec {
         /// The materialized columns; source 0 is the left, source `i + 1`
         /// is `rights[i]`.
         output_columns: Vec<MultiLookupColumn>,
-        /// The refresh interval hint persisted with the view.
-        #[serde(default)]
-        refresh_interval_ms: i64,
     },
     /// `LEFT JOIN` over two keyed sources: every left row with all its
     /// matching right rows (a NULL-padded row when nothing matches).
@@ -4876,11 +4873,6 @@ impl IvmRuntime {
 
     /// Open the tables of a spec and build the typed view it describes.
     async fn spec_view(&self, spec: &ViewSpec) -> Result<SpecView> {
-        let refresh_interval_ms = self
-            .metadata
-            .view_refresh_interval_ms(spec.view_id())
-            .await?
-            .unwrap_or(0);
         Ok(match spec {
             ViewSpec::SumCount {
                 view_id,
@@ -4908,7 +4900,6 @@ impl IvmRuntime {
                 filter: filter.clone(),
                 having: having.clone(),
                 average: *average,
-                refresh_interval_ms,
             }),
             ViewSpec::GroupingSets {
                 view_id,
@@ -4951,7 +4942,6 @@ impl IvmRuntime {
                     .collect::<Result<Vec<_>>>()?,
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::MultiAgg {
                 view_id,
@@ -4999,7 +4989,6 @@ impl IvmRuntime {
                     None => None,
                 },
                 mv_state: *mv_state,
-                refresh_interval_ms,
             }),
             ViewSpec::MultiJoin {
                 view_id,
@@ -5023,7 +5012,6 @@ impl IvmRuntime {
                     columns: columns.clone(),
                     conditions: conditions.clone(),
                     null_safe: *null_safe,
-                    refresh_interval_ms,
                 })
             }
             ViewSpec::Join {
@@ -5062,7 +5050,6 @@ impl IvmRuntime {
                     None => None,
                 },
                 null_safe: *null_safe,
-                refresh_interval_ms,
             }),
             ViewSpec::MultiLookupJoin {
                 view_id,
@@ -5071,7 +5058,6 @@ impl IvmRuntime {
                 join_keys,
                 rights,
                 output_columns,
-                refresh_interval_ms,
             } => {
                 let mut opened = Vec::with_capacity(rights.len());
                 for right in rights {
@@ -5087,7 +5073,6 @@ impl IvmRuntime {
                     mv: self.open_table_by_id(mv_table_id).await?,
                     join_keys: join_keys.clone(),
                     output_columns: output_columns.clone(),
-                    refresh_interval_ms: *refresh_interval_ms,
                 })
             }
             ViewSpec::LeftJoin {
@@ -5121,7 +5106,6 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 null_safe: *null_safe,
-                refresh_interval_ms,
             }),
             ViewSpec::FullJoin {
                 view_id,
@@ -5154,7 +5138,6 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 null_safe: *null_safe,
-                refresh_interval_ms,
             }),
             ViewSpec::LookupJoin {
                 view_id,
@@ -5188,7 +5171,6 @@ impl IvmRuntime {
                     Some(id) => Some(self.open_table_by_id(id).await?),
                     None => None,
                 },
-                refresh_interval_ms,
             }),
             ViewSpec::CrossJoin {
                 view_id,
@@ -5213,7 +5195,6 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 pair_filter: pair_filter.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::MinMax {
                 view_id,
@@ -5239,7 +5220,6 @@ impl IvmRuntime {
                 min_max: *min_max,
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::DistinctAgg {
                 view_id,
@@ -5265,7 +5245,6 @@ impl IvmRuntime {
                 agg: *agg,
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::Variance {
                 view_id,
@@ -5289,7 +5268,6 @@ impl IvmRuntime {
                 statistic: *statistic,
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::Median {
                 view_id,
@@ -5311,7 +5289,6 @@ impl IvmRuntime {
                 value_expr: value_expr.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::BoolAgg {
                 view_id,
@@ -5335,7 +5312,6 @@ impl IvmRuntime {
                 kind: *bool_agg,
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::ApproxDistinct {
                 view_id,
@@ -5357,7 +5333,6 @@ impl IvmRuntime {
                 value_expr: value_expr.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::ApproxPercentile {
                 view_id,
@@ -5381,7 +5356,6 @@ impl IvmRuntime {
                 percentile: percentile.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::ComputedAgg {
                 view_id,
@@ -5409,7 +5383,6 @@ impl IvmRuntime {
                 result: *result,
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::StringAgg {
                 view_id,
@@ -5435,7 +5408,6 @@ impl IvmRuntime {
                 order_by: order_by.clone(),
                 filter: filter.clone(),
                 having: having.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::ArrayAgg {
                 view_id,
@@ -5457,7 +5429,6 @@ impl IvmRuntime {
                 value_expr: value_expr.clone(),
                 order_by: order_by.clone(),
                 filter: filter.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::Window {
                 view_id,
@@ -5479,7 +5450,6 @@ impl IvmRuntime {
                 columns: columns.clone(),
                 payload_columns: payload_columns.clone(),
                 filter: filter.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::SemiAnti {
                 view_id,
@@ -5513,7 +5483,6 @@ impl IvmRuntime {
                 right_aggregate: right_aggregate.clone(),
                 right_keys: right_keys.clone(),
                 match_predicate: match_predicate.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::LookupChain {
                 view_id,
@@ -5537,7 +5506,6 @@ impl IvmRuntime {
                     output_columns: output_columns.clone(),
                     mv: self.open_table_by_id(mv_table_id).await?,
                     null_safe: *null_safe,
-                    refresh_interval_ms,
                 })
             }
             ViewSpec::LeftAggregate {
@@ -5577,7 +5545,6 @@ impl IvmRuntime {
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?,
-                refresh_interval_ms,
             }),
             ViewSpec::Row {
                 view_id,
@@ -5609,7 +5576,6 @@ impl IvmRuntime {
                     output_exprs: output_exprs.clone(),
                     filter: filter.clone(),
                     scalar,
-                    refresh_interval_ms,
                 })
             }
             ViewSpec::UnionAll {
@@ -5632,7 +5598,6 @@ impl IvmRuntime {
                     sources: opened,
                     mv: self.open_table_by_id(mv_table_id).await?,
                     source_column: source_column.clone(),
-                    refresh_interval_ms,
                 })
             }
             ViewSpec::UnionDistinct {
@@ -5653,7 +5618,6 @@ impl IvmRuntime {
                     view_id: view_id.clone(),
                     sources: opened,
                     mv: self.open_table_by_id(mv_table_id).await?,
-                    refresh_interval_ms,
                 })
             }
             ViewSpec::MultiWindow {
@@ -5670,7 +5634,6 @@ impl IvmRuntime {
                 windows: windows.clone(),
                 payload_columns: payload_columns.clone(),
                 filter: filter.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::TopK {
                 view_id,
@@ -5696,7 +5659,6 @@ impl IvmRuntime {
                 limit: *limit,
                 offset: *offset,
                 filter: filter.clone(),
-                refresh_interval_ms,
             }),
             ViewSpec::Fallback {
                 view_id,
@@ -5717,7 +5679,6 @@ impl IvmRuntime {
                     reason: reason.clone(),
                     partition_scope: partition_scope.clone(),
                     mv: self.open_table_by_id(mv_table_id).await?,
-                    refresh_interval_ms,
                 })
             }
             ViewSpec::Sink {
@@ -5738,7 +5699,6 @@ impl IvmRuntime {
                 range_partition_columns: range_partition_columns.clone(),
                 source_definition: source_definition.clone(),
                 source_generation: *source_generation,
-                refresh_interval_ms,
             }),
         })
     }

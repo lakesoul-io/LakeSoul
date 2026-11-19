@@ -479,3 +479,49 @@ async fn an_incremental_view_cannot_read_a_fallback_view() {
         .to_string();
     assert!(error.contains("fallback view"), "{error}");
 }
+
+#[test_log::test(tokio::test)]
+async fn an_append_only_source_can_run_as_a_fallback() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    // No primary keys: the incremental analyzer rejects this source, but a
+    // Tier-2 fallback only needs to recompute the statement from current state.
+    let fact = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fb7_f_{suffix}"),
+                table_path(&dir, "f"),
+                source_schema(),
+            )
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let select = format!("SELECT k, g, v FROM {}", fact.table_name);
+    let mv = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_fb7_mv_{suffix}"),
+            table_path(&dir, "mv"),
+            fallback_mv_schema(runtime, &select, &fact).await,
+        ))
+        .await
+        .unwrap();
+    let statement = format!("INSERT INTO {} {select}", mv.table_name);
+
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "fallback");
+    assert_eq!(
+        read_rows(runtime, &mv).await,
+        vec![(1, "a".to_string(), 10), (2, "b".to_string(), 20)]
+    );
+}

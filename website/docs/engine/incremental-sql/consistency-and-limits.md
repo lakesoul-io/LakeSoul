@@ -50,9 +50,12 @@ partitions are left untouched.
 
 ## Retention
 
-A run needs the source history between its cursor and the present. Do not enable
-`partition.ttl`, `compaction.ttl` or `dataExpiredTime` cleanup on tables consumed
-by incremental SQL: deleting the history makes the cursor unreadable.
+A run needs the source history between its cursor and the present. The Flink
+`NewCleanJob` is cursor aware: it keeps versions from the oldest view cursor to
+the present, in addition to `dataExpiredTime`, pinned versions and the latest
+version. A view may therefore refresh less often than `dataExpiredTime`. Avoid
+the legacy Spark `CleanExpiredData` / `cleanOldCompaction` paths on these tables;
+they do not honor cursors.
 
 If history is missing, the run fails; the next run rebuilds from the current
 source state.
@@ -63,7 +66,7 @@ source state.
 | --- | --- |
 | **Autocommit only** | Explicit transactions and multi-statement batches are refused |
 | **`INSERT ... SELECT` only** | `INSERT ... VALUES` is always a normal insert |
-| **Keyed sources** | A source without a primary key is rejected |
+| **Keyed sources for incremental maintenance** | An insert-only append-only source can be recomputed through Tier-2 fallback; delete-bearing append-only sources are not maintained |
 | **Keyed target** | The target needs a primary key, `rowKinds`, and `use_cdc = true` |
 | **Distributed execution** | The IVM entry can run with distributed workers; every worker must be built with the IVM feature and the same protocol generation. The coordinator resolves source windows and commits the files workers write. |
 | **Supported shapes** | A shape outside the list reports `unsupported incremental view shape` and writes nothing |
@@ -72,7 +75,7 @@ source state.
 
 | Symptom | Cause |
 | --- | --- |
-| `source table ... has no primary key` | The source is append-only; use a keyed source |
+| `source table ... has no primary key` | The source is append-only; use a keyed source or enable Tier-2 fallback for insert-only data |
 | `unsupported incremental view shape` | The query shape is outside the supported list |
 | `target table ... needs the internal rowKinds/__ivm_epoch columns` | The target is missing `rowKinds` (or the engine could not add the epoch column) |
 | `target table ... needs a primary key` | The target is not a keyed table |
