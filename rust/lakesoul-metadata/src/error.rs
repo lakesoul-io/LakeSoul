@@ -66,6 +66,8 @@ pub enum LakeSoulMetaDataError {
     Internal(String),
     #[error("Not found error: {0}")]
     NotFound(String),
+    #[error("Already exists: {0}")]
+    AlreadyExists(String),
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
     #[error("Metadata commit conflict: {0}")]

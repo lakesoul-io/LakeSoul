@@ -54,6 +54,8 @@ pub struct ServerDefinition {
     pub driver: String,
     pub dialect: DialectKind,
     pub options: BTreeMap<String, String>,
+    pub domain: String,
+    pub creator: String,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +73,8 @@ pub struct ForeignTableDefinition {
     pub remote_table: String,
     pub schema: SchemaRef,
     pub options: BTreeMap<String, String>,
+    pub domain: String,
+    pub creator: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,7 +122,7 @@ impl FederationMetadata {
         let server_rows = self
             .client
             .query(
-                "select server_name, backend, driver, dialect, options \
+                "select server_name, backend, driver, dialect, options, domain, creator \
                  from federation.servers order by server_name",
                 QueryType::RW,
                 &[],
@@ -145,6 +149,8 @@ impl FederationMetadata {
                 )
             })?;
             let options: String = row.get(4);
+            let domain: String = row.get(5);
+            let creator: String = row.get(6);
             servers.insert(
                 name.clone(),
                 ServerDefinition {
@@ -153,6 +159,8 @@ impl FederationMetadata {
                     driver,
                     dialect,
                     options: parse_options(&options)?,
+                    domain,
+                    creator,
                 },
             );
         }
@@ -183,7 +191,8 @@ impl FederationMetadata {
             .client
             .query(
                 "select database, local_schema, local_name, server_name, \
-                        remote_schema, remote_table, schema_json, options \
+                        remote_schema, remote_table, schema_json, options, \
+                        domain, creator \
                  from federation.foreign_tables \
                  order by database, local_schema, local_name",
                 QueryType::RW,
@@ -201,6 +210,8 @@ impl FederationMetadata {
             let remote_table: String = row.get(5);
             let schema_json: String = row.get(6);
             let options: String = row.get(7);
+            let domain: String = row.get(8);
+            let creator: String = row.get(9);
             let schema = schema_from_metadata_str(&schema_json)
                 .map_err(|error| report!("parse foreign table schema: {error}"))?;
             tables.insert(
@@ -214,6 +225,8 @@ impl FederationMetadata {
                     remote_table,
                     schema: Arc::new(schema),
                     options: parse_options(&options)?,
+                    domain,
+                    creator,
                 },
             );
         }
@@ -225,6 +238,7 @@ impl FederationMetadata {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_server(
         &self,
         name: &str,
@@ -232,6 +246,8 @@ impl FederationMetadata {
         driver: &str,
         dialect: DialectKind,
         options: &BTreeMap<String, String>,
+        domain: &str,
+        creator: &str,
         if_not_exists: bool,
     ) -> Result<bool> {
         let now = now_ms();
@@ -246,19 +262,24 @@ impl FederationMetadata {
         let dialect = dialect.name();
         let sql = if if_not_exists {
             "insert into federation.servers \
-                 (server_name, backend, driver, dialect, options, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $6) on conflict (server_name) do nothing"
+                 (server_name, backend, driver, dialect, options, domain, creator,
+                  created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $8) \
+             on conflict (server_name) do nothing"
         } else {
             "insert into federation.servers \
-                 (server_name, backend, driver, dialect, options, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $6)"
+                 (server_name, backend, driver, dialect, options, domain, creator,
+                  created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $8)"
         };
         let inserted = self
             .client
             .execute(
                 sql,
                 QueryType::RW,
-                &[&name, &backend, &driver, &dialect, &options, &now],
+                &[
+                    &name, &backend, &driver, &dialect, &options, &domain, &creator, &now,
+                ],
             )
             .await
             .map_err(|error| report!("create federation server {name}: {error}"))?;
@@ -332,14 +353,16 @@ impl FederationMetadata {
         let sql = if if_not_exists {
             "insert into federation.foreign_tables \
                  (database, local_schema, local_name, server_name, remote_schema, \
-                  remote_table, schema_json, options, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9) \
+                  remote_table, schema_json, options, domain, creator,
+                  created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11) \
              on conflict (database, local_schema, local_name) do nothing"
         } else {
             "insert into federation.foreign_tables \
                  (database, local_schema, local_name, server_name, remote_schema, \
-                  remote_table, schema_json, options, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)"
+                  remote_table, schema_json, options, domain, creator,
+                  created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)"
         };
         let inserted = self
             .client
@@ -355,6 +378,8 @@ impl FederationMetadata {
                     &table.remote_table,
                     &schema_json,
                     &options,
+                    &table.domain,
+                    &table.creator,
                     &now,
                 ],
             )

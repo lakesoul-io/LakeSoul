@@ -439,6 +439,9 @@ impl StartupState {
                 self.rbac = true;
                 self.create_domain_namespace("team_a", RBAC_TEAM_A).await?;
                 self.create_domain_namespace("team_b", RBAC_TEAM_B).await?;
+                if let Some(client) = &self.reference_client {
+                    state::seed_domain_user_on(client, "public", LAKE_USER).await?;
+                }
             }
             Fixtures::Ivm => {
                 self.ivm = true;

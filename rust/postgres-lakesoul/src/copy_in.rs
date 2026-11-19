@@ -363,6 +363,17 @@ where
         .is_some()
     {
         crate::acl::require_table_write(session_context, &database, &table_name).await?;
+    } else if provider
+        .as_ref()
+        .downcast_ref::<lakesoul_datafusion::federation::FederationTableProvider>()
+        .is_some()
+        || provider
+            .as_ref()
+            .downcast_ref::<lakesoul_datafusion::federation::external_file::ExternalFileTableProvider>()
+            .is_some()
+    {
+        crate::acl::require_foreign_table_write(session_context, &database, &table_name)
+            .await?;
     }
     // A copy is a write of the same kinds `INSERT` supports; a block stages a
     // LakeSoul write and refuses a foreign/external one.

@@ -1,7 +1,10 @@
 # PostgreSQL 表级 ACL 设计
 
 Status: implemented in PR #1316; table-level SQL `GRANT` / `REVOKE` added in
-PR #1317. This note records the model and the decisions behind it.
+PR #1317. The user directory, `CREATE USER`, token validation, federation ACL
+and the read-path audit fixes are in the follow-up change on
+`feature/pg-create-user-federation-acl`. This note records the model and the
+decisions behind it.
 
 ## 1. 目标
 
@@ -265,6 +268,52 @@ REVOKE { SELECT | INSERT | UPDATE | DELETE | TRUNCATE | ALL }
 `lakesoul-metadata::acl::apply_acl_changes` 在一个事务里完成；它按
 `table_id` 排序并 `FOR SHARE` 锁表，避免与 `DROP TABLE` 竞态或批量语句死锁。
 
+### 5.2 用户目录与 CREATE USER
+
+pg-wire 增加逻辑用户目录，同时 `CREATE USER` 创建真实 PostgreSQL 登录角色：
+
+```text
+domain(domain, creator, ...)
+lakesoul_user(user_name, created_by_domain, ...)
+domain_user(domain, user_name, disabled, ...)
+```
+
+- `CREATE USER [IF NOT EXISTS] name [WITH] PASSWORD '...'` 只由 cluster 写入
+  domain 的 `domain_admin` 执行；普通用户 `42501`；必须显式密码。
+- 创建真实 `LOGIN` role，并 GRANT `<domain>`、`<domain>_users`；不授予
+  `<domain>_admins`，空间管理员不能创建其他空间管理员。
+- 全局用户名：一个 role 可以成为多个 domain 的成员；已存在且由 LakeSoul
+  管理的 role，`IF NOT EXISTS` 只补成员关系，不改密码；未登记的 role 拒绝。
+- `public` / `lake-public` 不允许普通空间管理员创建用户。
+- role 创建、GRANT 和目录写入在同一 metadata 事务中完成；pg-wire 的 metadata
+  账号需要 `CREATEROLE`/domain role ADMIN OPTION。
+- token CLI 和 `--rbac` 连接都校验 `(sub, group)` 存在于 `domain_user`；连接
+  目录缓存 5 秒，失败返回通用 `28P01`。未启用 `--rbac` 的 JWT 部署保持旧行为。
+- `ALTER USER ... PASSWORD` / `DROP USER` 暂不实现。
+
+### 5.3 Federation ACL
+
+federation server 和 foreign table 与普通表使用相同的 domain 默认规则：
+
+- `federation.servers` / `foreign_tables` 增加 `domain`、`creator`；
+- 同 domain 默认只读，public 对所有 domain 只读；creator 和 domain admin 可写；
+- `CREATE SERVER` 由调用者创建，domain = cluster 写入 domain；
+- `CREATE FOREIGN TABLE` 需要 server 写权限 + namespace 写权限；
+- server DDL、user mapping、foreign table DDL/DML 仅 creator/domain admin；
+- `PgPublicSchema` 的 foreign name/provider 列表按 ACL 过滤；
+- 存量 federation 对象迁移为 `domain='public'`、creator 为迁移管理员，因此对
+  普通用户变为只读；需要写权限时由平台管理员调整。
+
+### 5.4 读路径审计修复
+
+- 隐藏表的 `SELECT` / `COPY` / `DESCRIBE` 的 DataFusion planning error 映射为
+  `42P01`，不再返回 `XX000`。
+- `SELECT ... INTO` 明确返回 `0A000`，不让 DataFusion 创建 session-local
+  memory table。
+- `information_schema`/`pg_class` 列表由 ACL 过滤；相关契约测试已补充。
+- `pg_roles` 仍由进程内目录提供，`CREATE USER` 后不保证立即完整反射真实 PG
+  role；后续用目录加载/同步完善。
+
 ## 6. S3 proxy
 
 S3 proxy 对表路径的访问增加 ACL 检查：
@@ -332,6 +381,13 @@ S3 proxy 对表路径的访问增加 ACL 检查：
   等。测试 harness 的 out-of-band 表需要补 domain rw ACL，模拟旧表。
 - S3 proxy：单元测试 path ACL 读写判断；跨 domain ro 读通过、写 403。
 - 迁移：迁移脚本在含存量表/无 creator 列的库上幂等执行。
+- 用户：`acl_contract.rs` 覆盖 domain admin 创建真实 role、普通用户拒绝、显式
+  密码、重复/IF NOT EXISTS、扩展协议、token 目录校验；token CLI 有离线拒绝和
+  目录签发覆盖。
+- Federation：`acl_contract.rs` 覆盖同 domain 只读、跨 domain 不可见、creator
+  写、非 creator DDL/DML 拒绝。
+- 审计：隐藏表 SELECT/COPY/DESCRIBE 为 `42P01`，`SELECT INTO` 为 `0A000`，
+  `information_schema` 不列出隐藏表。
 
 ## 9. 边界
 
@@ -344,3 +400,8 @@ S3 proxy 对表路径的访问增加 ACL 检查：
   控制（避免任意用户 DROP 共享表）。
 - 同 domain 的 namespace 默认可建表（rw）；表的默认是 owner rw、其他人 ro。
   存量表迁移为 domain rw，升级后新表才使用新默认。
+- Federation server/foreign table 复用 domain 默认规则；public federation 对象
+  对所有 domain 只读、creator/domain admin 可写（不采用普通 public 表的全开放
+  写语义，因为 server 可能持有远端凭据）。
+- `CREATE USER` 只创建普通用户；`ALTER USER`/`DROP USER` 与密码轮换后续实现。
+- 连接时的用户目录校验只在 `--rbac` 下启用；token CLI 在 `domain_user` 表存在时校验，旧 metadata 库保持离线签发。`pg_roles` 的完整目录同步后续完善。

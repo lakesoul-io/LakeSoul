@@ -543,6 +543,11 @@ REVOKE INSERT, UPDATE, DELETE ON TABLE global_config FROM base_admin_role;
 REVOKE INSERT, UPDATE, DELETE ON TABLE global_config FROM base_user_role;
 REVOKE INSERT, UPDATE, DELETE ON TABLE casbin_rule FROM base_user_role;
 
+-- The user directory is a service-owned catalog; tenant metadata users may
+-- use their own PG role but must not enumerate or modify other users.
+REVOKE ALL ON TABLE domain_user, lakesoul_user FROM base_admin_role, base_user_role;
+REVOKE INSERT, UPDATE, DELETE ON TABLE domain FROM base_admin_role, base_user_role;
+
 GRANT SELECT ON TABLE table_acl TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT SELECT ON TABLE namespace_acl TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT SELECT ON TABLE domain_admin TO base_super_admin_role, base_admin_role, base_user_role;

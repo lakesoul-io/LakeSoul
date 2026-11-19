@@ -35,6 +35,7 @@ use crate::support::{Harness, compare};
 /// Exact SQLSTATE LakeSoul reports for catalog resolution failures and for a
 /// rejected startup database (see the module documentation).
 const CATALOG_ERROR_SQLSTATE: &str = "XX000";
+const MISSING_TABLE_SQLSTATE: &str = "42P01";
 
 /// Contract label attached to helper diagnostics; the case id stays separate.
 const CONTRACT: &str = "catalog-namespace-database-isolation";
@@ -80,7 +81,7 @@ pub async fn run(h: &Harness) -> Result<()> {
     drop(peer_client);
     eprintln!(
         "catalog-isolation case=iso complete primary={primary} peer={peer} \
-         sqlstate={CATALOG_ERROR_SQLSTATE} classification=support-boundary"
+         sqlstate={MISSING_TABLE_SQLSTATE} classification=support-boundary"
     );
     Ok(())
 }
@@ -146,7 +147,7 @@ async fn cross_database_references_are_rejected(
         &h.lake,
         "iso-cross-schema-primary",
         &format!("SELECT id, origin FROM \"{peer}\".mapping_items ORDER BY id"),
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &alpha_rows(),
     )
     .await?;
@@ -157,7 +158,7 @@ async fn cross_database_references_are_rejected(
         &h.lake,
         "iso-cross-catalog-primary",
         &format!("SELECT id, origin FROM \"{peer}\".public.mapping_items ORDER BY id"),
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &alpha_rows(),
     )
     .await?;
@@ -166,7 +167,7 @@ async fn cross_database_references_are_rejected(
         &h.lake,
         "iso-foreign-unqualified-primary",
         "SELECT id FROM only_b",
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &alpha_rows(),
     )
     .await?;
@@ -174,7 +175,7 @@ async fn cross_database_references_are_rejected(
         &h.lake,
         "iso-foreign-public-primary",
         "SELECT id FROM public.only_b",
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &alpha_rows(),
     )
     .await?;
@@ -185,7 +186,7 @@ async fn cross_database_references_are_rejected(
         peer_client,
         "iso-cross-schema-peer",
         &format!("SELECT id, origin FROM \"{primary}\".mapping_items ORDER BY id"),
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &beta_rows(),
     )
     .await?;
@@ -193,7 +194,7 @@ async fn cross_database_references_are_rejected(
         peer_client,
         "iso-cross-catalog-peer",
         &format!("SELECT id, origin FROM \"{primary}\".public.mapping_items ORDER BY id"),
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &beta_rows(),
     )
     .await?;
@@ -201,7 +202,7 @@ async fn cross_database_references_are_rejected(
         peer_client,
         "iso-foreign-unqualified-peer",
         "SELECT id FROM only_a",
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &beta_rows(),
     )
     .await?;
@@ -209,14 +210,14 @@ async fn cross_database_references_are_rejected(
         peer_client,
         "iso-foreign-public-peer",
         "SELECT id FROM public.only_a",
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &beta_rows(),
     )
     .await?;
 
     eprintln!(
         "PASS case=iso-cross-schema|iso-cross-catalog|iso-foreign-unqualified|\
-         iso-foreign-public primary+peer sqlstate={CATALOG_ERROR_SQLSTATE} recovery=own-rows"
+         iso-foreign-public primary+peer sqlstate={MISSING_TABLE_SQLSTATE} recovery=own-rows"
     );
     Ok(())
 }
@@ -283,7 +284,7 @@ async fn search_path_cannot_bypass_database(
         &scoped,
         "iso-search-path-foreign-unqualified",
         "SELECT id FROM only_b",
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &alpha_rows(),
     )
     .await?;
@@ -291,7 +292,7 @@ async fn search_path_cannot_bypass_database(
         &scoped,
         "iso-search-path-foreign-public",
         "SELECT id FROM public.only_b",
-        CATALOG_ERROR_SQLSTATE,
+        MISSING_TABLE_SQLSTATE,
         &alpha_rows(),
     )
     .await?;
@@ -340,7 +341,7 @@ async fn search_path_cannot_bypass_database(
     drop(scoped);
     eprintln!(
         "PASS case=iso-search-path set={path} primary-rows=[101,102] peer-rows=[201,202] \
-         foreign-only=rejected sqlstate={CATALOG_ERROR_SQLSTATE} isolation=connection-local"
+         foreign-only=rejected sqlstate={MISSING_TABLE_SQLSTATE} isolation=connection-local"
     );
     Ok(())
 }

@@ -589,6 +589,8 @@ async fn prepare(
     }
 
     if let Some(provider) = provider_any.downcast_ref::<FederationTableProvider>() {
+        crate::acl::require_foreign_table_write(session_context, database, &table_name)
+            .await?;
         reject_transaction_strict(status, "INSERT")?;
         if insert.returning.is_some() {
             return Err(feature_not_supported(
@@ -609,6 +611,8 @@ async fn prepare(
     }
 
     if let Some(provider) = provider_any.downcast_ref::<ExternalFileTableProvider>() {
+        crate::acl::require_foreign_table_write(session_context, database, &table_name)
+            .await?;
         reject_transaction_strict(status, "INSERT")?;
         if insert.returning.is_some() {
             return Err(feature_not_supported(

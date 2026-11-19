@@ -60,10 +60,31 @@ REVOKE ALL ON t FROM bob;
 - `PUBLIC` 写入空间级授权（`grantee_kind = 'domain'`）。`REVOKE ALL ... FROM PUBLIC` 会让表只对 owner 和空间管理员可见。
 - `REVOKE` 写权限会降为 `ro`；`REVOKE SELECT`/`ALL` 会给同空间用户写显式 `none`，从而隐藏该表。
 - owner 或空间管理员才能授权。不可见的表返回 `42P01`；可见但无管理权返回 `42501`；public 表不接受 ACL。
-- grantee 名字按原样保存；LakeSoul 没有全局用户目录做存在性校验，因此可以先授权、后建用户。
+- grantee 名字按原样保存。RBAC 部署还维护 `lakesoul_user` / `domain_user` 全局用户目录，供 `CREATE USER` 和 token 校验使用；仍然可以先授权、后建用户。
 - `ON ALL TABLES IN SCHEMA public` 只覆盖当前 database（即当前 namespace）中的表。
 - `GRANT`/`REVOKE` 立即提交，和 DDL 一样不支持在事务块内执行。当前连接立即生效；其他连接和 S3 proxy 在 5 秒 ACL 缓存内生效。ACL 视图刷新后如果可见权限发生变化，连接上的 prepared statement 会在执行前重新 plan，避免 revoke 后旧 plan 继续读表。
 - 角色成员、列级权限、`WITH GRANT OPTION`、group ACL，以及 `information_schema` / `psql \dp` 反射暂不支持。
+
+### 创建用户
+
+空间管理员可以创建普通用户，必须显式给出密码：
+
+```sql
+CREATE USER alice WITH PASSWORD 'secret';
+CREATE USER IF NOT EXISTS alice WITH PASSWORD 'secret';
+```
+
+该命令创建真实 PostgreSQL 登录角色，GRANT `<workspace>` 和 `<workspace>_users`，并写入 token 签发和 pg-wire 连接校验使用的用户目录。不会授予 `<workspace>_admins`，空间管理员不能创建其他空间管理员；`public` / `lake-public` 不接受。已存在且由 LakeSoul 管理的角色在 `IF NOT EXISTS` 下只补当前空间成员关系，不改密码。pg-wire 的 metadata 账号需要 `CREATEROLE` 以及对空间角色的 ADMIN OPTION。
+
+创建后即可签发该用户的 token。`ALTER USER` / `DROP USER` 暂未实现。
+
+### Federation 对象
+
+federation server 和 foreign table 使用与普通表相同的默认规则：同空间默认只读，`public` federation 对象对所有空间只读，只有 creator 或空间管理员可写。创建 foreign table 需要对 server 和当前 namespace 都有写权限；跨空间 federation 对象不可见。
+
+### 存量部署
+
+metadata 迁移后执行 `script/migrate_users.sql`，从现有 `<workspace>_users` / `<workspace>_admins` role 成员关系回填 domain 注册表和用户目录。之后以 `--rbac` 启动 pg-wire；不在目录中的用户 token 会被拒绝。
 
 ## 启用多工作空间和角色权限控制功能
 默认情况下，LakeSoul 并不会开启该功能。可以通过执行 `script/meta_rbac_init.sql` 启用该功能：

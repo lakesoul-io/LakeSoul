@@ -67,6 +67,23 @@ impl Harness {
         super::sign_token(self.jwt()?, user, group, 3600)
     }
 
+    /// Make the directory entry a positive token test needs. The server
+    /// checks `domain_user` when it starts with `--rbac`.
+    pub async fn ensure_token_user(&self, token: &str) -> Result<()> {
+        let claims = self
+            .jwt()?
+            .decode_token(token)
+            .context("decode the harness token")?;
+        self.ensure_domain_user(&claims.group, &claims.sub).await
+    }
+
+    /// Seed a domain, its role groups (without touching base roles) and one
+    /// member. Idempotent, so parallel suites sharing a domain are safe.
+    pub async fn ensure_domain_user(&self, domain: &str, user: &str) -> Result<()> {
+        let client = self.connect_reference().await?;
+        seed_domain_user_on(&client, domain, user).await
+    }
+
     /// The same, expired a day ago: well past the validator's leeway.
     pub fn expired_token(&self, user: &str, group: &str) -> Result<String> {
         super::sign_token(self.jwt()?, user, group, -86_400)
@@ -413,4 +430,63 @@ fn snapshot_files(
         }
     }
     Ok(())
+}
+
+/// Test-only user-directory seeding. The domain role names are test constants
+/// or generated UUID names; reject anything that is not a plain identifier so
+/// this helper never interpolates arbitrary SQL.
+pub(super) async fn seed_domain_user_on(
+    client: &Client,
+    domain: &str,
+    user: &str,
+) -> Result<()> {
+    let valid = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 63
+            && value.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphabetic()
+                    || byte == b'_'
+                    || (index > 0 && byte.is_ascii_digit())
+            })
+    };
+    ensure!(valid(domain), "invalid test domain {domain:?}");
+    ensure!(valid(user), "invalid test user {user:?}");
+    let role_sql = if matches!(domain, "public" | "lake-public") {
+        String::new()
+    } else {
+        format!(
+            r#"
+            do $$
+            begin
+                begin
+                    execute 'create role "{domain}"';
+                exception when duplicate_object then null;
+                end;
+                begin
+                    execute 'create role "{domain}_users"';
+                exception when duplicate_object then null;
+                end;
+                begin
+                    execute 'create role "{domain}_admins"';
+                exception when duplicate_object then null;
+                end;
+            end $$;
+            "#
+        )
+    };
+    client
+        .batch_execute(&format!(
+            r#"
+            insert into public.domain(domain, creator)
+            values ('{domain}', 'test-fixture') on conflict (domain) do nothing;
+            {role_sql}
+            insert into public.lakesoul_user(user_name, created_by_domain)
+            values ('{user}', '{domain}') on conflict (user_name) do nothing;
+            insert into public.domain_user(domain, user_name, created_by)
+            values ('{domain}', '{user}', 'test-fixture')
+            on conflict (domain, user_name) do nothing;
+            "#
+        ))
+        .await
+        .with_context(|| format!("seed user {user:?} in domain {domain:?}"))
 }

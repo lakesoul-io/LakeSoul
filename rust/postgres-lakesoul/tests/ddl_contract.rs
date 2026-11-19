@@ -320,18 +320,15 @@ async fn drop_table_removes_metadata(h: &Harness) -> Result<()> {
         "{}",
         detail("ddl_notes", "pg_class after DROP TABLE", "expected no row")
     );
-    // Catalog resolution across the whole table namespace is a documented
-    // support boundary: DataFusion planning failures are reported as `XX000`
-    // (see `tests/catalog_contract/isolation.rs`), so a dropped table is
-    // proven gone by the message naming it, not by a PostgreSQL `42P01`.
+    // A dropped table is invisible to the catalog and reported as 42P01.
     let (code, message) = error_detail(h, "SELECT body FROM ddl_notes").await?;
     ensure!(
-        code == "XX000" && message.contains("ddl_notes"),
+        code == "42P01" && message.contains("ddl_notes"),
         "{}",
         detail(
             "ddl_notes",
             "SELECT after DROP TABLE",
-            &format!("expected XX000 naming the table, actual {code} ({message})")
+            &format!("expected 42P01 naming the table, actual {code} ({message})")
         )
     );
     let error = error_code(h, "DROP TABLE ddl_notes").await?;
@@ -1289,9 +1286,9 @@ async fn ddl_is_refused_inside_a_transaction(h: &Harness) -> Result<()> {
     );
     let (code, message) = error_detail(h, "SELECT id FROM ddl_tx").await?;
     ensure!(
-        code == "XX000" && message.contains("ddl_tx"),
-        "SELECT after refused transactional CREATE: expected XX000 naming the \
-         table (see tests/catalog_contract/isolation.rs), actual {code} ({message})"
+        code == "42P01" && message.contains("ddl_tx"),
+        "SELECT after refused transactional CREATE: expected 42P01 naming the \
+         table, actual {code} ({message})"
     );
 
     // A partition declaration does not change the commit boundary.
@@ -1478,7 +1475,7 @@ async fn cross_connection_drop_keeps_the_bound_plan(h: &Harness) -> Result<()> {
         .prepare("SELECT count(*) FROM ddl_cross_drop")
         .await
         .expect_err("a fresh Prepare after the peer DROP must fail");
-    ensure_server_sqlstate(&error, "XX000", "fresh Prepare after peer DROP")?;
+    ensure_server_sqlstate(&error, "42P01", "fresh Prepare after peer DROP")?;
     eprintln!(
         "PASS case={CONTRACT} classification={CLASSIFICATION} old-binding=zero-rows \
          re-prepare=XX000 metadata=absent refused-DDL=no-invalidation"

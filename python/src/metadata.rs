@@ -115,6 +115,7 @@ fn metadata_error_to_py(error: LakeSoulMetaDataError, missing: MissingObject) ->
     let message = error.to_string();
     match error {
         LakeSoulMetaDataError::PermissionDenied(_) => PermissionDeniedError::new_err(message),
+        LakeSoulMetaDataError::AlreadyExists(_) => AlreadyExistsError::new_err(message),
         LakeSoulMetaDataError::NotFound(_) => match missing {
             MissingObject::Table => TableNotFoundError::new_err(message),
             MissingObject::Namespace => NamespaceNotFoundError::new_err(message),

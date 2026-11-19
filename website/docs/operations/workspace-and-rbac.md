@@ -61,10 +61,31 @@ REVOKE ALL ON t FROM bob;
 - `PUBLIC` writes the workspace-wide grant (`grantee_kind = 'domain'`). `REVOKE ALL ... FROM PUBLIC` makes the table private to its owner and space administrators.
 - `REVOKE` of a write privilege leaves `ro`; revoking read/all hides the table from a same-workspace user with an explicit `none`.
 - The owner or a space administrator may grant. A hidden table is `42P01`; a visible table the user does not own is `42501`; public tables take no ACL.
-- Grantee names are stored as written; there is no global user directory to validate them against, so a grant may be created before that user first connects.
+- Grantee names are stored as written. RBAC deployments also keep a global `lakesoul_user` / `domain_user` directory used by `CREATE USER` and token validation; a grant can still be created before that user first connects.
 - `ON ALL TABLES IN SCHEMA public` covers the tables of the current database (workspace) only.
 - `GRANT`/`REVOKE` commit immediately and are refused inside a transaction block, like DDL. They take effect at once for the current connection and within the five-second ACL cache for other sessions and the S3 proxy. When a refresh changes visibility, prepared statements on that connection are replanned before execution, so a revoke cannot be bypassed by an old plan.
 - Role membership, column privileges, `WITH GRANT OPTION`, group ACLs and `information_schema`/`psql \dp` reflection are not implemented.
+
+### Creating users
+
+A space administrator can create an ordinary user with an explicit password:
+
+```sql
+CREATE USER alice WITH PASSWORD 'secret';
+CREATE USER IF NOT EXISTS alice WITH PASSWORD 'secret';
+```
+
+The command creates a real PostgreSQL login role, grants `<workspace>` and `<workspace>_users`, and records the user in the directory used by token issuance and pg-wire connections. It never grants `<workspace>_admins`; space administrators cannot create other space administrators. `public` / `lake-public` are not valid targets. An existing LakeSoul-managed role only gains the caller's workspace membership under `IF NOT EXISTS`; its password is not changed. The pg-wire metadata account needs `CREATEROLE` and ADMIN OPTION on the workspace roles.
+
+Tokens for the user can be issued immediately after `CREATE USER`. `ALTER USER` and `DROP USER` are not implemented yet.
+
+### Federation objects
+
+Federation servers and foreign tables follow the same default as ordinary tables: same workspace is read-only by default, `public` federation objects are readable by every workspace, and only the creator or a space administrator can write. Creating a foreign table requires write access on its server and on the current namespace. Cross-workspace federation objects are invisible.
+
+### Existing deployments
+
+Run `script/migrate_users.sql` after the metadata migration to backfill the domain registry and the user directory from existing `<workspace>_users` / `<workspace>_admins` role memberships. Then start pg-wire with `--rbac`; tokens for users absent from the directory are refused.
 
 ## Enable Multi-Tenancy and Role Permission Control
 By default, LakeSoul does not enable this feature. This feature can be enabled by executing `script/meta_rbac_init.sql`:

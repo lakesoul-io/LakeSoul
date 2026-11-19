@@ -19,20 +19,27 @@
 //! at startup, `42P01` for a table - the way LakeSoul's row-level security
 //! hides rows from the JVM engines.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Once};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use datafusion_postgres::pgwire;
 use jsonwebtoken::errors::ErrorKind;
-use lakesoul_metadata::{Claims, JwtServer};
+use lakesoul_metadata::{Claims, JwtServer, MetaDataClientRef};
+use parking_lot::Mutex;
 use pgwire::api::ClientInfo;
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 
 /// Refused connection attempts, by reason.
 const AUTH_FAILURES_TOTAL: &str = "lakesoul_auth_failures_total";
-const FAILURE_REASONS: [&str; 4] =
-    ["missing_token", "invalid_token", "expired", "user_mismatch"];
+const FAILURE_REASONS: [&str; 5] = [
+    "missing_token",
+    "invalid_token",
+    "expired",
+    "user_mismatch",
+    "unknown_user",
+];
 static DESCRIBE_METRICS: Once = Once::new();
 
 /// Domains every connection may see, whatever its own: the two public
@@ -48,6 +55,45 @@ pub struct AuthSettings {
     /// Enforce the token's domain on databases and tables. Only meaningful
     /// with `jwt`; the CLI refuses it otherwise.
     pub rbac: bool,
+    /// Validates `(sub, group)` against the LakeSoul user directory. Installed
+    /// only for RBAC deployments.
+    pub user_directory: Option<Arc<UserDirectory>>,
+}
+
+/// A short-lived cache of the `domain_user` directory. The ACL view has a
+/// five-second TTL; the same bound applies to new connections so a just-created
+/// user can connect immediately and a disabled user stops on the next token.
+#[derive(Debug)]
+pub struct UserDirectory {
+    client: MetaDataClientRef,
+    entries: Mutex<HashMap<(String, String), (bool, Instant)>>,
+}
+
+impl UserDirectory {
+    const TTL: Duration = Duration::from_secs(5);
+
+    pub fn new(client: MetaDataClientRef) -> Self {
+        Self {
+            client,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub async fn is_user(
+        &self,
+        domain: &str,
+        user: &str,
+    ) -> lakesoul_metadata::Result<bool> {
+        let key = (domain.to_string(), user.to_string());
+        if let Some((allowed, checked)) = self.entries.lock().get(&key).cloned()
+            && checked.elapsed() < Self::TTL
+        {
+            return Ok(allowed);
+        }
+        let allowed = self.client.is_domain_user(domain, user).await?;
+        self.entries.lock().insert(key, (allowed, Instant::now()));
+        Ok(allowed)
+    }
 }
 
 impl AuthSettings {
@@ -57,6 +103,7 @@ impl AuthSettings {
         Self {
             jwt: Some(Arc::new(JwtServer::new(secret))),
             rbac: false,
+            user_directory: None,
         }
     }
 
@@ -65,6 +112,16 @@ impl AuthSettings {
         self.rbac = rbac;
         self
     }
+
+    /// Install the user directory checked by `--rbac` connections.
+    pub fn with_user_directory(mut self, directory: Arc<UserDirectory>) -> Self {
+        self.user_directory = Some(directory);
+        self
+    }
+
+    pub fn user_directory(&self) -> Option<Arc<UserDirectory>> {
+        self.user_directory.clone()
+    }
 }
 
 impl fmt::Debug for AuthSettings {
@@ -72,6 +129,7 @@ impl fmt::Debug for AuthSettings {
         f.debug_struct("AuthSettings")
             .field("jwt", &self.jwt.is_some())
             .field("rbac", &self.rbac)
+            .field("user_directory", &self.user_directory.is_some())
             .finish()
     }
 }
@@ -155,6 +213,8 @@ pub(crate) enum AuthFailure {
     Expired,
     /// The token decodes and verifies, but names another user.
     UserMismatch { token_user: String },
+    /// The token is valid but the user is absent or disabled in the directory.
+    UnknownUser { user: String, group: String },
     /// Malformed, wrongly signed, or missing a required claim.
     Invalid(String),
 }
@@ -166,6 +226,7 @@ impl AuthFailure {
             AuthFailure::MissingToken => "missing_token",
             AuthFailure::Expired => "expired",
             AuthFailure::UserMismatch { .. } => "user_mismatch",
+            AuthFailure::UnknownUser { .. } => "unknown_user",
             AuthFailure::Invalid(_) => "invalid_token",
         }
     }
@@ -178,6 +239,9 @@ impl fmt::Display for AuthFailure {
             AuthFailure::Expired => f.write_str("the token has expired"),
             AuthFailure::UserMismatch { token_user } => {
                 write!(f, "the token was issued to {token_user:?}")
+            }
+            AuthFailure::UnknownUser { user, group } => {
+                write!(f, "user {user:?} is not enabled in domain {group:?}")
             }
             AuthFailure::Invalid(detail) => write!(f, "the token is invalid: {detail}"),
         }
@@ -355,7 +419,10 @@ mod tests {
         let settings = AuthSettings::jwt("super-secret-value");
         let debug = format!("{settings:?}");
         assert!(!debug.contains("super-secret-value"), "{debug}");
-        assert_eq!(debug, "AuthSettings { jwt: true, rbac: false }");
+        assert_eq!(
+            debug,
+            "AuthSettings { jwt: true, rbac: false, user_directory: false }"
+        );
     }
 }
 

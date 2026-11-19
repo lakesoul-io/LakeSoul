@@ -51,10 +51,11 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 postgres-lakesoul token --user alice --group team_a --ttl 1h
 ```
 
-`token` prints only the token and never opens a metadata connection, so it works
-while the metadata database is down. `--ttl` takes a number with an optional
-unit, `s`, `m`, `h` or `d` (`90`, `15m`, `1h`, `7d`); seconds when the unit is
-omitted.
+`token` prints only the token. In an RBAC deployment it reads the
+`domain_user` directory first and refuses to sign a token for a user that no
+domain administrator created; a metadata database without that table keeps the
+legacy offline behaviour. `--ttl` takes a number with an optional unit, `s`,
+`m`, `h` or `d` (`90`, `15m`, `1h`, `7d`); seconds when the unit is omitted.
 
 ## Connect
 
@@ -80,6 +81,7 @@ counts it:
 | `invalid_token` | Malformed, wrongly signed, or missing a claim |
 | `expired` | `exp` has passed (beyond the 60 second leeway) |
 | `user_mismatch` | The token was issued to another user |
+| `unknown_user` | The user is absent or disabled in the RBAC user directory |
 
 The counter is `lakesoul_auth_failures_total{reason}`, exposed on
 `--metrics-addr`. The server also logs `token authentication failed` with the
@@ -136,6 +138,39 @@ commit immediately, so they are refused inside a transaction block. They take
 effect at once for the current connection and within the five-second ACL cache
 for other sessions and the S3 proxy. Role membership, column privileges,
 `WITH GRANT OPTION` and catalog reflection of grants are not implemented.
+
+### Creating users
+
+A space administrator in an RBAC deployment can create an ordinary user with an
+explicit password:
+
+```sql
+CREATE USER alice WITH PASSWORD 'secret';
+CREATE USER IF NOT EXISTS alice WITH PASSWORD 'secret';
+```
+
+The server creates a real PostgreSQL login role, grants `<domain>` and
+`<domain>_users`, and records `(alice, domain)` in the user directory. It never
+grants `<domain>_admins`; only a platform/operator path can create another
+space administrator. A role that already exists and is LakeSoul-managed only
+gains the caller's domain membership under `IF NOT EXISTS`; its password is not
+changed. `public` and `lake-public` are not valid targets for a tenant
+administrator. `ALTER USER` and `DROP USER` are not implemented yet.
+
+The pg-wire metadata account needs `CREATEROLE` and ADMIN OPTION on the domain
+roles. The token command reads the same directory, so the account used to mint
+tokens needs `SELECT` on `domain_user`. Tokens for the new user can be issued
+immediately after `CREATE USER`.
+
+### Federation ACL
+
+Federation servers and foreign tables follow the same domain default as LakeSoul
+tables: same-domain users can read, `public` objects are readable by every
+domain, and only the creator or a space administrator can write. `CREATE SERVER`
+makes the caller its owner; `CREATE FOREIGN TABLE` requires write access to the
+server and to the current namespace; server/foreign-table DDL, user mappings and
+DML are creator/space-admin operations. Foreign tables outside the domain are
+invisible, including in `pg_class` and `information_schema`.
 
 `--rbac` stores a domain on every detached job, in `job.queries.domain`, and the
 `job_key` unique index includes the domain. An existing 4.x metadata database

@@ -45,7 +45,7 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 postgres-lakesoul token --user alice --group team_a --ttl 1h
 ```
 
-`token` 只输出 token 本身，且不建立 metadata 连接，所以 metadata 库不可用时也能签发。`--ttl` 接受数字加可选单位 `s`、`m`、`h`、`d`（如 `90`、`15m`、`1h`、`7d`），省略单位表示秒。
+`token` 只输出 token 本身。在 RBAC 部署中它会先查询 `domain_user` 用户目录，拒绝为不存在的用户签发；没有该表的旧 metadata 库仍保持离线签发行为。`--ttl` 接受数字加可选单位 `s`、`m`、`h`、`d`（如 `90`、`15m`、`1h`、`7d`），省略单位表示秒。
 
 ## 连接
 
@@ -66,6 +66,7 @@ PGPASSWORD=$(postgres-lakesoul token --user alice --group team_a --ttl 1h) \
 | `invalid_token` | 格式错误、签名不对或缺少 claim |
 | `expired` | `exp` 已过（超出 60 秒容忍窗口） |
 | `user_mismatch` | token 签给了其他用户 |
+| `unknown_user` | 用户不在 RBAC 用户目录中，或已被禁用 |
 
 计数器为 `lakesoul_auth_failures_total{reason}`，在 `--metrics-addr` 上暴露。服务端同时输出 `token authentication failed` 日志，带对端地址和详情；客户端只会看到通用的密码失败。
 
@@ -104,6 +105,23 @@ REVOKE ALL ON t FROM bob;
 ```
 
 `SELECT` 映射为 `ro`；写权限映射为 `rw`，并隐含读权限。裸用户名属于表所在域；`domain.user` 是 LakeSoul 的跨域只读授权扩展。`PUBLIC` 写入域级授权。只有建表者或空间管理员可以授权；`GRANT`/`REVOKE` 立即提交，因此不支持在事务块内执行。当前连接立即生效，其他连接和 S3 proxy 在 5 秒 ACL 缓存内生效。角色成员、列级权限、`WITH GRANT OPTION` 以及 ACL 的 catalog 反射暂不实现。
+
+### 创建用户
+
+RBAC 部署中的空间管理员可以创建普通用户，必须显式给出密码：
+
+```sql
+CREATE USER alice WITH PASSWORD 'secret';
+CREATE USER IF NOT EXISTS alice WITH PASSWORD 'secret';
+```
+
+服务端会创建真实 PostgreSQL 登录角色，GRANT `<domain>` 和 `<domain>_users`，并在用户目录中写入 `(alice, domain)`；不会授予 `<domain>_admins`，也不能创建其他空间管理员。已存在且由 LakeSoul 管理的角色在 `IF NOT EXISTS` 下只补当前域成员关系，不改密码。`public` / `lake-public` 不接受普通空间管理员创建用户。`ALTER USER` / `DROP USER` 暂未实现。
+
+pg-wire 的 metadata 账号需要 `CREATEROLE` 以及对 domain role 的 ADMIN OPTION。签发 token 的账号还需要 `domain_user` 的 `SELECT` 权限。创建后即可为该用户签发 token。
+
+### Federation ACL
+
+federation server 和 foreign table 使用与普通表相同的域默认规则：同域默认只读，public 对所有域只读；creator 和 domain admin 可写。`CREATE SERVER` 的创建者成为 owner；`CREATE FOREIGN TABLE` 需要 server 写权限和当前 namespace 写权限；server/foreign table 的 DDL、user mapping 和 DML 只有 creator/domain admin 可以执行。跨域 foreign table 不可见。
 
 `--rbac` 会把域写进每个后台查询（`job.queries.domain`），`job_key` 的唯一索引也包含域。已有的 4.x 元数据库必须先迁移，服务端才能提交作业：
 

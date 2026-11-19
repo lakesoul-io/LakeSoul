@@ -27,6 +27,7 @@ use pgwire::api::results::Response;
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::ddl::user_error;
 use crate::server::ConnectionSession;
 
 pub(crate) const UNDEFINED_TABLE: &str = "42P01";
@@ -170,6 +171,44 @@ pub(crate) struct PgAclSession {
 
 pub(crate) fn pg_acl(session: &SessionContext) -> Option<Arc<PgAclSession>> {
     session.state().config().get_extension::<PgAclSession>()
+}
+
+/// Require write access to a federation foreign table. Foreign tables are not
+/// in `table_info`, so their domain/creator live in the federation metadata and
+/// use the same default rule as LakeSoul tables.
+pub(crate) async fn require_foreign_table_write(
+    session: &SessionContext,
+    database: &str,
+    table: &str,
+) -> PgWireResult<()> {
+    let Some(federation) = session
+        .state()
+        .config()
+        .get_extension::<crate::federation::PgFederationSession>()
+    else {
+        // Non-RBAC sessions keep the legacy federation behaviour.
+        return Ok(());
+    };
+    let Some(acl) = pg_acl(session) else {
+        return Ok(());
+    };
+    match federation.runtime.foreign_table_privilege(
+        database,
+        table,
+        &federation.user,
+        federation.domain.as_deref(),
+        Some(&acl.acl.view()),
+    ) {
+        lakesoul_metadata::acl::Privilege::Write => Ok(()),
+        lakesoul_metadata::acl::Privilege::Read => Err(user_error(
+            INSUFFICIENT_PRIVILEGE,
+            format!("permission denied for foreign table {table}"),
+        )),
+        lakesoul_metadata::acl::Privilege::None => Err(user_error(
+            UNDEFINED_TABLE,
+            format!("relation \"{table}\" does not exist"),
+        )),
+    }
 }
 
 fn insufficient(table: &str) -> PgWireError {

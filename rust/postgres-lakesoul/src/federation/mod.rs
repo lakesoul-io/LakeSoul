@@ -21,14 +21,25 @@ use lakesoul_datafusion::federation::{
     FederationPool, clear_pools, open_pool, register_pool, table_provider,
 };
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::acl::{AclView, Privilege};
 use parking_lot::RwLock;
 use rootcause::bail;
 
 use crate::Result;
 use metadata::{
-    FederationData, FederationMetadata, ServerBackend, ServerDefinition,
-    UserMappingDefinition,
+    FederationData, FederationMetadata, ForeignTableDefinition, ServerBackend,
+    ServerDefinition, UserMappingDefinition,
 };
+
+/// Connection-scoped federation identity, installed on the DataFusion config.
+/// The catalog and DML hooks use it to apply the same domain default as the
+/// LakeSoul table ACL.
+#[derive(Clone)]
+pub(crate) struct PgFederationSession {
+    pub runtime: Arc<FederationRuntime>,
+    pub user: String,
+    pub domain: Option<String>,
+}
 
 #[derive(Default)]
 struct RuntimeState {
@@ -47,6 +58,44 @@ struct RuntimeState {
 pub struct FederationRuntime {
     metadata: FederationMetadata,
     state: RwLock<RuntimeState>,
+}
+
+fn foreign_privilege(
+    table: &ForeignTableDefinition,
+    user: &str,
+    user_domain: Option<&str>,
+    acl: Option<&AclView>,
+) -> Privilege {
+    object_privilege(&table.domain, &table.creator, user, user_domain, acl)
+}
+
+fn server_privilege(
+    server: &ServerDefinition,
+    user: &str,
+    user_domain: Option<&str>,
+    acl: Option<&AclView>,
+) -> Privilege {
+    object_privilege(&server.domain, &server.creator, user, user_domain, acl)
+}
+
+fn object_privilege(
+    domain: &str,
+    creator: &str,
+    user: &str,
+    user_domain: Option<&str>,
+    acl: Option<&AclView>,
+) -> Privilege {
+    // Without RBAC there is no ACL view; keep the historical open behaviour.
+    let Some(acl) = acl else {
+        return Privilege::Write;
+    };
+    if creator == user || acl.is_domain_admin(domain) {
+        return Privilege::Write;
+    }
+    if domain == "public" || domain == "lake-public" || user_domain == Some(domain) {
+        return Privilege::Read;
+    }
+    Privilege::None
 }
 
 impl FederationRuntime {
@@ -93,14 +142,26 @@ impl FederationRuntime {
             .map(|server| server.backend)
     }
 
-    pub fn foreign_names(&self, database: &str) -> Vec<String> {
+    /// Foreign table names visible to one connection. `acl == None` keeps the
+    /// pre-RBAC behaviour.
+    pub fn visible_foreign_names(
+        &self,
+        database: &str,
+        user: &str,
+        user_domain: Option<&str>,
+        acl: Option<&AclView>,
+    ) -> Vec<String> {
         self.state
             .read()
             .data
             .tables
-            .keys()
-            .filter(|(db, schema, _)| db == database && schema == "public")
-            .map(|(_, _, name)| name.clone())
+            .iter()
+            .filter(|((db, schema, _), table)| {
+                db == database
+                    && schema == "public"
+                    && foreign_privilege(table, user, user_domain, acl).can_read()
+            })
+            .map(|((_, _, name), _)| name.clone())
             .collect()
     }
 
@@ -110,6 +171,45 @@ impl FederationRuntime {
             "public".to_string(),
             name.to_string(),
         ))
+    }
+
+    /// Effective privilege on a foreign table. Same domain (and public) read;
+    /// creator and domain administrator write.
+    pub fn foreign_table_privilege(
+        &self,
+        database: &str,
+        name: &str,
+        user: &str,
+        user_domain: Option<&str>,
+        acl: Option<&AclView>,
+    ) -> Privilege {
+        let state = self.state.read();
+        let key = (database.to_string(), "public".to_string(), name.to_string());
+        state
+            .data
+            .tables
+            .get(&key)
+            .map(|table| foreign_privilege(table, user, user_domain, acl))
+            .unwrap_or(Privilege::None)
+    }
+
+    /// Effective privilege on a foreign server. Reading allows using existing
+    /// foreign tables; writing controls server DDL, user mappings and creating
+    /// foreign tables that use its credentials.
+    pub fn server_privilege(
+        &self,
+        name: &str,
+        user: &str,
+        user_domain: Option<&str>,
+        acl: Option<&AclView>,
+    ) -> Privilege {
+        self.state
+            .read()
+            .data
+            .servers
+            .get(name)
+            .map(|server| server_privilege(server, user, user_domain, acl))
+            .unwrap_or(Privilege::None)
     }
 
     pub fn provider(
