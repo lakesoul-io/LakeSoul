@@ -343,15 +343,10 @@
         cp ${./script/meta_init.sql} app/meta_init.sql
         ln -s ${lakesoulBins}/bin/postgres-lakesoul app/postgres-lakesoul
         ln -s ${lakesoulBins}/bin/lakesoul-worker app/lakesoul-worker
-        mkdir -p etc
-        touch etc/passwd etc/group
-        printf 'lakesoul:x:999:999:LakeSoul:/var/lib/lakesoul:/bin/sh\n' \
-          >> etc/passwd
-        printf 'lakesoul:x:999:\n' >> etc/group
       '';
       config = {
         # The entrypoint starts as root so it can chown bind mounts, then
-        # drops every process to uid/gid 999.
+        # drops every process to nobody (65534) from fakeNss.
         User = "0:0";
         WorkingDir = "/app";
         Entrypoint = ["/app/entrypoint.sh"];

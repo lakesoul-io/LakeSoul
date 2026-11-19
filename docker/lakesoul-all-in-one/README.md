@@ -89,6 +89,9 @@ whole container. `WORKER_MEMORY_LIMIT` is a DataFusion execution budget, not a
 cgroup limit. For hard per-worker isolation, run the worker as its own service
 (compose split) or use the Kubernetes chart.
 
+The container runs every process as `nobody` (65534) after the entrypoint has
+chowned the bind mounts.
+
 The container healthcheck runs `pg_isready` against the PG wire port. Query
 execution still needs the worker; the entrypoint exits the container if the
 PG, worker or coordinator process dies, and the restart policy starts it again.
