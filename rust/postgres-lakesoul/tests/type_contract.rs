@@ -193,6 +193,27 @@ async fn run(h: &Harness) -> Result<()> {
     ensure!(regtypes[0].get::<_, i32>(2) == 869, "inet regtype");
     ensure!(regtypes[0].get::<_, i32>(3) == 1007, "int4[] regtype");
 
+    h.lake
+        .simple_query("CREATE TABLE type_contract_arr (v VARCHAR(5)[])")
+        .await?;
+    let array_catalog = h
+        .lake
+        .query(
+            "SELECT pg_catalog.format_type(a.atttypid, a.atttypmod), a.atttypmod, a.attndims \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             WHERE c.relname = 'type_contract_arr' AND a.attnum = 1",
+            &[],
+        )
+        .await?;
+    let array_type: String = array_catalog[0].get(0);
+    ensure!(
+        array_type == "character varying(5)[]",
+        "array format_type: {array_type}"
+    );
+    ensure!(array_catalog[0].get::<_, i32>(1) == 9, "array typmod");
+    ensure!(array_catalog[0].get::<_, i32>(2) == 1, "array ndims");
+
     // Catalog typmods are visible to psql/SQLAlchemy reflection.
     let catalog = h
         .lake
