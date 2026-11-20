@@ -1514,6 +1514,7 @@ fn parse_array_text(text: &str) -> Result<Vec<Option<String>>, String> {
     let mut values = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
+    let mut element_quoted = false;
     let mut escaped = false;
     for character in inner.chars() {
         if escaped {
@@ -1523,9 +1524,11 @@ fn parse_array_text(text: &str) -> Result<Vec<Option<String>>, String> {
             escaped = true;
         } else if character == '"' {
             quoted = !quoted;
+            element_quoted = true;
         } else if character == ',' && !quoted {
-            values.push(finish_array_element(&current));
+            values.push(finish_array_element(&current, element_quoted));
             current.clear();
+            element_quoted = false;
         } else {
             current.push(character);
         }
@@ -1533,12 +1536,12 @@ fn parse_array_text(text: &str) -> Result<Vec<Option<String>>, String> {
     if quoted {
         return Err("unterminated quoted array element".to_string());
     }
-    values.push(finish_array_element(&current));
+    values.push(finish_array_element(&current, element_quoted));
     Ok(values)
 }
 
-fn finish_array_element(value: &str) -> Option<String> {
-    if value.trim().eq_ignore_ascii_case("NULL") && value.trim() == value {
+fn finish_array_element(value: &str, quoted: bool) -> Option<String> {
+    if !quoted && value.trim().eq_ignore_ascii_case("NULL") && value.trim() == value {
         None
     } else {
         Some(value.to_string())
