@@ -602,6 +602,21 @@ fn evolution_error(table: &str, error: EvolutionError) -> PgWireError {
     }
 }
 
+/// True when `table_info` is owned by the IVM runtime.
+///
+/// IVM tables have an internal layout and are maintained by the refresh
+/// runtime; a user `DELETE`/`TRUNCATE` would invalidate its state.
+pub(crate) fn is_ivm_table(table_info: &TableInfo) -> bool {
+    serde_json::from_str::<serde_json::Value>(&table_info.properties)
+        .ok()
+        .and_then(|properties| properties.as_object().cloned())
+        .is_some_and(|properties| {
+            properties
+                .keys()
+                .any(|key| key.starts_with(IVM_PROPERTY_PREFIX))
+        })
+}
+
 /// The subscription writing `table_id`, if any. A subscription's schema
 /// evolution compares the target with its source column by column, so a
 /// column added here would stop it.

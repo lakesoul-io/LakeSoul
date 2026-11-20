@@ -20,7 +20,9 @@ SPDX-License-Identifier: Apache-2.0
   是写入：它会在块内 staged，并由 `COMMIT` 发布。
 - `REPEATABLE READ`、`SERIALIZABLE` 及其 `SET` 形式会以 `0A000` 拒绝。
 - 失败事务之后的语句返回 `25P02`，直到 `ROLLBACK`。失败块里的 `COMMIT` 会以回滚结束事务，与 PostgreSQL 一致。
-- 多语句 simple-query batch 内的写入仍被拒绝：这些语句没有运行在同一个事务中。请把写入拆成多条消息，或使用显式事务块。
+- CDC `DELETE` 是 tombstone append，会在块内正常 staged；块内读取通过
+  read-your-writes 看到删除效果。多语句 simple-query batch 内的写入仍被拒绝：
+  这些语句没有运行在同一个事务中。请把写入拆成多条消息，或使用显式事务块。
 - `statement_timeout` 会以 `57014` 取消正在运行的查询；连接仍可继续使用。
 - 未实现 `idle_in_transaction_session_timeout`。
 

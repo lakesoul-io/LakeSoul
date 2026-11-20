@@ -195,6 +195,19 @@ pub struct TransactionTableCommit {
     pub expected: Option<Vec<PartitionInfo>>,
 }
 
+/// One table's partitions in a `TRUNCATE`.
+///
+/// `TRUNCATE` publishes an empty snapshot for every selected partition. The
+/// definition is re-checked under the table row lock, so a concurrent DROP or
+/// `ALTER` cannot be truncated through a stale view.
+#[derive(Debug, Clone)]
+pub struct TruncateTarget {
+    /// The definition the statement was analysed against.
+    pub table_info: TableInfo,
+    /// Partitions to clear. An empty list is a no-op.
+    pub partitions: Vec<PartitionInfo>,
+}
+
 /// A new definition for one table, published by
 /// [`MetaDataClient::alter_table_definition`]. Fields left `None` keep their
 /// stored value.
@@ -1606,6 +1619,370 @@ impl MetaDataClient {
     ) -> Result<Vec<String>> {
         self.commit_append_files(table_info, expected_partitions, files, true)
             .await
+    }
+
+    /// Replace the current file set of the touched partitions with `files`.
+    ///
+    /// This is the publication of a DELETE/MERGE rewrite: every touched
+    /// partition gets one `UpdateCommit` whose snapshot contains exactly the
+    /// new commit, so old files are no longer read. Partitions in
+    /// `empty_partitions` are published with an empty snapshot (all their rows
+    /// were removed). The table definition is re-checked against the primary
+    /// before publication, so a concurrent `ALTER TABLE` is reported as a
+    /// retryable conflict.
+    pub async fn commit_replace(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() && empty_partitions.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.verify_table_definition(table_info).await?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
+            .as_millis() as i64;
+        let domain = self.get_table_domain(&table_info.table_id).await?.domain;
+
+        let mut by_partition: HashMap<String, Vec<DataFileInfo>> = HashMap::new();
+        for file in files {
+            by_partition
+                .entry(file.partition_desc.clone())
+                .or_default()
+                .push(file);
+        }
+
+        let mut data_commits = Vec::with_capacity(by_partition.len());
+        let mut list_partition =
+            Vec::with_capacity(by_partition.len() + empty_partitions.len());
+        let mut commit_ids = Vec::with_capacity(by_partition.len());
+        for (partition_desc, files) in by_partition {
+            let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
+            let commit_id = entity::Uuid { high, low };
+            data_commits.push(DataCommitInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: partition_desc.clone(),
+                commit_id: Some(commit_id),
+                file_ops: files
+                    .into_iter()
+                    .map(|file| entity::DataFileOp {
+                        path: file.path,
+                        file_op: entity::FileOp::Add.into(),
+                        size: file.size,
+                        file_exist_cols: file.file_exist_cols,
+                    })
+                    .collect(),
+                commit_op: CommitOp::UpdateCommit.into(),
+                timestamp,
+                committed: false,
+                domain: domain.clone(),
+                pinned: false,
+            });
+            list_partition.push(PartitionInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc,
+                commit_op: CommitOp::UpdateCommit.into(),
+                snapshot: vec![commit_id],
+                domain: domain.clone(),
+                ..Default::default()
+            });
+            commit_ids.push(uuid::Uuid::from_u64_pair(high, low).to_string());
+        }
+
+        let file_descs = list_partition
+            .iter()
+            .map(|partition| partition.partition_desc.clone())
+            .collect::<HashSet<_>>();
+        for partition in empty_partitions {
+            if file_descs.contains(partition.partition_desc.as_str()) {
+                continue;
+            }
+            list_partition.push(PartitionInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: partition.partition_desc,
+                commit_op: CommitOp::UpdateCommit.into(),
+                snapshot: Vec::new(),
+                domain: domain.clone(),
+                ..Default::default()
+            });
+        }
+
+        self.transaction_insert_data_commit_info(data_commits)
+            .await?;
+        match self
+            .commit_data(
+                MetaInfo {
+                    table_info: Some(table_info.clone()),
+                    list_partition,
+                    read_partition_info: expected_partitions.to_vec(),
+                },
+                CommitOp::UpdateCommit,
+            )
+            .await?
+        {
+            CommitOutcome::Committed | CommitOutcome::AlreadyCommitted => Ok(commit_ids),
+            CommitOutcome::Superseded => Err(LakeSoulMetaDataError::CommitConflict(
+                "the rewrite was superseded by a concurrent update; retry the statement"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Publish an empty snapshot for every selected partition.
+    ///
+    /// `DeleteCommit` advances the partition version and clears its snapshot.
+    /// Old commits and files stay in place, so a pinned snapshot can still read
+    /// the pre-truncate relation; GC reclaims the files later.
+    pub async fn commit_delete(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        partitions: Vec<PartitionInfo>,
+    ) -> Result<()> {
+        if partitions.is_empty() {
+            return Ok(());
+        }
+        self.verify_table_definition(table_info).await?;
+        let domain = self.get_table_domain(&table_info.table_id).await?.domain;
+        let list_partition = partitions
+            .into_iter()
+            .map(|partition| PartitionInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: partition.partition_desc,
+                commit_op: CommitOp::DeleteCommit.into(),
+                domain: domain.clone(),
+                ..Default::default()
+            })
+            .collect();
+        self.commit_data(
+            MetaInfo {
+                table_info: Some(table_info.clone()),
+                list_partition,
+                read_partition_info: expected_partitions.to_vec(),
+            },
+            CommitOp::DeleteCommit,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Publish a `TRUNCATE` across every target in one metadata transaction.
+    ///
+    /// Every selected partition gets a new version with an empty snapshot and
+    /// `DeleteCommit`. Every table row is locked and re-checked first, so a
+    /// concurrent DROP or redefinition aborts the whole statement.
+    pub async fn commit_truncate(&self, mut targets: Vec<TruncateTarget>) -> Result<()> {
+        targets.retain(|target| !target.partitions.is_empty());
+        if targets.is_empty() {
+            return Ok(());
+        }
+        targets.sort_by(|left, right| {
+            left.table_info.table_id.cmp(&right.table_info.table_id)
+        });
+        if targets
+            .windows(2)
+            .any(|pair| pair[0].table_info.table_id == pair[1].table_info.table_id)
+        {
+            return Err(LakeSoulMetaDataError::Internal(
+                "a table appears twice in one truncate".to_string(),
+            ));
+        }
+        if let [target] = targets.as_slice() {
+            // A single table is the common case; `commit_data` already has the
+            // retry/version machinery for `DeleteCommit`. The multi-table path
+            // needs its own transaction for cross-table atomicity.
+            return self
+                .commit_delete(
+                    &target.table_info,
+                    &target.partitions,
+                    target.partitions.clone(),
+                )
+                .await;
+        }
+        for attempt in 1..=MAX_COMMIT_ATTEMPTS {
+            match self.try_commit_truncate(&targets).await {
+                Ok(()) => return Ok(()),
+                Err(LakeSoulMetaDataError::CommitConflict(_))
+                    if attempt < MAX_COMMIT_ATTEMPTS =>
+                {
+                    commit_backoff(attempt).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(LakeSoulMetaDataError::CommitConflict(
+            "truncate lost the partition version race; retry the statement".to_string(),
+        ))
+    }
+
+    /// The current `table_id` for a table name, read directly from the primary.
+    ///
+    /// The metadata client memoizes table-info queries; a same-process
+    /// DROP + CREATE invalidates the row, not that memo. A prepared statement's
+    /// identity check must not compare against the memoized old row.
+    pub async fn primary_table_id_by_name(
+        &self,
+        table_name: &str,
+        namespace: &str,
+    ) -> Result<Option<String>> {
+        let primary = self.primary_only().await;
+        let pool = primary.pooled_client();
+        let pool = pool.lock().await.clone();
+        let row = pool
+            .query_opt(
+                "select table_id from table_info \
+                 where table_name = $1::TEXT and table_namespace = $2::TEXT",
+                QueryType::RO,
+                &[&table_name, &namespace],
+            )
+            .await?;
+        Ok(row.map(|row| row.get(0)))
+    }
+
+    /// Re-read the table by id and require the same identity and definition.
+    ///
+    /// `commit_data` publishes against the `table_info` it is given; without
+    /// this check a rewrite planned against an old schema could be committed
+    /// after a concurrent `ALTER TABLE` redefined the table.
+    async fn verify_table_definition(&self, table_info: &TableInfo) -> Result<()> {
+        let primary = self.primary_only().await;
+        let pool = primary.pooled_client();
+        let pool = pool.lock().await.clone();
+        let row = pool
+            .query_opt(
+                "select domain, table_name, table_namespace, table_schema, \
+                 partitions, properties, table_schema_arrow_ipc_json_hash \
+                 from table_info where table_id = $1::TEXT",
+                QueryType::RO,
+                &[&table_info.table_id],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Err(LakeSoulMetaDataError::NotFound(format!(
+                "table {} no longer exists",
+                table_info.table_name
+            )));
+        };
+        let current = TableIdentity::from_row(&row);
+        if current != TableIdentity::from_table_info(table_info) {
+            return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                "table {} was redefined while the statement was running; retry \
+                 the statement",
+                table_info.table_name
+            )));
+        }
+        Ok(())
+    }
+
+    async fn try_commit_truncate(&self, targets: &[TruncateTarget]) -> Result<()> {
+        let guard = self.client.lock().await;
+        let mut connection = guard.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+        let select_table = transaction
+            .prepare(
+                "select domain, table_name, table_namespace, table_schema, \
+                 partitions, properties, table_schema_arrow_ipc_json_hash \
+                 from table_info where table_id = $1::TEXT for share",
+            )
+            .await?;
+        let select_version = transaction
+            .prepare(
+                "select version from partition_info \
+                 where table_id = $1::TEXT and partition_desc = $2::TEXT \
+                 order by version desc limit 1",
+            )
+            .await?;
+        let insert_partition = transaction
+            .prepare(
+                "insert into partition_info \
+                 (table_id, partition_desc, version, commit_op, snapshot, expression, domain) \
+                 values ($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
+            )
+            .await?;
+        let commit_op = CommitOp::DeleteCommit.as_str_name();
+        for target in targets {
+            let table_id = &target.table_info.table_id;
+            let locked = transaction.query_opt(&select_table, &[table_id]).await?;
+            let Some(locked) = locked else {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_id} no longer exists"
+                )));
+            };
+            let current = TableIdentity::from_row(&locked);
+            let expected = TableIdentity::from_table_info(&target.table_info);
+            if current != expected {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                    "table {} was redefined while TRUNCATE was running; retry \
+                     the statement",
+                    target.table_info.table_name
+                )));
+            }
+            let domain: String = locked.get(0);
+            let mut cleared = HashSet::new();
+            for partition in &target.partitions {
+                if !cleared.insert(partition.partition_desc.as_str()) {
+                    continue;
+                }
+                let current_version = transaction
+                    .query_opt(&select_version, &[table_id, &partition.partition_desc])
+                    .await?
+                    .map(|row| row.get::<_, i32>(0))
+                    .unwrap_or(-1);
+                let next_version = current_version.checked_add(1).ok_or_else(|| {
+                    LakeSoulMetaDataError::Internal(format!(
+                        "partition version overflow on table {table_id} partition {}",
+                        partition.partition_desc
+                    ))
+                })?;
+                let snapshot: Vec<uuid::Uuid> = Vec::new();
+                let inserted = transaction
+                    .execute(
+                        &insert_partition,
+                        &[
+                            table_id,
+                            &partition.partition_desc,
+                            &next_version,
+                            &commit_op,
+                            &snapshot,
+                            &"",
+                            &domain,
+                        ],
+                    )
+                    .await;
+                if let Err(error) = inserted {
+                    if error.code().is_some_and(|code| code.code() == "23505") {
+                        transaction.rollback().await?;
+                        return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                            "lost the partition version race on table {table_id} \
+                             partition {}",
+                            partition.partition_desc
+                        )));
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        transaction.commit().await.map_err(|error| {
+            if error
+                .code()
+                .is_some_and(|code| code.code() == "40001" || code.code() == "40P01")
+            {
+                // A serialization/deadlock failure is retryable as a whole.
+                LakeSoulMetaDataError::CommitConflict(error.to_string())
+            } else if error.code().is_some_and(|code| {
+                matches!(&code.code()[..2], "23" | "40") && code.code() != "40003"
+            }) {
+                LakeSoulMetaDataError::PostgresError(error)
+            } else {
+                LakeSoulMetaDataError::InsertCommitOutcomeUnknown(error)
+            }
+        })?;
+        Ok(())
     }
 
     async fn commit_append_files(

@@ -92,6 +92,10 @@ SET day = EXCLUDED.day,
 
 如果表声明了向量或全文索引，索引会在元数据提交后更新。索引构建失败时语句返回错误，但写入的行已经提交且可见。
 
+## DELETE 与 TRUNCATE
+
+行表示、分区快速路径和事务边界见 [DELETE 与 TRUNCATE](delete-and-truncate.md)。
+
 ## 批量导入
 
 批量导入请使用 [`COPY ... FROM STDIN`](copy.md)，而不是大量单行插入：它是

@@ -147,6 +147,42 @@ public final class JdbcSmoke {
             statement.executeUpdate("DROP TABLE " + jsonTable);
         }
 
+        String deleteTable = table + "_delete";
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE IF EXISTS " + deleteTable);
+            statement.executeUpdate(
+                    "CREATE TABLE " + deleteTable + " (id bigint primary key, val bigint)");
+            statement.executeUpdate(
+                    "INSERT INTO " + deleteTable + " VALUES (1, 10), (2, 20), (3, 30)");
+            check(
+                    statement.executeUpdate("DELETE FROM " + deleteTable + " WHERE id = 2") == 1,
+                    "DELETE count");
+        }
+        try (PreparedStatement select =
+                connection.prepareStatement("SELECT id FROM " + deleteTable + " ORDER BY id")) {
+            try (ResultSet result = select.executeQuery()) {
+                check(result.next() && result.getLong(1) == 1, "DELETE surviving row 1");
+                check(result.next() && result.getLong(1) == 3, "DELETE surviving row 3");
+                check(!result.next(), "DELETE left two rows");
+            }
+        }
+        try (PreparedStatement delete =
+                connection.prepareStatement(
+                        "DELETE FROM " + deleteTable + " WHERE id = ? RETURNING id, val")) {
+            delete.setLong(1, 3);
+            try (ResultSet result = delete.executeQuery()) {
+                check(result.next(), "DELETE RETURNING returned a row");
+                check(result.getLong(1) == 3 && result.getLong(2) == 30, "DELETE RETURNING values");
+            }
+        }
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("TRUNCATE TABLE " + deleteTable);
+            try (ResultSet result = statement.executeQuery("SELECT count(*) FROM " + deleteTable)) {
+                check(result.next() && result.getLong(1) == 0, "TRUNCATE count");
+            }
+            statement.executeUpdate("DROP TABLE " + deleteTable);
+        }
+
         try (Statement statement = connection.createStatement()) {
             statement.setFetchSize(2);
             try (ResultSet result =

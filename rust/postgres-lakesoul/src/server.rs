@@ -411,12 +411,20 @@ impl LakeSoulQueryRouter {
             // and stream their rows, as PostgreSQL does before the failure.
             let insert_position = crate::insert::first_insert_in_batch(&statements);
             let update_position = crate::update::first_update_in_batch(&statements);
+            let truncate_position = crate::truncate::first_truncate_in_batch(&statements);
+            let delete_position = crate::delete::first_delete_in_batch(&statements);
             for (index, statement) in statements.into_iter().enumerate() {
                 if insert_position == Some(index) {
                     return Err(crate::insert::refuse_insert_in_batch());
                 }
                 if update_position == Some(index) {
                     return Err(crate::update::refuse_update_in_batch());
+                }
+                if truncate_position == Some(index) {
+                    return Err(crate::truncate::refuse_truncate_in_batch());
+                }
+                if delete_position == Some(index) {
+                    return Err(crate::delete::refuse_delete_in_batch());
                 }
                 if is_empty_query(&statement) {
                     client
@@ -1068,6 +1076,8 @@ pub(crate) fn connection_statement_hooks(
         ));
     }
     hooks.push(Arc::new(crate::update::UpdateStatementHook));
+    hooks.push(Arc::new(crate::truncate::TruncateStatementHook));
+    hooks.push(Arc::new(crate::delete::DeleteStatementHook));
     statement_hooks_with(hooks)
 }
 

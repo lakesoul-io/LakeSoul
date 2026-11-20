@@ -523,6 +523,8 @@ impl ReadOnlyStatementGuard {
             // SQLSTATEs.
             Statement::Insert(_) => true,
             Statement::Update(_) => true,
+            Statement::Delete(_) => true,
+            Statement::Truncate { .. } => true,
             // DDL is claimed by `DdlStatementHook`, which refuses the
             // unsupported clauses itself.
             Statement::CreateTable(_) => true,
@@ -702,11 +704,9 @@ mod tests {
     }
 
     const REJECTED: &[&str] = &[
-        "DELETE FROM t",
         "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = 1",
         "COPY t TO STDOUT",
         "COPY t FROM STDIN",
-        "TRUNCATE t",
         "CREATE VIEW v AS SELECT 1",
         "CREATE SCHEMA s",
         "ALTER TABLE t ADD COLUMN b INT",
@@ -751,9 +751,9 @@ mod tests {
         "CLOSE c",
     ];
 
-    /// `INSERT` and `UPDATE` are answered by their own hooks, which refuse
-    /// the unsupported clauses themselves, so the guard must not claim them;
-    /// DELETE and `EXPLAIN INSERT` stay rejected.
+    /// `INSERT`, `UPDATE`, `DELETE` and `TRUNCATE` are answered by their own
+    /// hooks, which refuse the unsupported clauses themselves, so the guard
+    /// must not claim them; `MERGE` and `EXPLAIN INSERT` stay rejected.
     #[test]
     fn writes_are_left_to_their_hooks() {
         use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
@@ -764,7 +764,8 @@ mod tests {
             ("INSERT INTO t (a) SELECT a FROM s", true),
             ("INSERT INTO t VALUES (1) ON CONFLICT (id) DO NOTHING", true),
             ("UPDATE t SET a = 1", true),
-            ("DELETE FROM t", false),
+            ("DELETE FROM t", true),
+            ("TRUNCATE t", true),
             ("EXPLAIN INSERT INTO t VALUES (1)", false),
         ] {
             let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
@@ -830,7 +831,10 @@ mod tests {
         let mut client = MockClient::new();
         // The trailing statement of a batch is rejected as well, so no
         // statement after the first rejected one can ever execute.
-        for sql in ["ALTER TABLE t ADD COLUMN b INT", "SELECT 1; DELETE FROM t"] {
+        for sql in [
+            "ALTER TABLE t ADD COLUMN b INT",
+            "SELECT 1; MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE",
+        ] {
             let error = <DfSessionService as SimpleQueryHandler>::do_query(
                 &service,
                 &mut client,
@@ -944,7 +948,7 @@ mod tests {
         // Second line of defense behind the parse hook: feed a write
         // statement straight into the execute-phase hook.
         let statements = PostgresCompatibilityParser::new()
-            .parse("DELETE FROM t")
+            .parse("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE")
             .expect("parse");
         let statement = statements.first().expect("statement");
         let mut client = MockClient::new();

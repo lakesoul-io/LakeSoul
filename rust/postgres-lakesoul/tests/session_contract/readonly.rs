@@ -4,11 +4,12 @@
 
 //! Read-only policy refusals and parameter-error boundaries.
 //!
-//! `UPDATE` is no longer part of the blanket refusal list: the server executes
-//! it for primary-key LakeSoul tables. The refusal matrix keeps the
-//! `UPDATE items` case as a *target-shape* refusal (no primary key) and a
-//! separate control proves a supported `UPDATE` reaches execution, so a
-//! regression that refuses every `UPDATE` again is caught from both sides.
+//! `UPDATE`, `DELETE` and `TRUNCATE` are no longer part of the blanket refusal
+//! list: the server executes them for the tables their contracts allow. The
+//! refusal matrix keeps the remaining *target-shape* refusals (no primary key,
+//! `DELETE ... USING`, `MERGE`) and a separate control proves a supported
+//! `DELETE` reaches execution, so a regression that refuses every write again
+//! is caught from both sides.
 
 use anyhow::{Context, Result, bail, ensure};
 use tokio_postgres::types::{ToSql, Type};
@@ -19,6 +20,7 @@ use crate::support::{Harness, compare};
 pub async fn run(h: &Harness) -> Result<()> {
     refused_writes_and_ddl(h).await?;
     supported_update_is_not_a_read_only_refusal(h).await?;
+    supported_delete_is_not_a_read_only_refusal(h).await?;
     supported_copy_out_is_not_a_read_only_refusal(h).await?;
     refused_write_in_simple_batch(h).await?;
     parameter_error_boundaries(h).await?;
@@ -44,8 +46,13 @@ const REFUSALS: &[Refusal] = &[
         sql: "UPDATE items SET val = -1 WHERE id = 1",
     },
     Refusal {
-        id: "delete",
-        sql: "DELETE FROM items WHERE id = 1",
+        id: "delete-using",
+        sql: "DELETE FROM items USING items AS other WHERE items.id = other.id",
+    },
+    Refusal {
+        id: "merge",
+        sql: "MERGE INTO items USING items AS source ON items.id = source.id \
+             WHEN MATCHED THEN DELETE",
     },
     Refusal {
         id: "create-table-as",
@@ -54,10 +61,6 @@ const REFUSALS: &[Refusal] = &[
     Refusal {
         id: "drop-view",
         sql: "DROP VIEW items",
-    },
-    Refusal {
-        id: "truncate",
-        sql: "TRUNCATE items",
     },
 ];
 
@@ -226,6 +229,37 @@ async fn supported_update_is_not_a_read_only_refusal(h: &Harness) -> Result<()> 
 
 /// `COPY ... TO STDOUT` exports rows: it is a read and must reach the copy
 /// hook, not be caught by the read-only policy's refusal list.
+/// A `DELETE` that matches nothing must reach execution (`DELETE 0`) and
+/// publish nothing, proving the read-only guard no longer refuses it.
+async fn supported_delete_is_not_a_read_only_refusal(h: &Harness) -> Result<()> {
+    let before =
+        common::snapshot(h, "case=read-only-delete-control phase=before").await?;
+    let tag = h
+        .lake
+        .execute("DELETE FROM items WHERE id = -999999", &[])
+        .await
+        .context(
+            "case=read-only-delete-control SQL=DELETE FROM items WHERE id = -999999",
+        )?;
+    ensure!(
+        tag == 0,
+        "case=read-only-delete-control expected DELETE 0, actual {tag}"
+    );
+    common::assert_items_intact(
+        &h.lake,
+        "case=read-only-delete-control phase=after first query",
+    )
+    .await?;
+    let after = common::snapshot(h, "case=read-only-delete-control phase=after").await?;
+    common::ensure_snapshot_unchanged(
+        &before,
+        &after,
+        "case=read-only-delete-control SQL=DELETE FROM items WHERE id = -999999",
+    )?;
+    eprintln!("PASS case=read-only-delete-control DELETE=0 no-side-effect");
+    Ok(())
+}
+
 async fn supported_copy_out_is_not_a_read_only_refusal(h: &Harness) -> Result<()> {
     const SQL: &str = "COPY items TO STDOUT";
     let context = format!("case=read-only-copy-out-supported SQL={SQL}");

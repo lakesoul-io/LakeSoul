@@ -28,7 +28,7 @@ covered today.
 | --- | --- |
 | Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
 | DDL | `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` schema evolution (add/widen columns, `SET`/`RESET` supported options), primary keys, `PARTITIONED BY`, `WITH (...)` |
-| Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
+| Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstone, partition clear or partition rewrite) and `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
 | Catalog | `pg_catalog`, `information_schema`, `psql \d`/`\dt`/`\l`/`\dn`, `pg_cursors`, `pg_settings`, `pg_roles`, `current_database()`, `current_user`/`session_user`, `to_regtype`, `current_setting`/`set_config`, SQLAlchemy reflection through the `psycopg2` dialect |
@@ -41,13 +41,15 @@ covered today.
 
 These return SQLSTATE `0A000` rather than being silently ignored:
 
-- `DELETE`, `TRUNCATE`, `CREATE TABLE AS`, `CREATE TEMP TABLE`
+- `CREATE TABLE AS`, `CREATE TEMP TABLE`, `DELETE ... USING`
 - `COPY ... TO` a file or program, `COPY ... FROM` a file or program,
   `FORMAT binary` and the COPY options listed in [COPY](copy.md)
 - Writes and `COPY` inside a multi-statement simple-query batch; DDL, IVM
-  maintenance, subscriptions and savepoints inside an explicit transaction block
+  maintenance, subscriptions, savepoints, a non-CDC `DELETE` rewrite and
+  `TRUNCATE` inside an explicit transaction block
 - `UPDATE` on CDC tables, tables without a primary key, append-only tables,
-  `UPDATE ... FROM`, and assignments to primary-key or partition columns
+  `UPDATE ... FROM`, and assignments to primary-key or partition columns;
+  `DELETE` on append-only tables and on CDC tables without a primary key
 - `ON CONFLICT` on range-partitioned tables; the general `DO UPDATE` form on CDC
   tables; and changing the conflict key
 - `REPEATABLE READ` and `SERIALIZABLE`
