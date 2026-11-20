@@ -54,7 +54,9 @@ LakeSoul 中 `jsonb` 的相等和排序是规范化文本上的字符串语义�
 
 数组既可以作为列类型，也可以用在表达式和结果里（`ARRAY[...]`、`INTEGER[]`、
 1-based 下标），wire protocol 会编码和解码。受支持的数组列是一维的，元素必须是
-受支持的标量类型。
+受支持的标量类型。`INSERT`、`UPDATE`、`UPSERT` 和 `COPY` 会逐元素处理数组字面量：
+UUID 文本会规范化、接受 `money` 文本、保留 numeric 精度（包括超过 38 位的
+`numeric`），并检查 `varchar(n)[]` 的元素长度。数组不能作为主键或分区列。
 
 ## 查询侧行为
 

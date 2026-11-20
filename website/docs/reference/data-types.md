@@ -64,6 +64,11 @@ operators such as `@>` are not implemented yet.
 Arrays are column types as well as expressions (`ARRAY[...]`, `INTEGER[]`,
 1-based indexing), and the wire protocol encodes and decodes them. A supported
 array column is one-dimensional and uses a supported scalar element type.
+`INSERT`, `UPDATE`, `UPSERT` and `COPY` handle array literals element by
+element, so UUID text is canonicalized, `money` text is accepted, numeric
+precision is preserved (including `numeric` above 38 digits) and
+`varchar(n)[]` element lengths are checked. Array primary keys and partition
+columns are rejected.
 
 ## Query-side behaviour
 
