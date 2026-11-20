@@ -158,7 +158,6 @@ prost-build = "0.14"
 # random
 rand = "0.9"
 rand_distr = "0.5"
-rand_chacha = "0.9"
 # logging
 tracing = { version = "0.1.40", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = [
