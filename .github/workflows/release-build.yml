@@ -580,7 +580,7 @@ jobs:
             pyspark==3.3.1 pyarrow==20.0.0
           curl --fail --location --retry 3 \
             --output /tmp/lakesoul-spark-3.3-3.0.0.jar \
-            https://maven-central.storage.googleapis.com/maven2/com/dmetasoul/lakesoul-spark/3.3-3.0.0/lakesoul-spark-3.3-3.0.0.jar
+            https://maven-central-asia.storage-download.googleapis.com/maven2/com/dmetasoul/lakesoul-spark/3.3-3.0.0/lakesoul-spark-3.3-3.0.0.jar
       - name: Verify legacy formats and consistent pre-upgrade recovery
         env:
           CURRENT_PYTHON: ${{ github.workspace }}/python/.venv/bin/python

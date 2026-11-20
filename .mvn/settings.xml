@@ -14,7 +14,7 @@ SPDX-License-Identifier: Apache-2.0
     <mirror>
       <id>google-maven-central</id>
       <name>Google Maven Central mirror</name>
-      <url>https://maven-central.storage.googleapis.com/maven2/</url>
+      <url>https://maven-central-asia.storage-download.googleapis.com/maven2/</url>
       <mirrorOf>central</mirrorOf>
     </mirror>
   </mirrors>

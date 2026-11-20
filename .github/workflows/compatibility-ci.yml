@@ -142,6 +142,8 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           unset HADOOP_HOME HDFS_LIB_DIR
+          sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
+          export JAVA_HOME=/opt/lakesoul-jdk
           cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
           mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
@@ -293,6 +295,8 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           unset HADOOP_HOME HDFS_LIB_DIR
+          sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
+          export JAVA_HOME=/opt/lakesoul-jdk
           cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
           mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
