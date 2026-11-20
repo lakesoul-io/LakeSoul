@@ -268,6 +268,34 @@ async fn run(h: &Harness) -> Result<()> {
         .expect_err("over-long array element in UPDATE");
     ensure!(sqlstate(&update_long) == Some("22001"), "{update_long}");
 
+    // Extended protocol: an array parameter is described as UUID[] and its
+    // binary array value is decoded into the UTF-8 storage.
+    let inserted = h
+        .lake
+        .execute(
+            "INSERT INTO type_arrays (id, u) VALUES ($1, $2)",
+            &[&3i64, &vec![uuid]],
+        )
+        .await
+        .context("array parameter insert")?;
+    ensure!(inserted == 1, "array parameter row count");
+    let param_types = h
+        .lake
+        .prepare("INSERT INTO type_arrays (id, u) VALUES ($1, $2)")
+        .await?
+        .params()
+        .to_vec();
+    ensure!(
+        param_types == vec![Type::INT8, Type::UUID_ARRAY],
+        "array parameter types: {param_types:?}"
+    );
+    let param_rows = h
+        .lake
+        .query("SELECT u FROM type_arrays WHERE id = 3", &[])
+        .await?;
+    let param_uuids: Vec<Uuid> = param_rows[0].get(0);
+    ensure!(param_uuids == vec![uuid], "array parameter value");
+
     // An explicit cast to text must report text, even though UUID storage is
     // already UTF-8 and the cast is a no-op.
     let text_cast = h

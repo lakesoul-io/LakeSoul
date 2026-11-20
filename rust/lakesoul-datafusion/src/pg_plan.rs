@@ -82,9 +82,11 @@ fn cast_values(values: Values) -> Result<LogicalPlan> {
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            let column = Expr::Column(Column::new_unqualified(
-                physical_schema.field(index).name(),
-            ));
+            let (qualifier, source) = physical_schema.qualified_field(index);
+            let column = Expr::Column(match qualifier {
+                Some(qualifier) => Column::new(Some(qualifier.clone()), source.name()),
+                None => Column::new_unqualified(source.name()),
+            });
             Expr::Cast(Cast::new_from_field(Box::new(column), Arc::clone(field)))
                 .alias(field.name())
         })
@@ -110,11 +112,7 @@ fn has_list_metadata(data_type: &DataType) -> bool {
 
 /// Strip the semantic metadata from list element fields, recursively.
 fn strip_list_metadata(field: &Field) -> Field {
-    Field::new(
-        field.name(),
-        physical_data_type(field.data_type()),
-        field.is_nullable(),
-    )
+    physical_field(field)
 }
 
 fn physical_data_type(data_type: &DataType) -> DataType {
