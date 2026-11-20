@@ -41,6 +41,10 @@ SPDX-License-Identifier: Apache-2.0
 `interval` 和 `inet` 列不支持：Arrow 有 interval 类型但 Parquet/Vortex 无法持久化，
 Arrow 没有 inet 类型；interval 表达式仍然可用。
 
+`INSERT`、`UPDATE`、`UPSERT` 和 `COPY` 写入的 `money` 值接受 PostgreSQL 的
+`$1,234.56` 格式；表达式内部的 cast（例如 `SELECT '$1.50'::money`）只接受
+普通十进制格式，因为该 cast 走 Arrow 的 decimal 解析。
+
 ## JSON 列
 
 `json` 和 `jsonb` 以 UTF-8 文本存储，并带有 Arrow canonical `arrow.json` 扩展；PostgreSQL 前端还会写入 `pg.json` 标记，因此 `SELECT` 和 `pg_attribute` 会分别报告 OID 114（`json`）或 3802（`jsonb`）。

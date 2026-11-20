@@ -29,11 +29,15 @@ decisions after validating DataFusion and the storage writers:
   INSERT/COPY, and report `character varying(n)`/`character(n)`. Exact
   `char(n)` blank-padding semantics are not emulated.
 - One-dimensional arrays use Arrow `List`; array primary keys and partition
-  columns are refused. An INSERT `VALUES` plan is rewritten so the `Values`
-  node runs against physical list types and a projection casts each column
-  back to the declared field: DataFusion's values executor rebuilds lists from
-  `ScalarValue`s and drops element field metadata. Array literals are checked
-  element by element for INSERT, UPDATE, UPSERT and COPY.
+  columns are refused. Array element metadata is written by the PostgreSQL
+  front end and the Rust writers; Spark/Flink do not carry Arrow nested field
+  metadata, so a cross-engine round trip of semantic array columns still needs
+  its own validation before it is relied on. An INSERT `VALUES` plan is
+  rewritten so the `Values` node runs against physical list types and a
+  projection casts each column back to the declared field: DataFusion's values
+  executor rebuilds lists from `ScalarValue`s and drops element field
+  metadata. Array literals are checked element by element for INSERT, UPDATE,
+  UPSERT and COPY.
 - `interval` and `inet` columns are **not** supported: Parquet and Vortex
   cannot persist Arrow intervals, and Arrow has no inet type. Interval
   expressions continue to work. This is narrower than the original plan and

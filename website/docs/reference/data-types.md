@@ -41,6 +41,11 @@ rejected rather than silently truncated. `interval` and `inet` columns are not
 supported: Arrow has an interval type but the Parquet/Vortex writers cannot
 persist it, and Arrow has no inet type. Interval expressions still work.
 
+`money` values written by `INSERT`, `UPDATE`, `UPSERT` and `COPY` accept
+PostgreSQL's `$1,234.56` input syntax. A cast inside a larger expression (for
+example `SELECT '$1.50'::money`) only accepts the plain decimal form, because
+the cast goes through the Arrow decimal parser.
+
 ## JSON columns
 
 `json` and `jsonb` are stored as UTF-8 text with the Arrow canonical
