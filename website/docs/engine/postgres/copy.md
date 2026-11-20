@@ -54,9 +54,10 @@ unquoted empty field is NULL, so `""` is the empty string. With a custom
 
 Column values are converted by the target column's PostgreSQL input rules:
 `boolean`, `smallint`/`integer`/`bigint`, `real`/`double precision`,
-`numeric(p,s)` (rounded to the column scale), `text`, `bytea` (hex `\x...` or
-the legacy escape form), `date`, `timestamp`, `timestamptz`, plus the other
-types `CREATE TABLE` accepts. An unparsable value reports `22P02` (`22007` for
+`numeric(p,s)` (rounded to the column scale), `text`, `varchar(n)`, `char(n)`,
+`uuid`, `money`, arrays, `bytea` (hex `\x...` or the legacy escape form),
+`date`, `time(p)`, `timestamp(p)`, `timestamptz(p)`, plus the other types
+`CREATE TABLE` accepts. An unparsable value reports `22P02` (`22007` for
 date/time) instead of writing a different value.
 
 ## Semantics

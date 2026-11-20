@@ -62,18 +62,24 @@ An unknown option is rejected with `0A000` rather than ignored.
 | `real`, `float4` | `Float32` |
 | `double precision`, `float8` | `Float64` |
 | `boolean` | `Boolean` |
-| `text`, `varchar`, `char` | `Utf8` |
+| `text`, `varchar`, `char` | `Utf8`; `varchar(n)`/`char(n)` keep their length in `pg.typmod` |
+| `uuid` | `Utf8` with a `pg.type=uuid` marker |
+| `INT[]`, `TEXT[]`, ... | `List<element>`; one-dimensional arrays of supported scalar types |
 | `json` | `Utf8` with the `arrow.json` extension |
 | `jsonb` | `Utf8` with `arrow.json` and `pg.json` markers |
 | `date` | `Date32` |
-| `timestamp` | Microsecond timestamp without time zone |
-| `timestamptz` | Microsecond timestamp in UTC |
+| `time(p)` | `Time32` for `p=0/3`, `Time64` for `p=6` |
+| `timestamp(p)` | `Timestamp` for `p=0/3/6`; default `6` |
+| `timestamptz(p)` | UTC `Timestamp` for `p=0/3/6` |
 | `bytea` | Binary |
-| `numeric(p, s)`, `decimal(p, s)` | `Decimal128(p, s)`, `p <= 38` |
+| `numeric(p, s)`, `decimal(p, s)` | `Decimal128` for `p <= 38`, `Decimal256` for `p <= 76` |
+| `money` | `Decimal128(19,2)` with a `pg.type=money` marker |
 
 `numeric` and `decimal` require an explicit precision and scale; bare `numeric`
-is rejected. `timestamp(p)` accepts only the default precision `6`. Types outside
-this table are rejected with `0A000`.
+is rejected, as is precision above 76. `time(p)`/`timestamp(p)` accept only
+`p = 0, 3, 6`; other precisions are rejected. `interval` and `inet` columns are
+rejected (interval expressions still work). Types outside this table are
+rejected with `0A000`.
 
 See [Data types](../../reference/data-types.md) for the full mapping and the
 query-side type behaviour.

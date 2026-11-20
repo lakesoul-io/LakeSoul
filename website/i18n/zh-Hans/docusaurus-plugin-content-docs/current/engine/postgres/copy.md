@@ -50,8 +50,9 @@ CSV 字段可以加引号；引号字段内可以包含分隔符、换行和成�
 
 列值按目标列的 PostgreSQL 输入规则转换：`boolean`、`smallint`/`integer`/
 `bigint`、`real`/`double precision`、`numeric(p,s)`（按列 scale 四舍五入）、
-`text`、`bytea`（十六进制 `\x...` 或传统转义格式）、`date`、`timestamp`、
-`timestamptz`，以及 `CREATE TABLE` 接受的其他类型。无法解析的值返回 `22P02`
+`text`、`varchar(n)`、`char(n)`、`uuid`、`money`、数组、`bytea`（十六进制
+`\x...` 或传统转义格式）、`date`、`time(p)`、`timestamp(p)`、`timestamptz(p)`，
+以及 `CREATE TABLE` 接受的其他类型。无法解析的值返回 `22P02`
 （日期时间返回 `22007`），而不是写入一个不同的值。
 
 ## 语义

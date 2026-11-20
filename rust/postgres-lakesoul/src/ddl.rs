@@ -761,11 +761,20 @@ fn partition_columns(
             ));
         }
         let name = normalize_column_ident(&column.name)?;
-        if schema.index_of(&name).is_err() {
-            return Err(user_error(
+        let index = schema.index_of(&name).map_err(|_| {
+            user_error(
                 UNDEFINED_COLUMN,
                 format!("column \"{name}\" named in PARTITIONED BY does not exist"),
-            ));
+            )
+        })?;
+        if matches!(
+            schema.field(index).data_type(),
+            DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _)
+        ) {
+            return Err(feature_not_supported(format!(
+                "column \"{name}\" cannot be a partition column: array columns are \
+                 not supported as LakeSoul partitions"
+            )));
         }
         if names.contains(&name) {
             return Err(user_error(
@@ -817,7 +826,6 @@ pub(crate) fn build_schema(
                 },
             ));
         }
-        let data_type = arrow_type(&column.data_type)?;
         let mut not_null: Option<bool> = None;
         for option in &column.options {
             match &option.option {
@@ -861,10 +869,7 @@ pub(crate) fn build_schema(
         }
         names.push(name.clone());
         declared_not_null.push(not_null);
-        let mut field = Field::new(name, data_type, true);
-        if let Some(kind) = pg_json_kind(&column.data_type) {
-            field = with_json_metadata(field, kind);
-        }
+        let field = crate::pg_types::field_for_sql_type(&name, &column.data_type, true)?;
         fields.push(field);
     }
 
@@ -914,6 +919,18 @@ pub(crate) fn build_schema(
         for index in indices {
             if declared_not_null[*index] == Some(false) {
                 return Err(conflicting_null_declaration(&names[*index]));
+            }
+            if matches!(
+                fields[*index].data_type(),
+                DataType::List(_)
+                    | DataType::LargeList(_)
+                    | DataType::FixedSizeList(_, _)
+            ) {
+                return Err(feature_not_supported(format!(
+                    "column \"{}\" cannot be a primary key: array columns are \
+                     not supported as LakeSoul keys",
+                    names[*index]
+                )));
             }
             let field = &fields[*index];
             fields[*index] = field.as_ref().clone().with_nullable(false);
@@ -1043,7 +1060,7 @@ pub(crate) fn field_json_kind(field: &Field) -> Option<&'static str> {
 /// PG column type → Arrow type. The mapping is deliberately small: an
 /// unsupported type is refused with `0A000` instead of being coerced into a
 /// different storage type.
-pub(crate) fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
+pub(crate) fn arrow_type_legacy(data_type: &SqlDataType) -> PgWireResult<DataType> {
     if pg_json_kind(data_type).is_some() {
         return Ok(DataType::Utf8);
     }
@@ -1141,7 +1158,11 @@ pub(crate) fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
     Ok(ty)
 }
 
-fn invalid_type(data_type: &SqlDataType, detail: &str) -> PgWireError {
+pub(crate) fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
+    crate::pg_types::arrow_type(data_type)
+}
+
+pub(crate) fn invalid_type(data_type: &SqlDataType, detail: &str) -> PgWireError {
     feature_not_supported(format!(
         "column type {data_type} is not supported: {detail}"
     ))

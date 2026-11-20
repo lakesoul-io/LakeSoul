@@ -35,7 +35,7 @@ mysql_common = { version = "0.37", default-features = false, features = [
 ] }
 encoding_rs = "0.8"
 url.workspace = true
-datafusion-postgres = { git = "https://github.com/meta-soul/datafusion-postgres.git", rev = "18991e58f276c7701d7dec6c386b03b44280bbb2", features = [
+datafusion-postgres = { git = "https://github.com/meta-soul/datafusion-postgres.git", rev = "677e709dc494cc968cd602de28636d673df7cee6", features = [
   "pgvector",
 ] }
 datafusion.workspace = true

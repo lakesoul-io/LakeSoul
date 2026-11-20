@@ -1,11 +1,47 @@
 # PostgreSQL Wire Type Coverage Plan
 
-- Status: proposed
+- Status: implemented (2026-11-20)
 - Branch: `feature/pg-wire-type-support`
 - Base: `upstream/main` @ `aebeaba24` (PostgreSQL wire front end)
 - Scope: DDL, storage schema, INSERT/UPDATE/UPSERT, COPY, wire results and
   parameters, `pg_catalog` introspection, and the metadata used by the
   PostgreSQL subscriber.
+
+## Implementation status (2026-11-20)
+
+The first implementation follows the Arrow-first scope, with these concrete
+decisions after validating DataFusion and the storage writers:
+
+- `uuid` is stored as canonical UTF-8 with `pg.type=uuid`. DataFusion can
+  plan string literals/parameters for it, while Arrow's canonical
+  `FixedSizeBinary(16)` path cannot be produced without a custom cast. The
+  wire layer still reports the UUID OID and converts to/from 16 raw bytes for
+  binary clients.
+- `time(p)` and `timestamp(p)`/`timestamptz(p)` support the Arrow units
+  `p = 0/3/6`; other precisions remain `0A000`. Fractions beyond the selected
+  unit are truncated by the current cast path (documented deviation from
+  PostgreSQL's rounding).
+- `numeric(p,s)` up to 38 uses `Decimal128`; 39..76 uses `Decimal256`.
+  Precision above 76 and bare `numeric` remain refused.
+- `money` is stored as `Decimal128(19,2)` with a `pg.type=money` marker and
+  reports the MONEY OID.
+- `varchar(n)`/`char(n)` keep their length in `pg.typmod`, enforce it on
+  INSERT/COPY, and report `character varying(n)`/`character(n)`. Exact
+  `char(n)` blank-padding semantics are not emulated.
+- One-dimensional arrays use Arrow `List`; array primary keys and partition
+  columns are refused.
+- `interval` and `inet` columns are **not** supported: Parquet and Vortex
+  cannot persist Arrow intervals, and Arrow has no inet type. Interval
+  expressions continue to work. This is narrower than the original plan and
+  follows the Arrow/storage-support rule.
+- `pg.type`/`pg.typmod`/`pg.array` are implemented in the
+  `datafusion-postgres` fork (`feature/pg-type-coverage`, PR #1) together with
+  UUID/money/Decimal256 encoders, array OIDs, `pg_attribute` typmod/ndims and
+  parameter descriptions. The LakeSoul dependency is pinned to that branch
+  commit.
+
+Where the original design below disagrees with this status (for example the
+UUID storage type or interval support), the implementation status wins.
 
 ## 1. Goal and non-goals
 

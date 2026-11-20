@@ -29,6 +29,8 @@
 
 use std::sync::Arc;
 
+use chrono::Timelike;
+
 use async_trait::async_trait;
 use datafusion::arrow::array::{ArrayRef, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -114,6 +116,12 @@ struct CopyColumn {
     /// `Some("json")` / `Some("jsonb")` for a JSON column, whose text must be
     /// validated (and, for `jsonb`, normalized) before it is stored.
     json_kind: Option<&'static str>,
+    /// Semantic PostgreSQL type (`uuid`, `money`, `varchar`, `bpchar`, ...).
+    pg_type: Option<String>,
+    /// PostgreSQL `atttypmod` for character length / numeric precision.
+    typmod: Option<i32>,
+    /// Element column for a List array.
+    element: Option<Box<CopyColumn>>,
 }
 
 /// A `COPY ... FROM STDIN` statement, validated down to the target columns.
@@ -408,11 +416,7 @@ fn resolve_columns(
     requested: &[Ident],
     table: &str,
 ) -> PgWireResult<Vec<CopyColumn>> {
-    let field = |index: usize| CopyColumn {
-        name: schema.field(index).name().clone(),
-        data_type: schema.field(index).data_type().clone(),
-        json_kind: crate::ddl::field_json_kind(schema.field(index)),
-    };
+    let field = |index: usize| copy_column(schema.field(index));
     if requested.is_empty() {
         return Ok((0..schema.fields().len()).map(field).collect());
     }
@@ -443,6 +447,25 @@ fn resolve_columns(
         columns.push(field(index));
     }
     Ok(columns)
+}
+
+fn copy_column(field: &Field) -> CopyColumn {
+    let element = match field.data_type() {
+        DataType::List(inner)
+        | DataType::LargeList(inner)
+        | DataType::FixedSizeList(inner, _)
+        | DataType::ListView(inner)
+        | DataType::LargeListView(inner) => Some(Box::new(copy_column(inner))),
+        _ => None,
+    };
+    CopyColumn {
+        name: field.name().clone(),
+        data_type: field.data_type().clone(),
+        json_kind: crate::ddl::field_json_kind(field),
+        pg_type: crate::pg_types::pg_type_name(field).map(str::to_owned),
+        typmod: crate::pg_types::pg_typmod(field),
+        element,
+    }
 }
 
 /// Parses and validates the statement's shape and options.
@@ -1100,6 +1123,48 @@ fn decode_value(column: &CopyColumn, value: Option<&[u8]>) -> PgWireResult<Scala
             ))
         });
     };
+    // Semantic types whose physical Arrow representation is still UTF-8 or a
+    // decimal: validate/normalize the PostgreSQL input before the generic
+    // physical-type decoder runs.
+    if let Some(kind) = column.pg_type.as_deref() {
+        match kind {
+            "uuid" => {
+                let text = parse_utf8(bytes, &column.name)?;
+                let uuid = uuid::Uuid::parse_str(text.trim())
+                    .map_err(|_| invalid_input("uuid", &column.name, bytes))?;
+                return Ok(ScalarValue::Utf8(Some(uuid.hyphenated().to_string())));
+            }
+            "varchar" | "bpchar" => {
+                let text = parse_utf8(bytes, &column.name)?;
+                if let Some(typmod) = column.typmod
+                    && typmod >= 4
+                    && text.chars().count() > (typmod - 4) as usize
+                {
+                    return Err(user_error(
+                        "22001",
+                        format!(
+                            "value too long for type {}({})",
+                            if kind == "bpchar" {
+                                "character"
+                            } else {
+                                "character varying"
+                            },
+                            typmod - 4
+                        ),
+                    ));
+                }
+                return Ok(ScalarValue::Utf8(Some(text.to_string())));
+            }
+            "money" => {
+                let text = parse_utf8(bytes, &column.name)?;
+                let cents = parse_money_cents(&text)
+                    .ok_or_else(|| invalid_input("money", &column.name, bytes))?;
+                return Ok(ScalarValue::Decimal128(Some(cents), 19, 2));
+            }
+            _ => {}
+        }
+    }
+
     let scalar = match &column.data_type {
         DataType::Boolean => {
             let value = parse_bool(bytes)
@@ -1151,6 +1216,80 @@ fn decode_value(column: &CopyColumn, value: Option<&[u8]>) -> PgWireResult<Scala
         }
         DataType::BinaryView => {
             ScalarValue::BinaryView(Some(parse_bytea(bytes, &column.name)?))
+        }
+        DataType::Time32(unit) => {
+            let time = parse_time_of_day(bytes, &column.name)?;
+            let seconds = time.num_seconds_from_midnight() as i64;
+            match unit {
+                TimeUnit::Second => ScalarValue::Time32Second(Some(seconds as i32)),
+                TimeUnit::Millisecond => ScalarValue::Time32Millisecond(Some(
+                    (seconds * 1_000 + i64::from(time.nanosecond()) / 1_000_000) as i32,
+                )),
+                other => {
+                    return Err(feature_not_supported(format!(
+                        "COPY into column \"{}\" of TIME unit {other:?} is not supported",
+                        column.name
+                    )));
+                }
+            }
+        }
+        DataType::Time64(unit) => {
+            let time = parse_time_of_day(bytes, &column.name)?;
+            let micros = time.num_seconds_from_midnight() as i64 * 1_000_000
+                + i64::from(time.nanosecond()) / 1_000;
+            match unit {
+                TimeUnit::Microsecond => ScalarValue::Time64Microsecond(Some(micros)),
+                TimeUnit::Nanosecond => ScalarValue::Time64Nanosecond(Some(
+                    micros.checked_mul(1_000).ok_or_else(|| {
+                        user_error(
+                            NUMERIC_RANGE,
+                            format!(
+                                "time for column \"{}\" is out of range",
+                                column.name
+                            ),
+                        )
+                    })?,
+                )),
+                other => {
+                    return Err(feature_not_supported(format!(
+                        "COPY into column \"{}\" of TIME unit {other:?} is not supported",
+                        column.name
+                    )));
+                }
+            }
+        }
+        DataType::Decimal256(precision, scale) => {
+            let value = parse_decimal_i256(bytes, &column.name, *precision, *scale)?;
+            ScalarValue::Decimal256(Some(value), *precision, *scale)
+        }
+        DataType::List(_) | DataType::LargeList(_) => {
+            let element = column.element.as_deref().ok_or_else(|| {
+                internal(format!(
+                    "COPY column \"{}\" has no list element",
+                    column.name
+                ))
+            })?;
+            let text = parse_utf8(bytes, &column.name)?;
+            let elements = parse_array_text(&text).map_err(|message| {
+                user_error(
+                    BAD_COPY_FORMAT,
+                    format!("column \"{}\": {message}", column.name),
+                )
+            })?;
+            let mut values = Vec::with_capacity(elements.len());
+            for (index, value) in elements.iter().enumerate() {
+                let scalar = match value {
+                    None => ScalarValue::try_from(&element.data_type).map_err(|error| {
+                        feature_not_supported(format!(
+                            "COPY into column \"{}\" element {index} of type {} is not supported: {error}",
+                            column.name, element.data_type
+                        ))
+                    })?,
+                    Some(value) => decode_value(element, Some(value.as_bytes()))?,
+                };
+                values.push(scalar);
+            }
+            ScalarValue::List(ScalarValue::new_list_nullable(&values, &element.data_type))
         }
         DataType::Date32 => ScalarValue::Date32(Some(parse_date(bytes, &column.name)?)),
         DataType::Date64 => {
@@ -1226,6 +1365,183 @@ fn canonicalize_jsonb(value: serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(values.into_iter().map(canonicalize_jsonb).collect())
         }
         other => other,
+    }
+}
+
+fn parse_time_of_day(bytes: &[u8], column: &str) -> PgWireResult<chrono::NaiveTime> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| invalid_input("time", column, bytes))?;
+    for format in ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M"] {
+        if let Ok(time) = chrono::NaiveTime::parse_from_str(text.trim(), format) {
+            return Ok(time);
+        }
+    }
+    Err(invalid_input("time", column, bytes))
+}
+
+fn parse_money_cents(text: &str) -> Option<i128> {
+    let mut value = text.trim().to_string();
+    let negative =
+        value.starts_with('-') || (value.starts_with('(') && value.ends_with(')'));
+    value = value
+        .trim_start_matches(['-', '+'])
+        .trim_matches('(')
+        .trim_matches(')')
+        .trim_start_matches('$')
+        .replace(',', "");
+    let (whole, fraction) = value.split_once('.').unwrap_or((value.as_str(), ""));
+    let whole = if whole.is_empty() { "0" } else { whole };
+    if !whole.chars().all(|c| c.is_ascii_digit())
+        || !fraction.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let whole: i128 = whole.parse().ok()?;
+    let mut fraction = fraction.to_string();
+    if fraction.len() > 2 {
+        let round_up = fraction.as_bytes()[2] >= b'5';
+        fraction.truncate(2);
+        let mut cents = fraction.parse::<i128>().ok()?;
+        if round_up {
+            cents += 1;
+        }
+        let mut cents = whole.checked_mul(100)?.checked_add(cents)?;
+        if negative {
+            cents = -cents;
+        }
+        return Some(cents);
+    }
+    while fraction.len() < 2 {
+        fraction.push('0');
+    }
+    let mut cents = whole
+        .checked_mul(100)?
+        .checked_add(fraction.parse::<i128>().ok()?)?;
+    if negative {
+        cents = -cents;
+    }
+    Some(cents)
+}
+
+fn parse_decimal_i256(
+    bytes: &[u8],
+    column: &str,
+    precision: u8,
+    scale: i8,
+) -> PgWireResult<datafusion::arrow::datatypes::i256> {
+    use datafusion::arrow::datatypes::i256;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| invalid_input("numeric", column, bytes))?
+        .trim();
+    let negative = text.starts_with('-');
+    let unsigned = text.trim_start_matches(['-', '+']);
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let whole = if whole.is_empty() { "0" } else { whole };
+    if !whole.chars().all(|c| c.is_ascii_digit())
+        || !fraction.chars().all(|c| c.is_ascii_digit())
+    {
+        return Err(invalid_input("numeric", column, bytes));
+    }
+    let mut digits = format!("{whole}{fraction}");
+    let current_scale = fraction.len() as i32;
+    let target_scale = i32::from(scale);
+    if current_scale < target_scale {
+        digits.push_str(&"0".repeat((target_scale - current_scale) as usize));
+    } else if current_scale > target_scale {
+        let keep = digits
+            .len()
+            .saturating_sub((current_scale - target_scale) as usize);
+        let round_up = digits
+            .as_bytes()
+            .get(keep)
+            .is_some_and(|digit| *digit >= b'5');
+        digits.truncate(keep);
+        if round_up {
+            let mut digit_bytes = digits.into_bytes();
+            let mut carry = true;
+            for byte in digit_bytes.iter_mut().rev() {
+                if !carry {
+                    break;
+                }
+                if *byte == b'9' {
+                    *byte = b'0';
+                } else {
+                    *byte += 1;
+                    carry = false;
+                }
+            }
+            if carry {
+                digit_bytes.insert(0, b'1');
+            }
+            digits = String::from_utf8(digit_bytes)
+                .map_err(|_| invalid_input("numeric", column, bytes))?;
+        }
+    }
+    let digits = digits.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    let mut value = i256::from_string(digits).ok_or_else(|| {
+        user_error(
+            NUMERIC_RANGE,
+            format!("numeric value for column \"{column}\" is out of range"),
+        )
+    })?;
+    if negative {
+        value = -value;
+    }
+    if value.to_string().trim_start_matches('-').len() > precision as usize {
+        return Err(user_error(
+            NUMERIC_RANGE,
+            format!("numeric field overflow for column \"{column}\""),
+        ));
+    }
+    Ok(value)
+}
+
+/// Parse PostgreSQL's one-dimensional array text form. Quoted elements may
+/// contain commas, braces and backslash escapes; an unquoted `NULL` is a null
+/// element.
+fn parse_array_text(text: &str) -> Result<Vec<Option<String>>, String> {
+    let text = text.trim();
+    if text == "{}" {
+        return Ok(Vec::new());
+    }
+    let inner = text
+        .strip_prefix('{')
+        .and_then(|text| text.strip_suffix('}'))
+        .ok_or_else(|| {
+            "array value must start with \"{\" and end with \"}\"".to_string()
+        })?;
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in inner.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+        } else if character == ',' && !quoted {
+            values.push(finish_array_element(&current));
+            current.clear();
+        } else {
+            current.push(character);
+        }
+    }
+    if quoted {
+        return Err("unterminated quoted array element".to_string());
+    }
+    values.push(finish_array_element(&current));
+    Ok(values)
+}
+
+fn finish_array_element(value: &str) -> Option<String> {
+    if value.trim().eq_ignore_ascii_case("NULL") && value.trim() == value {
+        None
+    } else {
+        Some(value.to_string())
     }
 }
 
@@ -1922,6 +2238,9 @@ mod tests {
             name: "c".to_string(),
             data_type,
             json_kind: None,
+            pg_type: None,
+            typmod: None,
+            element: None,
         };
         assert_eq!(
             decode_value(&column(DataType::Int32), Some(b"42")).unwrap(),
@@ -1947,6 +2266,9 @@ mod tests {
             name: "payload".to_string(),
             data_type: DataType::Utf8,
             json_kind: Some("jsonb"),
+            pg_type: None,
+            typmod: None,
+            element: None,
         };
         assert_eq!(
             decode_value(&jsonb, Some(b"{\"b\": 2, \"a\": 1}")).unwrap(),
@@ -1969,6 +2291,9 @@ mod tests {
             name: "ts".to_string(),
             data_type: DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
             json_kind: None,
+            pg_type: None,
+            typmod: None,
+            element: None,
         };
         let value = decode_value(&column, Some(b"1970-01-01 05:30:00+05:30")).unwrap();
         assert_eq!(
@@ -1983,6 +2308,9 @@ mod tests {
             name: "n".to_string(),
             data_type: DataType::Decimal128(10, 2),
             json_kind: None,
+            pg_type: None,
+            typmod: None,
+            element: None,
         };
         assert_eq!(
             decode_value(&column, Some(b"1.239")).unwrap(),
@@ -2001,11 +2329,17 @@ mod tests {
                 name: "a".to_string(),
                 data_type: DataType::Int32,
                 json_kind: None,
+                pg_type: None,
+                typmod: None,
+                element: None,
             },
             CopyColumn {
                 name: "b".to_string(),
                 data_type: DataType::Int32,
                 json_kind: None,
+                pg_type: None,
+                typmod: None,
+                element: None,
             },
         ];
         let fewer = check_arity(&[None], &columns).unwrap_err();
@@ -2019,5 +2353,27 @@ mod tests {
                 .contains("extra data after last expected column"),
             "{more}"
         );
+    }
+}
+
+#[cfg(test)]
+mod new_type_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_an_int_array_column() {
+        let field = Field::new(
+            "a",
+            DataType::List(std::sync::Arc::new(Field::new(
+                "item",
+                DataType::Int32,
+                true,
+            ))),
+            true,
+        );
+        let column = copy_column(&field);
+        assert!(column.element.is_some(), "element column");
+        let value = decode_value(&column, Some(b"{1,2,3}")).expect("array decodes");
+        assert_eq!(value.data_type(), column.data_type);
     }
 }

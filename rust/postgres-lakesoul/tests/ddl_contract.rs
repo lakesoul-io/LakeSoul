@@ -631,8 +631,16 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "CREATE TABLE ddl_numeric (amount NUMERIC)",
             "0A000",
         ),
-        ("ddl_uuid", "CREATE TABLE ddl_uuid (id UUID)", "0A000"),
-        ("ddl_array", "CREATE TABLE ddl_array (tags INT[])", "0A000"),
+        (
+            "ddl_interval",
+            "CREATE TABLE ddl_interval (v INTERVAL)",
+            "0A000",
+        ),
+        (
+            "ddl_array_pk",
+            "CREATE TABLE ddl_array_pk (id INT[] PRIMARY KEY)",
+            "0A000",
+        ),
         (
             "ddl_default",
             "CREATE TABLE ddl_default (id INT DEFAULT 1)",
@@ -766,8 +774,8 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "0A000",
         ),
         (
-            "ddl_timestamp_zero",
-            "CREATE TABLE ddl_timestamp_zero (at TIMESTAMP(0))",
+            "ddl_timestamp_one",
+            "CREATE TABLE ddl_timestamp_one (at TIMESTAMP(1))",
             "0A000",
         ),
         // The Vortex block options shape vector index columns only, which a
@@ -885,7 +893,7 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
     // The clauses analyzable from the AST are refused at Parse...
     for sql in [
         "CREATE TABLE ddl_ext_ctas AS SELECT id FROM items",
-        "CREATE TABLE ddl_ext_bad (id UUID)",
+        "CREATE TABLE ddl_ext_bad (id INET)",
         "CREATE TABLE ddl_ext_old_bucket_option (id BIGINT PRIMARY KEY) \
          WITH (hashbucketnum = 8)",
         "CREATE TABLE ddl_ext_vortex (id BIGINT PRIMARY KEY) \
@@ -2044,7 +2052,7 @@ async fn alter_refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
             "ALTER TABLE ddl_alter_refuse ADD COLUMN n INT PRIMARY KEY",
             "0A000",
         ),
-        ("ALTER TABLE ddl_alter_refuse ADD COLUMN n UUID", "0A000"),
+        ("ALTER TABLE ddl_alter_refuse ADD COLUMN n INET", "0A000"),
         (
             "ALTER TABLE ddl_alter_refuse ADD COLUMN label TEXT",
             "42701",

@@ -46,7 +46,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::TableProvider;
 use datafusion::common::{DFSchema, ParamValues, ScalarValue};
@@ -62,7 +62,7 @@ use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     ConflictTarget, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Insert,
     ObjectNamePart, OnConflictAction, OnInsert, SelectItem, SetExpr, Statement,
-    TableObject,
+    TableObject, Value,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::arrow_pg::datatypes::arrow_schema_to_pg_fields;
@@ -644,6 +644,179 @@ async fn prepare(
     )))
 }
 
+/// Rewrite literals whose PostgreSQL input syntax differs from the physical
+/// Arrow type before DataFusion plans the statement:
+///
+/// * UUID text is canonicalized (UUID values are stored as UTF-8);
+/// * money text is converted to a decimal literal;
+/// * numeric literals above Decimal128's 38 digits are passed as text so the
+///   target Decimal256 cast keeps every digit instead of going through a
+///   narrower intermediate.
+fn rewrite_target_literals(insert: &mut Insert, schema: &Schema) -> PgWireResult<()> {
+    let Some(source) = insert.source.as_mut() else {
+        return Ok(());
+    };
+    let targets: Vec<usize> = if insert.columns.is_empty() {
+        (0..schema.fields().len()).collect()
+    } else {
+        insert
+            .columns
+            .iter()
+            .map(|column| {
+                let ident = column
+                    .0
+                    .last()
+                    .and_then(|part| part.as_ident())
+                    .ok_or_else(|| {
+                        user_error(
+                            UNDEFINED_COLUMN,
+                            "invalid INSERT column name".to_string(),
+                        )
+                    })?;
+                let name = crate::ddl::normalize_column_ident(ident)?;
+                schema.index_of(&name).map_err(|_| {
+                    user_error(
+                        UNDEFINED_COLUMN,
+                        format!("column \"{name}\" of relation does not exist"),
+                    )
+                })
+            })
+            .collect::<PgWireResult<Vec<_>>>()?
+    };
+    match source.body.as_mut() {
+        SetExpr::Values(values) => {
+            for row in &mut values.rows {
+                for (position, expression) in row.content.iter_mut().enumerate() {
+                    if let Some(&index) = targets.get(position) {
+                        rewrite_literal(expression, schema.field(index));
+                    }
+                }
+            }
+        }
+        SetExpr::Select(select) => {
+            for (position, item) in select.projection.iter_mut().enumerate() {
+                let expression = match item {
+                    SelectItem::UnnamedExpr(expr) => expr,
+                    SelectItem::ExprWithAlias { expr, .. } => expr,
+                    _ => continue,
+                };
+                if let Some(&index) = targets.get(position) {
+                    rewrite_literal(expression, schema.field(index));
+                }
+            }
+        }
+        SetExpr::Query(query) => {
+            rewrite_target_literals_in_body(query.body.as_mut(), &targets, schema);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn rewrite_target_literals_in_body(
+    body: &mut SetExpr,
+    targets: &[usize],
+    schema: &Schema,
+) {
+    match body {
+        SetExpr::Values(values) => {
+            for row in &mut values.rows {
+                for (position, expression) in row.content.iter_mut().enumerate() {
+                    if let Some(&index) = targets.get(position) {
+                        rewrite_literal(expression, schema.field(index));
+                    }
+                }
+            }
+        }
+        SetExpr::Select(select) => {
+            for (position, item) in select.projection.iter_mut().enumerate() {
+                let expression = match item {
+                    SelectItem::UnnamedExpr(expr) => expr,
+                    SelectItem::ExprWithAlias { expr, .. } => expr,
+                    _ => continue,
+                };
+                if let Some(&index) = targets.get(position) {
+                    rewrite_literal(expression, schema.field(index));
+                }
+            }
+        }
+        SetExpr::Query(query) => {
+            rewrite_target_literals_in_body(query.body.as_mut(), targets, schema)
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            rewrite_target_literals_in_body(left, targets, schema);
+            rewrite_target_literals_in_body(right, targets, schema);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_literal(expression: &mut Expr, target: &Field) {
+    if let Expr::Nested(inner) = expression {
+        rewrite_literal(inner, target);
+        return;
+    }
+    let kind = crate::pg_types::pg_type_name(target);
+    match (&mut *expression, kind) {
+        (Expr::Value(value), Some("uuid")) => {
+            if let Value::SingleQuotedString(text) = &value.value
+                && let Ok(uuid) = uuid::Uuid::parse_str(text.trim())
+            {
+                value.value = Value::SingleQuotedString(uuid.hyphenated().to_string());
+            }
+        }
+        (Expr::Value(value), Some("money")) => {
+            if let Value::SingleQuotedString(text) = &value.value
+                && let Some(decimal) = normalize_money_text(text)
+            {
+                value.value = Value::Number(decimal, false);
+            }
+        }
+        (Expr::Value(value), _)
+            if matches!(target.data_type(), DataType::Decimal256(..)) =>
+        {
+            if let Value::Number(text, _) = &value.value
+                && text.trim_start_matches(['-', '+']).replace('.', "").len() > 38
+            {
+                value.value = Value::SingleQuotedString(text.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_money_text(text: &str) -> Option<String> {
+    let mut value = text.trim().to_string();
+    let negative =
+        value.starts_with('-') || (value.starts_with('(') && value.ends_with(')'));
+    value = value
+        .trim_start_matches(['-', '+'])
+        .trim_matches('(')
+        .trim_matches(')')
+        .trim_start_matches('$')
+        .replace(',', "");
+    let (whole, fraction) = value.split_once('.').unwrap_or((value.as_str(), ""));
+    let whole = if whole.is_empty() { "0" } else { whole };
+    if !whole.chars().all(|c| c.is_ascii_digit())
+        || !fraction.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut fraction = fraction.to_string();
+    if fraction.len() > 2 {
+        fraction.truncate(2);
+    }
+    while fraction.len() < 2 {
+        fraction.push('0');
+    }
+    Some(format!(
+        "{}{}.{}",
+        if negative { "-" } else { "" },
+        whole,
+        fraction
+    ))
+}
+
 /// PostgreSQL analyses an `INSERT` before planning it: the source must line
 /// up with the target columns (`42601`), a no-list source shorter than the
 /// table is completed with NULLs for the unlisted columns, and every exported
@@ -659,9 +832,11 @@ async fn checked_statement(
     let mut statement = insert.clone();
     statement.on = None;
     statement.returning = None;
-    let analysis = pg_insert_analysis::analyse(insert, schema.as_ref(), session_context)
-        .await
-        .map_err(insert_analysis_error)?;
+    rewrite_target_literals(&mut statement, schema.as_ref())?;
+    let analysis =
+        pg_insert_analysis::analyse(&statement, schema.as_ref(), session_context)
+            .await
+            .map_err(insert_analysis_error)?;
     pg_insert_analysis::pad_insert_source(&mut statement, &analysis);
     Ok(statement)
 }
