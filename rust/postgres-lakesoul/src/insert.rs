@@ -759,8 +759,26 @@ fn rewrite_target_literals_in_body(
 }
 
 pub(crate) fn rewrite_literal(expression: &mut Expr, target: &Field) {
-    if let Expr::Nested(inner) = expression {
-        rewrite_literal(inner, target);
+    match expression {
+        Expr::Nested(inner) => {
+            rewrite_literal(inner, target);
+            return;
+        }
+        // The literal under an explicit cast still needs the target column's
+        // input syntax: `'$1.50'::money` and `1234...::numeric(40,2)` must not
+        // go through a numeric intermediate.
+        Expr::Cast { expr: inner, .. } => {
+            rewrite_literal(inner, target);
+            return;
+        }
+        _ => {}
+    }
+    if let DataType::List(element) = target.data_type() {
+        if let Expr::Array(array) = expression {
+            for item in &mut array.elem {
+                rewrite_literal(item, element);
+            }
+        }
         return;
     }
     let kind = crate::pg_types::pg_type_name(target);
@@ -776,7 +794,8 @@ pub(crate) fn rewrite_literal(expression: &mut Expr, target: &Field) {
             if let Value::SingleQuotedString(text) = &value.value
                 && let Some(decimal) = normalize_money_text(text)
             {
-                value.value = Value::Number(decimal, false);
+                // A decimal text keeps every cent; a float literal would round.
+                value.value = Value::SingleQuotedString(decimal);
             }
         }
         (Expr::Value(value), _)
@@ -1187,6 +1206,7 @@ async fn plan_target(
             target.statement.clone(),
         ))))
         .await
+        .and_then(lakesoul_datafusion::pg_plan::cast_values_to_declared_types)
         .map_err(|error| PgWireError::ApiError(Box::new(error)))
 }
 

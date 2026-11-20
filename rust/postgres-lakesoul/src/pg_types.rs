@@ -201,7 +201,9 @@ fn numeric_typmod(precision: u8, scale: i8) -> i32 {
     (((precision as i32) << 16) | (scale as u16 as i32)) + 4
 }
 
-fn custom_name(name: &datafusion::sql::sqlparser::ast::ObjectName) -> Option<String> {
+pub(crate) fn custom_name(
+    name: &datafusion::sql::sqlparser::ast::ObjectName,
+) -> Option<String> {
     name.0
         .last()
         .and_then(|part| part.as_ident())

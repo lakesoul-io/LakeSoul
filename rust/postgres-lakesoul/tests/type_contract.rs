@@ -214,6 +214,60 @@ async fn run(h: &Harness) -> Result<()> {
     ensure!(array_catalog[0].get::<_, i32>(1) == 9, "array typmod");
     ensure!(array_catalog[0].get::<_, i32>(2) == 1, "array ndims");
 
+    // Semantic arrays: UUID storage, 40-digit numerics and character length
+    // all survive INSERT, UPSERT and UPDATE through the element field metadata.
+    h.lake
+        .simple_query(
+            "CREATE TABLE type_arrays (id BIGINT PRIMARY KEY, u UUID[], \
+             n NUMERIC(40,2)[], v VARCHAR(5)[])",
+        )
+        .await
+        .context("create semantic array table")?;
+    h.lake
+        .simple_query(
+            "INSERT INTO type_arrays VALUES \
+             (1, ARRAY['550E8400-E29B-41D4-A716-446655440000'], \
+              ARRAY[12345678901234567890123456789012345678.90], ARRAY['abc'])",
+        )
+        .await
+        .context("insert semantic arrays")?;
+    h.lake
+        .simple_query(
+            "UPDATE type_arrays SET n = \
+             ARRAY[11111111111111111111111111111111111111.11] WHERE id = 1",
+        )
+        .await
+        .context("update numeric array")?;
+    let arrays = h
+        .lake
+        .query("SELECT u, n[1]::text, v FROM type_arrays WHERE id = 1", &[])
+        .await?;
+    let uuids: Vec<Uuid> = arrays[0].get(0);
+    ensure!(uuids == vec![uuid], "UUID[] element: {uuids:?}");
+    ensure!(
+        arrays[0].get::<_, String>(1) == "11111111111111111111111111111111111111.11",
+        "numeric array text: {}",
+        arrays[0].get::<_, String>(1)
+    );
+    let v: Vec<Option<String>> = arrays[0].get(2);
+    ensure!(v == vec![Some("abc".to_string())], "varchar[] element");
+    let too_long = h
+        .lake
+        .simple_query(
+            "INSERT INTO type_arrays VALUES \
+             (2, ARRAY['550e8400-e29b-41d4-a716-446655440000'], \
+              ARRAY[1.00], ARRAY['abcdef'])",
+        )
+        .await
+        .expect_err("over-long array element");
+    ensure!(sqlstate(&too_long) == Some("22001"), "{too_long}");
+    let update_long = h
+        .lake
+        .simple_query("UPDATE type_arrays SET v = ARRAY['abcdef'] WHERE id = 1")
+        .await
+        .expect_err("over-long array element in UPDATE");
+    ensure!(sqlstate(&update_long) == Some("22001"), "{update_long}");
+
     // An explicit cast to text must report text, even though UUID storage is
     // already UTF-8 and the cast is a no-op.
     let text_cast = h

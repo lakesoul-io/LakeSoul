@@ -358,6 +358,14 @@ fn validate_values_column(
     let mut literals = Vec::with_capacity(column.len());
     let mut typed = Vec::new();
     for expr in column {
+        // An array literal is checked element by element against the array
+        // column: the assignment matrix only sees the list level, while the
+        // element field carries the real input syntax (UUID text, money text,
+        // numeric precision, character length).
+        if let Some(result) = check_array_literal(expr, target) {
+            result.map_err(InsertAnalysisError::from)?;
+            continue;
+        }
         match pg_assignment::literal(expr) {
             Some(value) => literals.push(value),
             None => typed.push(*expr),
@@ -398,6 +406,10 @@ fn validate_unplanned_values_column(
     session: &SessionContext,
 ) -> Result<(), InsertAnalysisError> {
     for expr in typed {
+        if let Some(result) = check_array_literal(expr, target) {
+            result.map_err(InsertAnalysisError::from)?;
+            continue;
+        }
         if let Some(source) = expression_type(expr, session) {
             pg_assignment::ensure_assignment(&source, target)
                 .map_err(InsertAnalysisError::from)?;
@@ -407,6 +419,41 @@ fn validate_unplanned_values_column(
         pg_assignment::check_literal(value, target).map_err(InsertAnalysisError::from)?;
     }
     Ok(())
+}
+
+/// Validate an `ARRAY[...]` of literals against an array column element by
+/// element. Returns `None` when the expression is not an array whose items are
+/// all literals, so the general assignment matrix applies instead.
+pub fn check_array_literal(
+    expr: &Expr,
+    target: &Field,
+) -> Option<Result<(), AssignmentError>> {
+    let DataType::List(element) = target.data_type() else {
+        return None;
+    };
+    match expr {
+        Expr::Nested(inner) => check_array_literal(inner, target),
+        Expr::Array(array) => {
+            for item in &array.elem {
+                match check_array_item(item, element)? {
+                    Ok(()) => {}
+                    Err(error) => return Some(Err(error)),
+                }
+            }
+            Some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
+fn check_array_item(item: &Expr, element: &Field) -> Option<Result<(), AssignmentError>> {
+    match item {
+        Expr::Nested(inner) | Expr::Cast { expr: inner, .. } => {
+            check_array_item(inner, element)
+        }
+        _ => pg_assignment::literal(item)
+            .map(|value| pg_assignment::check_literal(value, element)),
+    }
 }
 
 /// The type an individual `VALUES` expression carries before the target

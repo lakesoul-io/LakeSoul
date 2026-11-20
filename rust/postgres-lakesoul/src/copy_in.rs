@@ -32,7 +32,7 @@ use std::sync::Arc;
 use chrono::Timelike;
 
 use async_trait::async_trait;
-use datafusion::arrow::array::{ArrayRef, RecordBatch};
+use datafusion::arrow::array::{Array, ArrayRef, ListArray, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::common::{DFSchema, ScalarValue};
 use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
@@ -122,6 +122,27 @@ struct CopyColumn {
     typmod: Option<i32>,
     /// Element column for a List array.
     element: Option<Box<CopyColumn>>,
+}
+
+impl CopyColumn {
+    /// Rebuild this column's Arrow field, including the semantic metadata the
+    /// table schema carries. List arrays must be built with the full element
+    /// field: `ScalarValue` only takes a `DataType`, which drops it.
+    fn to_field(&self) -> Field {
+        let mut field = Field::new(&self.name, self.data_type.clone(), true);
+        if let Some(kind) = self.json_kind {
+            field = crate::ddl::with_json_metadata(field, kind);
+        }
+        if let Some(kind) = &self.pg_type {
+            let mut metadata = field.metadata().clone();
+            metadata.insert("pg.type".to_string(), kind.clone());
+            if let Some(typmod) = self.typmod {
+                metadata.insert("pg.typmod".to_string(), typmod.to_string());
+            }
+            field = field.with_metadata(metadata);
+        }
+        field
+    }
 }
 
 /// A `COPY ... FROM STDIN` statement, validated down to the target columns.
@@ -1289,7 +1310,13 @@ fn decode_value(column: &CopyColumn, value: Option<&[u8]>) -> PgWireResult<Scala
                 };
                 values.push(scalar);
             }
-            ScalarValue::List(ScalarValue::new_list_nullable(&values, &element.data_type))
+            let list = ScalarValue::new_list_nullable(&values, &element.data_type);
+            ScalarValue::List(Arc::new(ListArray::new(
+                Arc::new(element.to_field()),
+                list.offsets().clone(),
+                Arc::clone(list.values()),
+                list.nulls().cloned(),
+            )))
         }
         DataType::Date32 => ScalarValue::Date32(Some(parse_date(bytes, &column.name)?)),
         DataType::Date64 => {

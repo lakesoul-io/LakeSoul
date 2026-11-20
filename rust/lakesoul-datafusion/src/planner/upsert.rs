@@ -1810,15 +1810,19 @@ fn check_assignment(
     target: &Field,
     schema: &DFSchema,
 ) -> Result<Expr, UpsertPlanError> {
-    match pg_assignment::literal(sql) {
-        Some(literal) => {
-            pg_assignment::check_literal(literal, target)
-                .map_err(UpsertPlanError::Assignment)?;
-        }
-        None => {
-            let source = expression.get_type(schema)?;
-            pg_assignment::ensure_assignment(&source, target)
-                .map_err(UpsertPlanError::Assignment)?;
+    if let Some(result) = crate::pg_insert_analysis::check_array_literal(sql, target) {
+        result.map_err(UpsertPlanError::Assignment)?;
+    } else {
+        match pg_assignment::literal(sql) {
+            Some(literal) => {
+                pg_assignment::check_literal(literal, target)
+                    .map_err(UpsertPlanError::Assignment)?;
+            }
+            None => {
+                let source = expression.get_type(schema)?;
+                pg_assignment::ensure_assignment(&source, target)
+                    .map_err(UpsertPlanError::Assignment)?;
+            }
         }
     }
     expression
