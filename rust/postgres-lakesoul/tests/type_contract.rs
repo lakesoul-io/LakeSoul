@@ -316,6 +316,17 @@ async fn run(h: &Harness) -> Result<()> {
         upserted_uuids == vec![Uuid::parse_str("22222222-2222-2222-2222-222222222222")?],
         "upserted UUID[] element: {upserted_uuids:?}"
     );
+    // The stored element is canonical text, not just parsed as a UUID on the
+    // wire: read it without the UUID codec.
+    let upserted_text = h
+        .lake
+        .query("SELECT u[1]::text FROM type_arrays WHERE id = 1", &[])
+        .await?;
+    ensure!(
+        upserted_text[0].get::<_, String>(0) == "22222222-2222-2222-2222-222222222222",
+        "upserted UUID[] storage: {}",
+        upserted_text[0].get::<_, String>(0)
+    );
     let upsert_long = h
         .lake
         .simple_query(

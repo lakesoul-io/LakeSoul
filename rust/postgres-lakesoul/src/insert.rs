@@ -60,9 +60,9 @@ use datafusion::logical_expr::{
 use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
-    ConflictTarget, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Insert,
-    ObjectNamePart, OnConflictAction, OnInsert, SelectItem, SetExpr, Statement,
-    TableObject, Value,
+    AssignmentTarget, ConflictTarget, Expr, FunctionArg, FunctionArgExpr,
+    FunctionArguments, Insert, ObjectNamePart, OnConflictAction, OnInsert, SelectItem,
+    SetExpr, Statement, TableObject, Value,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::arrow_pg::datatypes::arrow_schema_to_pg_fields;
@@ -660,6 +660,7 @@ pub(crate) fn rewrite_target_literals(
     insert: &mut Insert,
     schema: &Schema,
 ) -> PgWireResult<()> {
+    rewrite_on_conflict_literals(insert, schema);
     let Some(source) = insert.source.as_mut() else {
         return Ok(());
     };
@@ -718,6 +719,32 @@ pub(crate) fn rewrite_target_literals(
         _ => {}
     }
     Ok(())
+}
+
+/// Normalize the literals of `ON CONFLICT ... DO UPDATE SET` assignments the
+/// same way the inserted source is normalized.
+fn rewrite_on_conflict_literals(insert: &mut Insert, schema: &Schema) {
+    let Some(OnInsert::OnConflict(conflict)) = &mut insert.on else {
+        return;
+    };
+    let OnConflictAction::DoUpdate(update) = &mut conflict.action else {
+        return;
+    };
+    for assignment in &mut update.assignments {
+        let AssignmentTarget::ColumnName(name) = &assignment.target else {
+            continue;
+        };
+        let Some(ident) = name.0.last().and_then(|part| part.as_ident()) else {
+            continue;
+        };
+        let Ok(column) = crate::ddl::normalize_column_ident(ident) else {
+            continue;
+        };
+        let Ok(index) = schema.index_of(&column) else {
+            continue;
+        };
+        rewrite_literal(&mut assignment.value, schema.field(index));
+    }
 }
 
 fn rewrite_target_literals_in_body(
