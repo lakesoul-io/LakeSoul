@@ -11,7 +11,6 @@ use cached::proc_macro::cached;
     time = 5,
     result = true,
     sync_writes = true,
-    time_refresh = true,
     key = "String",
     convert = r##"{ format!("{}/{}@{}.{}:{}", user, group, ns, table, write) }"##
 )]
@@ -73,7 +72,6 @@ pub async fn verify_permission_by_table_name(
     time = 5,
     result = true,
     sync_writes = true,
-    time_refresh = true,
     key = "String",
     convert = r##"{ format!("{}/{}@{}:{}", user, group, path, write) }"##
 )]

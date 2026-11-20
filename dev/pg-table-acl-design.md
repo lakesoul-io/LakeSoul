@@ -193,8 +193,15 @@ owner/admin 分支只在 `table.domain = ANY(p_domains)`（namespace 为
 `namespace.domain = ANY(u.domains)`）时生效。显式 domain overload 的
 `p_domains` 是 session 服务传入的 token group，因此跨域请求不会继承
 owner/admin 身份；直接连接路径的 domain 来自
-`LAKESOUL_CURRENT_DOMAIN` 写入的 `lakesoul.current_domain` GUC，没有设置时
-回退到用户的 domain 角色成员关系。
+`LAKESOUL_CURRENT_DOMAIN` 写入的 `lakesoul.current_domain` GUC。这个 GUC 只是
+**选择器**：只能从用户已有的 domain 角色成员关系中收窄，不能授予新 domain；
+选择不存在的 domain 会得到空集合（fail closed）。没有设置 GUC 时使用全部
+domain 角色成员关系。
+
+表级 privilege 还会被 namespace privilege 取 `min`：同域 namespace `none` 隐藏
+表，namespace `ro` 把表 `rw` 降为只读；跨域表授权仍让 namespace 只读可见。
+session 服务（pg-wire / Flight）在按 id、按路径或按表名解析时都使用这个
+effective privilege。
 
 `lakesoul_can_manage_table()` / `lakesoul_can_manage_namespace()` 也带同样的
 domain gate，否则会出现“读不到但能改 ACL/元数据”的不一致。

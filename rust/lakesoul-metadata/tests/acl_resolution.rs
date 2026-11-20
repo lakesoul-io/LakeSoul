@@ -283,6 +283,194 @@ async fn set_domain_admin(
     }
 }
 
+async fn set_namespace_acl(
+    client: &MetaDataClient,
+    namespace: &str,
+    grantee_domain: &str,
+    grantee: &str,
+    privilege: Privilege,
+) {
+    let pooled = client.pooled_client();
+    let locked = pooled.lock().await;
+    let connection = locked.get(QueryType::RW).await.unwrap();
+    connection
+        .execute(
+            "insert into namespace_acl
+               (namespace, grantee_domain, grantee_kind, grantee, privilege, granted_by)
+             values ($1, $2, 'user', $3, $4, 'alice')
+             on conflict (namespace, grantee_domain, grantee_kind, grantee)
+             do update set privilege = excluded.privilege, updated_at = now()",
+            &[&namespace, &grantee_domain, &grantee, &privilege.as_str()],
+        )
+        .await
+        .unwrap();
+}
+
+async fn clear_namespace_acl(client: &MetaDataClient, namespace: &str) {
+    let pooled = client.pooled_client();
+    let locked = pooled.lock().await;
+    let connection = locked.get(QueryType::RW).await.unwrap();
+    connection
+        .execute(
+            "delete from namespace_acl where namespace = $1",
+            &[&namespace],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn effective_table_privilege_is_capped_by_namespace_acl() {
+    let client = MetaDataClient::from_env().await.unwrap();
+    let namespace = unique("ns_cap");
+    client
+        .create_namespace(Namespace {
+            namespace: namespace.clone(),
+            properties: "{}".to_string(),
+            comment: "acl namespace cap test".to_string(),
+            domain: "team_a".to_string(),
+            creator: "alice".to_string(),
+        })
+        .await
+        .unwrap();
+    let name = unique("ns_cap_table");
+    let table_id = create_table_in(&client, &namespace, &name, "team_a", "alice").await;
+    client
+        .grant_table_privilege(&table_id, "team_a", "bob", Privilege::Write, "alice")
+        .await
+        .unwrap();
+
+    let domains_a = vec!["team_a".to_string()];
+    let bob = || client.load_acl_view("bob", &domains_a);
+    assert_eq!(
+        bob()
+            .await
+            .unwrap()
+            .effective_table_privilege(&namespace, &name),
+        Privilege::Write
+    );
+
+    // A same-domain namespace `none` hides the table even with a table rw grant.
+    set_namespace_acl(&client, &namespace, "team_a", "bob", Privilege::None).await;
+    assert_eq!(
+        bob()
+            .await
+            .unwrap()
+            .effective_table_privilege(&namespace, &name),
+        Privilege::None
+    );
+
+    // A namespace `ro` clamps table rw down to read.
+    set_namespace_acl(&client, &namespace, "team_a", "bob", Privilege::Read).await;
+    assert_eq!(
+        bob()
+            .await
+            .unwrap()
+            .effective_table_privilege(&namespace, &name),
+        Privilege::Read
+    );
+
+    // A cross-domain table grant still makes the namespace visible read-only.
+    client
+        .grant_table_privilege(&table_id, "team_b", "carol", Privilege::Read, "alice")
+        .await
+        .unwrap();
+    let carol = client
+        .load_acl_view("carol", &["team_b".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(
+        carol.effective_table_privilege(&namespace, &name),
+        Privilege::Read
+    );
+    assert_eq!(carol.namespace_privilege(&namespace), Privilege::Read);
+
+    clear_namespace_acl(&client, &namespace).await;
+    client.drop_table(&name, &namespace).await.unwrap();
+    client
+        .delete_namespace_by_namespace(&namespace)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn current_domain_guc_only_narrows_role_memberships() {
+    let client = MetaDataClient::from_env().await.unwrap();
+    let role = format!("acl_guc_{}", uuid::Uuid::new_v4().simple());
+    let pool = client.pooled_client();
+    {
+        let locked = pool.lock().await;
+        let conn = locked.get(QueryType::RW).await.unwrap();
+        let installed: bool = conn
+            .query_one(
+                "select to_regprocedure('lakesoul_current_domains(text)') is not null",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if !installed {
+            // The helper ships with meta_rbac_init.sql; Rust CI's base database
+            // only installs meta_init.sql.
+            return;
+        }
+        conn.execute(&format!("create role \"{role}\""), &[])
+            .await
+            .unwrap();
+        conn.batch_execute(
+            "do $$ begin
+                if not exists (select 1 from pg_roles where rolname = 'team_a') then
+                    create role team_a;
+                end if;
+             end $$;",
+        )
+        .await
+        .unwrap();
+        conn.execute(&format!("grant team_a to \"{role}\""), &[])
+            .await
+            .unwrap();
+
+        conn.execute(
+            "select set_config('lakesoul.current_domain', 'team_a', false)",
+            &[],
+        )
+        .await
+        .unwrap();
+        let domains: Vec<String> = conn
+            .query_one("select lakesoul_current_domains($1)", &[&role])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(domains, vec!["team_a".to_string()]);
+
+        conn.execute(
+            "select set_config('lakesoul.current_domain', 'team_b', false)",
+            &[],
+        )
+        .await
+        .unwrap();
+        let domains: Vec<String> = conn
+            .query_one("select lakesoul_current_domains($1)", &[&role])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            domains.is_empty(),
+            "an unselected domain must fail closed, got {domains:?}"
+        );
+
+        conn.batch_execute("reset lakesoul.current_domain")
+            .await
+            .unwrap();
+        conn.execute(&format!("revoke team_a from \"{role}\""), &[])
+            .await
+            .unwrap();
+        conn.execute(&format!("drop role \"{role}\""), &[])
+            .await
+            .unwrap();
+    }
+}
+
 /// Ownership and space-admin rights are identities in the object's domain.
 /// A token for another domain must not inherit them; an explicit cross-domain
 /// read grant still applies and keeps the namespace read-only.

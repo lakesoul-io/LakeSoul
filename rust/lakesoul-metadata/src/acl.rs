@@ -938,11 +938,16 @@ impl MetaDataClient {
         if let Some(privilege) = function_result {
             return Ok(privilege);
         }
-        Ok(
-            AclView::load_table_by_path(self, user, &[domain.to_string()], path)
-                .await?
-                .map(|access| access.privilege),
-        )
+        let Some(access) =
+            AclView::load_table_by_path(self, user, &[domain.to_string()], path).await?
+        else {
+            return Ok(None);
+        };
+        let view = AclView::load(self, user, &[domain.to_string()]).await?;
+        Ok(Some(view.effective_table_privilege(
+            &access.namespace,
+            &access.table,
+        )))
     }
 
     /// Resolve one table id to its effective privilege for `user` in `domain`.
@@ -962,7 +967,7 @@ impl MetaDataClient {
             let installed: bool = connection
                 .query_one(
                     "select to_regprocedure(
-                        'lakesoul_table_privilege(text,text,text)'
+                        'lakesoul_effective_table_privilege_for_domains(text,text,text[])'
                      ) is not null",
                     &[],
                 )
@@ -971,8 +976,8 @@ impl MetaDataClient {
             if installed {
                 let row = connection
                     .query_opt(
-                        "select lakesoul_table_privilege(
-                            $1::TEXT, $2::TEXT, $3::TEXT
+                        "select lakesoul_effective_table_privilege_for_domains(
+                            $1::TEXT, $2::TEXT, ARRAY[$3::TEXT]
                          )",
                         &[&table_id, &user, &domain],
                     )
@@ -1004,11 +1009,10 @@ impl MetaDataClient {
             };
             (row.get::<_, String>(0), row.get::<_, String>(1))
         };
-        Ok(
-            AclView::load_table(self, user, &[domain.to_string()], &namespace, &table)
-                .await?
-                .map(|access| access.privilege),
-        )
+        // Cap the table privilege at the namespace privilege, matching
+        // `AclView::effective_table_privilege()` and the SQL effective resolver.
+        let view = AclView::load(self, user, &[domain.to_string()]).await?;
+        Ok(Some(view.effective_table_privilege(&namespace, &table)))
     }
 
     /// Apply table ACL mutations atomically.

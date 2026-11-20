@@ -32,24 +32,31 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-    WITH env_domain AS (
+    WITH memberships AS (
+        SELECT coalesce(array_agg(r.rolname::TEXT ORDER BY r.rolname), ARRAY[]::TEXT[])
+               AS domains
+        FROM pg_roles r
+        WHERE CASE
+                  WHEN EXISTS (SELECT 1 FROM pg_roles u WHERE u.rolname = p_user)
+                  THEN pg_has_role(p_user, r.oid, 'member')
+                  ELSE false
+              END
+          AND r.rolname NOT LIKE 'base\_%' ESCAPE '\'
+          AND r.rolname NOT LIKE '%\_admins' ESCAPE '\'
+          AND r.rolname NOT LIKE '%\_users' ESCAPE '\'
+    ), selected AS (
         SELECT nullif(current_setting('lakesoul.current_domain', true), '') AS domain
     )
     SELECT CASE
-        WHEN (SELECT domain FROM env_domain) IS NOT NULL
-        THEN ARRAY[(SELECT domain FROM env_domain)]::TEXT[]
-        ELSE (
-            SELECT coalesce(array_agg(r.rolname ORDER BY r.rolname), ARRAY[]::TEXT[])
-            FROM pg_roles r
-            WHERE CASE
-                      WHEN EXISTS (SELECT 1 FROM pg_roles u WHERE u.rolname = p_user)
-                      THEN pg_has_role(p_user, r.oid, 'member')
-                      ELSE false
-                  END
-              AND r.rolname NOT LIKE 'base\_%' ESCAPE '\'
-              AND r.rolname NOT LIKE '%\_admins' ESCAPE '\'
-              AND r.rolname NOT LIKE '%\_users' ESCAPE '\'
-        )
+        WHEN (SELECT domain FROM selected) IS NULL
+            THEN (SELECT domains FROM memberships)
+        -- The GUC is a workspace selector, not a grant: it may only narrow the
+        -- set the user already belongs to. An unknown domain fails closed.
+        WHEN EXISTS (
+            SELECT 1 FROM unnest((SELECT domains FROM memberships)) AS member(domain)
+            WHERE member.domain = (SELECT domain FROM selected)
+        ) THEN ARRAY[(SELECT domain FROM selected)]::TEXT[]
+        ELSE ARRAY[]::TEXT[]
     END;
 $$;
 
@@ -144,6 +151,7 @@ AS $$
     );
 $$;
 
+
 -- Explicit-domain path (S3 proxy sidecars and the pg-wire application layer).
 CREATE OR REPLACE FUNCTION lakesoul_table_privilege(
     p_table_id TEXT, p_user TEXT, p_domain TEXT
@@ -159,20 +167,6 @@ AS $$
     );
 $$;
 
-CREATE OR REPLACE FUNCTION lakesoul_table_privilege_by_path(
-    p_path TEXT, p_user TEXT, p_domain TEXT
-)
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-    SELECT lakesoul_table_privilege(ti.table_id, p_user, p_domain)
-    FROM table_path_id p
-    JOIN table_info ti ON ti.table_id = p.table_id
-    WHERE p.table_path = p_path;
-$$;
 
 CREATE OR REPLACE FUNCTION lakesoul_table_privilege_by_path(p_path TEXT, p_user TEXT)
 RETURNS TEXT
@@ -189,8 +183,11 @@ AS $$
     WHERE p.table_path = p_path;
 $$;
 
--- Effective namespace privilege. A namespace is an upper bound for its tables.
-CREATE OR REPLACE FUNCTION lakesoul_namespace_privilege(p_namespace TEXT, p_user TEXT)
+-- Effective namespace privilege for an explicit domain set. A namespace is an
+-- upper bound for its tables.
+CREATE OR REPLACE FUNCTION lakesoul_namespace_privilege_for_domains(
+    p_namespace TEXT, p_user TEXT, p_domains TEXT[]
+)
 RETURNS TEXT
 LANGUAGE sql
 STABLE
@@ -199,33 +196,31 @@ SET search_path = pg_catalog, public
 AS $$
     WITH ns AS (
         SELECT domain, creator FROM namespace WHERE namespace = p_namespace
-    ), u AS (
-        SELECT lakesoul_current_domains(p_user) AS domains
     )
     SELECT CASE
         WHEN (SELECT count(*) FROM ns) = 0 THEN NULL
         WHEN (SELECT domain FROM ns) IN ('public', 'lake-public') THEN 'rw'
         -- As with tables, owner/admin rights only apply in a session that
         -- includes the namespace's domain.
-        WHEN (SELECT domain FROM ns) = ANY (u.domains)
+        WHEN (SELECT domain FROM ns) = ANY (p_domains)
              AND lakesoul_is_domain_admin((SELECT domain FROM ns), p_user)
             THEN 'rw'
-        WHEN (SELECT domain FROM ns) = ANY (u.domains)
+        WHEN (SELECT domain FROM ns) = ANY (p_domains)
              AND (SELECT creator FROM ns) = p_user
             THEN 'rw'
-        WHEN (SELECT domain FROM ns) = ANY (u.domains) THEN coalesce(
+        WHEN (SELECT domain FROM ns) = ANY (p_domains) THEN coalesce(
             (
                 SELECT na.privilege
-                FROM namespace_acl na, u
+                FROM namespace_acl na
                 WHERE na.namespace = p_namespace
                   AND (
                       (na.grantee_kind = 'user'
-                       AND na.grantee_domain = ANY (u.domains)
+                       AND na.grantee_domain = ANY (p_domains)
                        AND na.grantee = p_user)
                       OR
                       (na.grantee_kind = 'domain'
                        AND na.grantee_domain = (SELECT domain FROM ns)
-                       AND (SELECT domain FROM ns) = ANY (u.domains))
+                       AND (SELECT domain FROM ns) = ANY (p_domains))
                   )
                 ORDER BY CASE na.grantee_kind WHEN 'user' THEN 0 ELSE 1 END
                 LIMIT 1
@@ -235,11 +230,76 @@ AS $$
         WHEN EXISTS (
             SELECT 1 FROM table_info ti
             WHERE ti.table_namespace = p_namespace
-              AND lakesoul_table_privilege(ti.table_id, p_user) IN ('ro', 'rw')
+              AND lakesoul_table_privilege_for_domains(
+                      ti.table_id, p_user, p_domains
+                  ) IN ('ro', 'rw')
         ) THEN 'ro'
         ELSE 'none'
-    END
-    FROM u;
+    END;
+$$;
+
+CREATE OR REPLACE FUNCTION lakesoul_namespace_privilege(p_namespace TEXT, p_user TEXT)
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT lakesoul_namespace_privilege_for_domains(
+        p_namespace, p_user, lakesoul_current_domains(p_user)
+    );
+$$;
+
+
+-- A table's effective privilege is capped by the namespace privilege, as the
+-- pg-wire AclView does. This is the resolver used for session-scoped lookups
+-- (by id or by path).
+CREATE OR REPLACE FUNCTION lakesoul_effective_table_privilege_for_domains(
+    p_table_id TEXT, p_user TEXT, p_domains TEXT[]
+)
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    WITH resolved AS (
+        SELECT ti.table_namespace,
+               lakesoul_table_privilege_for_domains(
+                   p_table_id, p_user, p_domains
+               ) AS table_priv
+        FROM table_info ti
+        WHERE ti.table_id = p_table_id
+    )
+    SELECT CASE
+        WHEN (SELECT count(*) FROM resolved) = 0 THEN NULL
+        WHEN (SELECT table_priv FROM resolved) = 'none' THEN 'none'
+        WHEN lakesoul_namespace_privilege_for_domains(
+                 (SELECT table_namespace FROM resolved), p_user, p_domains
+             ) = 'none' THEN 'none'
+        WHEN (SELECT table_priv FROM resolved) = 'ro'
+             OR lakesoul_namespace_privilege_for_domains(
+                    (SELECT table_namespace FROM resolved), p_user, p_domains
+                ) = 'ro' THEN 'ro'
+        ELSE 'rw'
+    END;
+$$;
+
+CREATE OR REPLACE FUNCTION lakesoul_table_privilege_by_path(
+    p_path TEXT, p_user TEXT, p_domain TEXT
+)
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT lakesoul_effective_table_privilege_for_domains(
+        ti.table_id, p_user, ARRAY[p_domain]::TEXT[]
+    )
+    FROM table_path_id p
+    JOIN table_info ti ON ti.table_id = p.table_id
+    WHERE p.table_path = p_path;
 $$;
 
 CREATE OR REPLACE FUNCTION lakesoul_can_manage_table(p_table_id TEXT, p_user TEXT)
@@ -584,11 +644,13 @@ GRANT SELECT ON TABLE domain_admin TO base_super_admin_role, base_admin_role, ba
 GRANT EXECUTE ON FUNCTION lakesoul_current_domains(TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_is_domain_admin(TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_table_privilege_for_domains(TEXT, TEXT, TEXT[]) TO base_super_admin_role, base_admin_role, base_user_role;
+GRANT EXECUTE ON FUNCTION lakesoul_effective_table_privilege_for_domains(TEXT, TEXT, TEXT[]) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_table_privilege(TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_table_privilege(TEXT, TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_table_privilege_by_path(TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_table_privilege_by_path(TEXT, TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_namespace_privilege(TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
+GRANT EXECUTE ON FUNCTION lakesoul_namespace_privilege_for_domains(TEXT, TEXT, TEXT[]) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_can_manage_table(TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 GRANT EXECUTE ON FUNCTION lakesoul_can_manage_namespace(TEXT, TEXT) TO base_super_admin_role, base_admin_role, base_user_role;
 

@@ -9,7 +9,7 @@ use arrow_array::record_batch;
 use chrono::Days;
 use datafusion::assert_batches_eq;
 use lakesoul_datafusion::{cli::CoreArgs, create_lakesoul_session_ctx};
-use lakesoul_metadata::{Claims, MetaDataClient};
+use lakesoul_metadata::{Claims, MetaDataClient, QueryType};
 use test_utils::{TestServer, build_client, handle_sql, ingest};
 use tokio::time::sleep;
 use tracing::info;
@@ -427,6 +427,77 @@ async fn test_flight_sql_obj_store() {
     }
 }
 
+async fn test_rbac_cross_domain_execution() {
+    let meta_client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let core_args = CoreArgs::default();
+    let ctx = create_lakesoul_session_ctx(meta_client.clone(), &core_args).unwrap();
+    let name = format!("flight_acl_{}", uuid::Uuid::new_v4().simple());
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE {name} (id BIGINT) STORED AS LAKESOUL \
+         LOCATION 'file:///tmp/{name}'"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+
+    // Move the table into a private domain without changing its data path.
+    {
+        let pooled = meta_client.pooled_client();
+        let locked = pooled.lock().await;
+        let conn = locked.get(QueryType::RW).await.unwrap();
+        for sql in [
+            "update table_info set domain = 'team_a' where table_name = $1",
+            "update table_name_id set domain = 'team_a' where table_name = $1",
+        ] {
+            conn.execute(sql, &[&name]).await.unwrap();
+        }
+    }
+
+    let claims = |group: &str| Claims {
+        sub: "flight-acl-user".to_string(),
+        group: group.to_string(),
+        exp: chrono::Utc::now()
+            .checked_add_days(Days::new(1))
+            .unwrap()
+            .timestamp() as usize,
+    };
+
+    // A token for another domain must be refused at both discovery and the
+    // DoGet/DoPut execution paths.
+    let mut other = build_client(Some(claims("team_b"))).await;
+    let select = format!("SELECT * FROM {name}");
+    assert!(
+        handle_sql(&mut other, &select).await.is_err(),
+        "cross-domain Flight read must be denied"
+    );
+    let batch = record_batch!(("id", Int64, [1_i64, 2_i64])).unwrap();
+    assert!(
+        ingest(&mut other, vec![batch.clone()], &name, None)
+            .await
+            .is_err(),
+        "cross-domain Flight write must be denied"
+    );
+
+    // The same domain remains able to read the (still empty) table.
+    let mut same = build_client(Some(claims("team_a"))).await;
+    let batches = handle_sql(&mut same, &select).await.unwrap();
+    assert!(batches.is_empty(), "same-domain read should see no rows");
+
+    let pooled = meta_client.pooled_client();
+    let locked = pooled.lock().await;
+    let conn = locked.get(QueryType::RW).await.unwrap();
+    for sql in [
+        "delete from table_info where table_name = $1",
+        "delete from table_name_id where table_name = $1",
+    ] {
+        conn.execute(sql, &[&name]).await.unwrap();
+    }
+    conn.execute(
+        "delete from table_path_id where table_path = $1",
+        &[&format!("file:///tmp/{name}")],
+    )
+    .await
+    .unwrap();
+}
+
 #[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn test_flight_sql_server() {
     // FIXME: s3 related args will ignore local file system
@@ -490,6 +561,17 @@ async fn test_flight_sql_server() {
         )
         .unwrap();
         test_rbac().await;
+    }
+
+    // wait server shutdown
+    sleep(Duration::from_secs(1)).await;
+    {
+        let _server = TestServer::new(
+            &[],
+            vec![("JWT_AUTH_ENABLED", "true"), ("RBAC_AUTH_ENABLED", "true")],
+        )
+        .unwrap();
+        test_rbac_cross_domain_execution().await;
     }
 }
 

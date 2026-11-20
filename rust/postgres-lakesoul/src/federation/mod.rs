@@ -226,11 +226,17 @@ impl FederationRuntime {
             .unwrap_or(Privilege::None)
     }
 
+    pub fn server_definition(&self, name: &str) -> Option<ServerDefinition> {
+        self.state.read().data.servers.get(name).cloned()
+    }
+
     pub fn provider(
         &self,
         database: &str,
         user: &str,
         name: &str,
+        user_domain: Option<&str>,
+        acl: Option<&AclView>,
     ) -> Result<Option<Arc<dyn TableProvider>>> {
         let (table, server, mapping, mapping_user) = {
             let state = self.state.read();
@@ -246,6 +252,12 @@ impl FederationRuntime {
                     table.server
                 );
             };
+            // A foreign table never grants access to its backing server: using
+            // the server's stored credentials is a capability of the server's
+            // own domain.
+            if !server_privilege(&server, user, user_domain, acl).can_read() {
+                return Ok(None);
+            }
             let (mapping, mapping_user) =
                 match mapping_for_user(&state.data, &server.name, user) {
                     Some((mapping, key)) => (Some(mapping), key),
