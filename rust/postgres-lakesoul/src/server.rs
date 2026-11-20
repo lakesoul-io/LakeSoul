@@ -1054,11 +1054,16 @@ pub(crate) fn connection_statement_hooks(
     });
     hooks.push(Arc::new(crate::acl::AclRefreshHook));
     if let Some(federation) = factory.federation() {
+        let session_domain = identity
+            .access
+            .as_ref()
+            .map(|access| access.domain().to_string());
         hooks.push(Arc::new(crate::federation::FederationStatementHook::new(
             Arc::clone(federation),
             database.to_string(),
             identity.user.clone(),
             cluster_domain.clone(),
+            session_domain,
         )));
     }
     hooks.push(Arc::new(crate::user::UserStatementHook::new(
@@ -1200,7 +1205,7 @@ impl LakeSoulQueryRouter {
         // another session may have changed this connection's visibility since
         // the portal was planned. Refresh first, then make a changed view
         // invalidate that plan.
-        if state
+        state
             .session
             .refresh_acl_if_stale()
             .await
@@ -1209,7 +1214,12 @@ impl LakeSoulQueryRouter {
                     "XX000",
                     format!("refreshing table ACLs failed: {error}"),
                 )
-            })?
+            })?;
+        // The ACL entry is shared per (user, domains). Another connection may
+        // have consumed the refresh, so the local `changed` result is not
+        // enough: compare the view version recorded at plan time as well.
+        if let Some(acl) = state.session.acl()
+            && state.settings.acl_changed(&statement.id, acl.version())
         {
             state.settings.bump();
         }
@@ -1232,6 +1242,10 @@ impl LakeSoulQueryRouter {
         {
             return Err(undefined_relation(&table));
         }
+        // Capture the version before planning: if a peer publishes a new view
+        // while the replacement plan is being built, recording the post-plan
+        // version would hide that change from the next Execute.
+        let acl_version_before_plan = state.session.acl().map(|acl| acl.version());
         let Some(replanned) = self
             .parser
             .parse_sql(client, sql, &statement.parameter_types)
@@ -1267,6 +1281,9 @@ impl LakeSoulQueryRouter {
             Arc::new(tokio::sync::Mutex::new(PortalExecutionState::Initial));
         client.portal_store().put_portal(Arc::new(replacement));
         state.settings.record(&statement.id);
+        if let Some(version) = acl_version_before_plan {
+            state.settings.record_acl(&statement.id, version);
+        }
         Ok(())
     }
 }
@@ -1509,6 +1526,10 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
             }
             Err(error) => Err(error),
         };
+        // Capture the ACL version before planning; a peer may publish a new
+        // view while `on_parse` runs, and the plan must remember the version it
+        // was actually built against.
+        let acl_version_before_plan = state.session.acl().map(|acl| acl.version());
         let result = match rewrite {
             Ok(()) => {
                 run_under_limit(
@@ -1536,6 +1557,9 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
                 // The plan just made belongs to the current settings; a later
                 // `SET` bumps past it and makes the next `Execute` replan.
                 state.settings.record(&name);
+                if let Some(version) = acl_version_before_plan {
+                    state.settings.record_acl(&name, version);
+                }
                 // Planning is over: its slot returns, and a statement that is
                 // never executed leaves no report behind. The identity stays,
                 // so the `Execute` that follows reports under it.

@@ -135,6 +135,10 @@ const TRACKED_METADATA: &[&str] = &[
 pub(crate) struct SettingsGeneration {
     current: AtomicU64,
     planned_at: Mutex<HashMap<String, u64>>,
+    /// ACL view version each prepared statement was planned against. The view
+    /// is shared by all connections of a user/domain pair, so a peer can
+    /// refresh it without this connection seeing a local `changed` flag.
+    acl_at: Mutex<HashMap<String, u64>>,
 }
 
 impl SettingsGeneration {
@@ -163,9 +167,24 @@ impl SettingsGeneration {
             .is_none_or(|planned_at| *planned_at != self.current())
     }
 
+    /// Remember the shared ACL version `statement` was planned against.
+    pub(crate) fn record_acl(&self, statement: &str, version: u64) {
+        self.acl_at.lock().insert(statement.to_string(), version);
+    }
+
+    /// True when the ACL view changed since `statement` was planned, no matter
+    /// which connection performed the refresh.
+    pub(crate) fn acl_changed(&self, statement: &str, version: u64) -> bool {
+        self.acl_at
+            .lock()
+            .get(statement)
+            .is_some_and(|planned_at| *planned_at != version)
+    }
+
     /// The connection no longer holds `statement`.
     pub(crate) fn forget(&self, statement: &str) {
         self.planned_at.lock().remove(statement);
+        self.acl_at.lock().remove(statement);
     }
 }
 

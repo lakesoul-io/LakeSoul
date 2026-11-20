@@ -216,9 +216,10 @@ impl PgSession {
             return Ok(false);
         };
         let changed = acl.refresh_if_stale().await?;
-        if changed {
-            self.replace_visible_databases(acl.view().visible_namespaces());
-        }
+        // A peer connection may have refreshed the shared entry already. Keep
+        // this connection's catalog snapshot in step with the published view
+        // even when the local `changed` flag is false.
+        self.replace_visible_databases(acl.view().visible_namespaces());
         Ok(changed)
     }
 

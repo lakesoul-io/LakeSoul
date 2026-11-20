@@ -366,6 +366,122 @@ async fn private_namespace_is_visible_after_a_table_grant() -> Result<()> {
     .await
 }
 
+/// Owner and space-admin rights belong to the object's domain. A token for
+/// another domain must not inherit them, even though writes would also be
+/// stopped by the cluster write-domain check; reads and catalog visibility
+/// must be hidden as well. An explicit cross-domain read grant still applies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_domain_owner_and_admin_are_invisible() -> Result<()> {
+    support::run_rbac_suite(|h| {
+        Box::pin(async move {
+            let alice_a_token = h.token("alice", RBAC_TEAM_A)?;
+            let alice_b_token = h.token("alice", RBAC_TEAM_B)?;
+            let admin = unique("cross_admin");
+            let admin_b_token = h.token(&admin, RBAC_TEAM_B)?;
+            let namespace = h.lake_namespace.clone();
+            let table = unique("cross_owned");
+
+            let alice_a =
+                connect_as(h, "cross-owner-a", &namespace, "alice", &alice_a_token)
+                    .await?;
+            alice_a
+                .batch_execute(&format!(
+                    "CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY)"
+                ))
+                .await
+                .context("cross-domain: alice creates a team-A table")?;
+            let info = h
+                .meta()
+                .get_table_info_by_table_name(&table, &namespace)
+                .await?
+                .context("cross-domain: table metadata missing")?;
+            ensure!(
+                info.domain == RBAC_TEAM_A,
+                "table domain is {:?}, expected {RBAC_TEAM_A}",
+                info.domain
+            );
+
+            // The owner, connected with a team-B token, cannot see the table.
+            let alice_b =
+                connect_as(h, "cross-owner-b", &namespace, "alice", &alice_b_token)
+                    .await?;
+            ensure!(
+                !listed_in_catalog(&alice_b, &table).await?,
+                "a cross-domain owner must not list the table"
+            );
+            ensure!(
+                sqlstate(&alice_b, &format!("SELECT * FROM {table}")).await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "a cross-domain owner must see the table as missing"
+            );
+
+            // A team-A space administrator with a team-B token is equally
+            // outside the table's domain.
+            let reference = h.connect_reference().await?;
+            reference
+                .execute(
+                    "INSERT INTO public.domain_admin(domain, user_name)
+                     VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    &[&RBAC_TEAM_A, &admin],
+                )
+                .await
+                .context("cross-domain: make the fixture a team-A admin")?;
+            let admin_b =
+                connect_as(h, "cross-admin-b", &namespace, &admin, &admin_b_token)
+                    .await?;
+            ensure!(
+                !listed_in_catalog(&admin_b, &table).await?,
+                "a cross-domain administrator must not list the table"
+            );
+            ensure!(
+                sqlstate(&admin_b, &format!("SELECT * FROM {table}")).await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "a cross-domain administrator must see the table as missing"
+            );
+
+            // An explicit cross-domain read grant applies, but only as read.
+            for (user, token, label) in [
+                ("alice", &alice_b_token, "cross-owner-granted"),
+                (admin.as_str(), &admin_b_token, "cross-admin-granted"),
+            ] {
+                h.meta()
+                    .grant_table_privilege(
+                        &info.table_id,
+                        RBAC_TEAM_B,
+                        user,
+                        lakesoul_metadata::acl::Privilege::Read,
+                        "alice",
+                    )
+                    .await?;
+                let client = connect_as(h, label, &namespace, user, token).await?;
+                let count: i64 = client
+                    .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+                    .await?
+                    .get(0);
+                ensure!(count == 0, "{user} saw {count} rows, expected 0");
+                ensure!(
+                    sqlstate(&client, &format!("INSERT INTO {table} VALUES (1)")).await?
+                        == SqlState::INSUFFICIENT_PRIVILEGE.code(),
+                    "{user} must keep a cross-domain grant read-only"
+                );
+            }
+
+            reference
+                .execute(
+                    "DELETE FROM public.domain_admin
+                     WHERE domain = $1 AND user_name = $2",
+                    &[&RBAC_TEAM_A, &admin],
+                )
+                .await?;
+            alice_a
+                .batch_execute(&format!("DROP TABLE {table}"))
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
 /// SQL GRANT/REVOKE maps PostgreSQL privileges onto the table ACL model,
 /// including the collapsed REVOKE semantics and the domain.user extension.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -837,6 +953,77 @@ async fn revoked_prepared_statement_replans() -> Result<()> {
     .await
 }
 
+/// The ACL view is shared by every connection of a user/domain pair. A peer
+/// consuming the refresh after a revoke must still invalidate a prepared plan
+/// held by another connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_refresh_invalidates_another_connections_prepared_plan() -> Result<()> {
+    support::run_rbac_suite(|h| {
+        Box::pin(async move {
+            let alice_token = h.token("alice", RBAC_TEAM_A)?;
+            let bob_token = h.token("bob", RBAC_TEAM_A)?;
+            let namespace = h.lake_namespace.clone();
+            let table = unique("revoke_peer");
+
+            let alice =
+                connect_as(h, "revoke-peer-alice", &namespace, "alice", &alice_token)
+                    .await?;
+            alice
+                .batch_execute(&format!(
+                    "CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY)"
+                ))
+                .await?;
+            alice
+                .batch_execute(&format!("INSERT INTO {table} VALUES (1)"))
+                .await?;
+            alice
+                .batch_execute(&format!("GRANT SELECT ON {table} TO bob"))
+                .await?;
+
+            let bob1 =
+                connect_as(h, "revoke-peer-bob-1", &namespace, "bob", &bob_token).await?;
+            let prepared = bob1
+                .prepare(&format!("SELECT count(*) FROM {table}"))
+                .await
+                .context("revoke-peer: prepare as bob")?;
+            let count: i64 = bob1.query_one(&prepared, &[]).await?.get(0);
+            ensure!(count == 1, "bob saw {count} rows, expected 1");
+
+            // Same user/domain: this connection shares the AclEntry with bob1.
+            let bob2 =
+                connect_as(h, "revoke-peer-bob-2", &namespace, "bob", &bob_token).await?;
+            alice
+                .batch_execute(&format!("REVOKE ALL ON {table} FROM bob"))
+                .await
+                .context("revoke-peer: revoke bob")?;
+
+            // Wait past the ACL TTL, then let bob2 consume the refresh. bob1
+            // itself sees no local "changed" flag from this refresh.
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            bob2.batch_execute("SELECT 1").await?;
+
+            match bob1.query_one(&prepared, &[]).await {
+                Ok(_) => bail!(
+                    "a prepared plan on another connection still read the table after revoke"
+                ),
+                Err(error) => {
+                    let db = error.as_db_error().context("expected a server error")?;
+                    ensure!(
+                        db.code() == &SqlState::UNDEFINED_TABLE,
+                        "stale prepared plan gave {} ({}), expected 42P01",
+                        db.code().code(),
+                        db.message()
+                    );
+                }
+            }
+
+            alice.batch_execute(&format!("DROP TABLE {table}")).await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
 /// `CREATE USER` creates a real PG login role, grants the domain RBAC roles,
 /// and records the user in the directory used by token validation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1123,6 +1310,60 @@ async fn federation_acl_contract() -> Result<()> {
                     == SqlState::UNDEFINED_TABLE.code(),
                 "cross-domain foreign table must look missing"
             );
+
+            // The creator and a team-A space administrator are outside their
+            // rights when the connection acts in team B.
+            let alice_b_token = h.token("alice", RBAC_TEAM_B)?;
+            let alice_b =
+                connect_as(h, "federation-alice-b", &namespace, "alice", &alice_b_token)
+                    .await?;
+            ensure!(
+                !listed_in_catalog(&alice_b, &table).await?,
+                "a cross-domain creator must not list the foreign table"
+            );
+            ensure!(
+                sqlstate(&alice_b, &format!("SELECT * FROM {table}")).await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "a cross-domain creator must see the foreign table as missing"
+            );
+
+            let federation_admin = unique("federation_admin");
+            let federation_admin_token =
+                h.token(&federation_admin, RBAC_TEAM_B)?;
+            let reference = h.connect_reference().await?;
+            reference
+                .execute(
+                    "INSERT INTO public.domain_admin(domain, user_name)
+                     VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    &[&RBAC_TEAM_A, &federation_admin],
+                )
+                .await
+                .context("federation: make the fixture a team-A admin")?;
+            let admin_b = connect_as(
+                h,
+                "federation-admin-b",
+                &namespace,
+                &federation_admin,
+                &federation_admin_token,
+            )
+            .await?;
+            ensure!(
+                !listed_in_catalog(&admin_b, &table).await?,
+                "a cross-domain administrator must not list the foreign table"
+            );
+            ensure!(
+                sqlstate(&admin_b, &format!("SELECT * FROM {table}")).await?
+                    == SqlState::UNDEFINED_TABLE.code(),
+                "a cross-domain administrator must see the foreign table as missing"
+            );
+            reference
+                .execute(
+                    "DELETE FROM public.domain_admin
+                     WHERE domain = $1 AND user_name = $2",
+                    &[&RBAC_TEAM_A, &federation_admin],
+                )
+                .await?;
+
             ensure!(
                 sqlstate(&bob, &format!("INSERT INTO {table} VALUES (1, 'x')")).await?
                     == SqlState::INSUFFICIENT_PRIVILEGE.code(),

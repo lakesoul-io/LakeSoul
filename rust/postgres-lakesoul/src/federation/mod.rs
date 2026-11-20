@@ -89,13 +89,27 @@ fn object_privilege(
     let Some(acl) = acl else {
         return Privilege::Write;
     };
+    let is_public = matches!(domain, "public" | "lake-public");
+    if is_public {
+        // Public federation objects are readable by every domain, but only
+        // their creator or a public-domain space administrator may write.
+        return if creator == user || acl.is_domain_admin(domain) {
+            Privilege::Write
+        } else {
+            Privilege::Read
+        };
+    }
+    // A private federation object belongs to one domain. Creator and space
+    // admin are identities in that domain; a session acting in another domain
+    // must not use them.
+    if user_domain != Some(domain) {
+        return Privilege::None;
+    }
     if creator == user || acl.is_domain_admin(domain) {
-        return Privilege::Write;
+        Privilege::Write
+    } else {
+        Privilege::Read
     }
-    if domain == "public" || domain == "lake-public" || user_domain == Some(domain) {
-        return Privilege::Read;
-    }
-    Privilege::None
 }
 
 impl FederationRuntime {
@@ -212,11 +226,17 @@ impl FederationRuntime {
             .unwrap_or(Privilege::None)
     }
 
+    pub fn server_definition(&self, name: &str) -> Option<ServerDefinition> {
+        self.state.read().data.servers.get(name).cloned()
+    }
+
     pub fn provider(
         &self,
         database: &str,
         user: &str,
         name: &str,
+        user_domain: Option<&str>,
+        acl: Option<&AclView>,
     ) -> Result<Option<Arc<dyn TableProvider>>> {
         let (table, server, mapping, mapping_user) = {
             let state = self.state.read();
@@ -232,6 +252,12 @@ impl FederationRuntime {
                     table.server
                 );
             };
+            // A foreign table never grants access to its backing server: using
+            // the server's stored credentials is a capability of the server's
+            // own domain.
+            if !server_privilege(&server, user, user_domain, acl).can_read() {
+                return Ok(None);
+            }
             let (mapping, mapping_user) =
                 match mapping_for_user(&state.data, &server.name, user) {
                     Some((mapping, key)) => (Some(mapping), key),

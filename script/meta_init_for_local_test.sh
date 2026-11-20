@@ -35,6 +35,9 @@ init_database() {
   PGPASSWORD=lakesoul_test python3 "$BASEDIR"/metadata_migrate.py migrate \
     --database-url "postgresql://lakesoul_test@localhost:5432/$1"
   PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f "$BASEDIR"/meta_cleanup.sql $1
+  # Install the ACL/RLS helpers so the metadata resolver tests exercise the
+  # real SQL functions rather than only the Rust fallback.
+  PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f "$BASEDIR"/meta_rbac_init.sql $1
 }
 
 init_database "lakesoul_test"

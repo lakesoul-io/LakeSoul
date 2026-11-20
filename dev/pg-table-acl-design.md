@@ -2,9 +2,10 @@
 
 Status: implemented in PR #1316; table-level SQL `GRANT` / `REVOKE` added in
 PR #1317. The user directory, `CREATE USER`, token validation, federation ACL
-and the read-path audit fixes are in the follow-up change on
-`feature/pg-create-user-federation-acl`. This note records the model and the
-decisions behind it.
+and the read-path audit fixes landed in PR #1319. PR #1329 additionally scopes
+owner/admin rights to the session domain and applies the same model to Flight
+and the SQL management helpers. This note records the model and the decisions
+behind it.
 
 ## 1. 目标
 
@@ -32,8 +33,8 @@ decisions behind it.
 
 | 主体 / 表 | 权限 |
 | --- | --- |
-| owner（`table_info.creator`） | rw + DDL |
-| space admin（该 domain 的 admin） | domain 内所有表 rw + DDL |
+| owner（`table_info.creator`，且对象 domain 在当前会话域内） | rw + DDL |
+| space admin（该 domain 的 admin，且对象 domain 在当前会话域内） | domain 内所有表 rw + DDL |
 | 同 domain 其他用户，无 ACL | **ro** |
 | 同 domain 用户，ACL `rw` | rw |
 | 同 domain 用户，ACL `ro` | ro |
@@ -47,7 +48,7 @@ namespace：
 
 | 主体 | 权限 |
 | --- | --- |
-| owner / space admin | rw + 创建/删除 namespace |
+| owner / space admin（且对象 domain 在当前会话域内） | rw + 创建/删除 namespace |
 | 同 domain 用户，无 ACL | rw：可列目录、可建表 |
 | 同 domain 用户，ACL `ro` | 可列目录、可读表，不可建表 |
 | 同 domain 用户，ACL `none` | 不可见 |
@@ -70,8 +71,8 @@ namespace：
 对表：
 
 1. `table.domain in ('public', 'lake-public')` -> `rw`
-2. `user == table.creator` -> `rw`（owner）
-3. `user` 是 `table.domain` 的 space admin -> `rw`
+2. `user == table.creator` 且 `table.domain` 在当前会话域内 -> `rw`（owner）
+3. `user` 是 `table.domain` 的 space admin 且 `table.domain` 在当前会话域内 -> `rw`
 4. exact user ACL -> 值（跨 domain `rw` 降为 `ro`）
 5. group ACL（后续版本）-> 值
 6. domain grant ACL -> 值
@@ -81,15 +82,36 @@ namespace：
 对 namespace：
 
 1. `namespace.domain in ('public', 'lake-public')` -> `rw`
-2. `user == namespace.creator` -> `rw`
-3. `user` 是 `namespace.domain` 的 space admin -> `rw`
+2. `user == namespace.creator` 且 `namespace.domain` 在当前会话域内 -> `rw`
+3. `user` 是 `namespace.domain` 的 space admin 且 `namespace.domain` 在当前会话域内 -> `rw`
 4. exact user / domain namespace ACL -> 值
 5. 同 domain -> `rw`
 6. 跨 domain 且该 namespace 下至少一张表可见 -> `ro`
 7. 其他 -> `none`
 
+owner / space admin 是对象所在 domain 内的身份，不是跨域通行证。pg-wire 用
+token 的 `group` 作为当前会话域；S3 proxy 用请求携带的 domain。用其他 domain
+的 token 访问时 owner/admin 不生效，只有显式跨域 `ro` 授权可见。
+
 `effective = min(namespace_privilege, table_privilege)`，`rw > ro > none`。
 namespace 的 `ro` 是写的上限：即使表 ACL 为 `rw`，namespace 为 `ro` 时也不能写。
+
+### 2.3 直连用户与 session 用户
+
+权限判定必须区分两种调用方：
+
+- **直连用户**：Spark / Flink / Python job 直接连接 metadata PostgreSQL。连接
+  user 就是实际用户，domain 来自 `LAKESOUL_CURRENT_DOMAIN`（metadata client
+  连接时写成 session GUC `lakesoul.current_domain`）。权限由 RLS + metadata ACL
+  函数按连接 `user/group` 判定，不依赖任何中间服务的账号。
+- **session 用户**：pg-wire / Flight 接受带 token 的连接，使用共享的 privileged
+  metadata client。应用层必须用 token 的 `sub/group` 再走一遍 ACL resolver；
+  不能用 metadata 连接账号的身份代替 session 身份。`CREATE USER` / `GRANT` 的
+  管理权检查也使用 session user/group，而不是 cluster write domain。
+
+`verify_permission_by_table_name()` / `verify_permission_by_table_path()` 是
+session 服务共用的入口，必须按显式 `(user, group)` 解析完整 ACL（含跨域 `ro`
+与 public 规则），不能只判断表是否存在。
 
 ## 3. 元数据模型
 
@@ -166,6 +188,29 @@ create table domain_admin (
 `SECURITY DEFINER` 让函数可以读 `table_info`、`table_acl`、`domain_admin`，
 不受这些表自身 RLS 的递归影响。函数的 owner 是执行 RBAC 初始化脚本的管理员；
 `search_path` 固定为 `pg_catalog, public`，`EXECUTE` 只授予 metadata 角色。
+
+owner/admin 分支只在 `table.domain = ANY(p_domains)`（namespace 为
+`namespace.domain = ANY(u.domains)`）时生效。显式 domain overload 的
+`p_domains` 是 session 服务传入的 token group，因此跨域请求不会继承
+owner/admin 身份；直接连接路径的 domain 来自
+`LAKESOUL_CURRENT_DOMAIN` 写入的 `lakesoul.current_domain` GUC。这个 GUC 只是
+**选择器**：只能从用户已有的 domain 角色成员关系中收窄，不能授予新 domain；
+选择不存在的 domain 会得到空集合（fail closed）。没有设置 GUC 时使用全部
+domain 角色成员关系。
+
+表级 privilege 还会被 namespace privilege 取 `min`：同域 namespace `none` 隐藏
+表，namespace `ro` 把表 `rw` 降为只读；跨域表授权仍让 namespace 只读可见。
+RLS 的 2 参数 `lakesoul_table_privilege()` 和 session 服务（pg-wire / Flight）
+按 id、按路径、按表名解析时都使用这个 effective privilege。
+
+pg-wire 的 ACL entry 按 `(user, domain)` 在多条连接间共享，但 prepared plan 的
+generation 是连接级的。`AclEntry` 因此带有单调递增的 view version，prepared
+statement 在规划前记录它、执行时再比较：即使其它连接消费了 refresh，旧 plan
+也会被判定过期并重新规划。`meta_init_for_local_test.sh` 会安装 RBAC helper，
+所以该语义在本地/CI 测试库中都会被执行到。
+
+`lakesoul_can_manage_table()` / `lakesoul_can_manage_namespace()` 也带同样的
+domain gate，否则会出现“读不到但能改 ACL/元数据”的不一致。
 
 ### 4.2 policy
 

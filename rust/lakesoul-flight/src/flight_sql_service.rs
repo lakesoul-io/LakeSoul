@@ -67,6 +67,42 @@ use crate::{Result, lakesoul_metadata_error_to_status};
 const LOG_INTERVAL: usize = 100; // Log every 100 batches
 const MEGABYTE: f64 = 1_048_576.0;
 
+/// Split a plan reference into the `(namespace, table)` pair the ACL resolver
+/// expects. A bare table name uses the default namespace.
+fn table_reference_parts(reference: &TableReference) -> (String, String) {
+    match reference {
+        TableReference::Bare { table } => ("default".to_string(), table.to_string()),
+        TableReference::Partial { schema, table }
+        | TableReference::Full { schema, table, .. } => {
+            (schema.to_string(), table.to_string())
+        }
+    }
+}
+
+/// Collect the tables a plan reads and writes. The executing request's claims,
+/// not the identity that prepared the plan, authorize each of them.
+fn collect_table_refs(
+    plan: &LogicalPlan,
+    reads: &mut Vec<(String, String)>,
+    writes: &mut Vec<(String, String)>,
+) {
+    match plan {
+        LogicalPlan::TableScan(scan) => {
+            reads.push(table_reference_parts(&scan.table_name));
+        }
+        LogicalPlan::Dml(DmlStatement { table_name, .. }) => {
+            writes.push(table_reference_parts(table_name));
+        }
+        LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) => {
+            writes.push(table_reference_parts(&cmd.name));
+        }
+        _ => {}
+    }
+    for input in plan.inputs() {
+        collect_table_refs(input, reads, writes);
+    }
+}
+
 macro_rules! status {
     ($desc:expr, $err:expr) => {
         Status::internal(format!("{}: {} at {}:{}", $desc, $err, file!(), line!()))
@@ -299,7 +335,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 }
             }
 
-            self.verify_rbac(&claims, &namespace, &table_name)
+            self.verify_rbac(&claims, &namespace, &table_name, false)
                 .await
                 .map_err(|e| status!("Error validating rbac", e))?;
         }
@@ -360,7 +396,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         cmd: CommandPreparedStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        self.verify_token(request.metadata())?;
+        let claims = self.verify_token(request.metadata())?;
         info!(
             "get_flight_info_prepared_statement - handle: {:?}",
             std::str::from_utf8(&cmd.prepared_statement_handle).unwrap_or("invalid utf8")
@@ -370,6 +406,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|e| status!("Unable to parse uuid", e))?;
 
         let plan = self.get_plan(handle)?;
+        self.authorize_plan(&claims, &plan).await?;
 
         let state = self.ctx.state();
         let df = DataFrame::new(state, plan);
@@ -575,7 +612,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: TicketStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        self.verify_token(request.metadata())?;
+        let claims = self.verify_token(request.metadata())?;
         // counter
         {
             let wrapper = TicketWrapper(request.get_ref().ticket.clone());
@@ -607,6 +644,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .sql_with_options(sql, opt)
             .await
             .map_err(|e| status!("Error executing query", e))?;
+        self.authorize_plan(&claims, df.logical_plan()).await?;
         let schema = Arc::new(df.schema().as_arrow().clone());
         let stream = df
             .execute_stream()
@@ -628,7 +666,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandPreparedStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        self.verify_token(request.metadata())?;
+        let claims = self.verify_token(request.metadata())?;
         info!(
             "do_get_prepared_statement - handle: {:?}",
             std::str::from_utf8(&query.prepared_statement_handle)
@@ -638,6 +676,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let handle = std::str::from_utf8(&query.prepared_statement_handle)
             .map_err(|e| status!("Unable to parse uuid", e))?;
         let plan = self.get_plan(handle)?;
+        self.authorize_plan(&claims, &plan).await?;
         let state = self.ctx.state();
         let df = DataFrame::new(state, plan);
         let schema = Arc::new(df.schema().as_arrow().clone());
@@ -779,17 +818,20 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
-        self.verify_token(request.metadata())?;
+        let claims = self.verify_token(request.metadata())?;
         info!("do_put_statement_update - query: {}", query.query);
         let sql = &query.query;
         let sql = normalize_sql(sql)?;
         info!("execute SQL: {}", sql);
 
-        let _ = self
+        let df = self
             .ctx
             .sql(&sql)
             .await
-            .and_then(|df| df.into_optimized_plan())
+            .map_err(|e| status!("Error executing query", e))?;
+        self.authorize_plan(&claims, df.logical_plan()).await?;
+        let _ = df
+            .into_optimized_plan()
             .map_err(|e| status!("Error executing query", e))?;
         Ok(0)
     }
@@ -815,6 +857,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             &claims,
             &schema.clone().unwrap_or("default".to_string()),
             &table,
+            true,
         )
         .await?;
         info!(
@@ -874,7 +917,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         query: CommandPreparedStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
-        self.verify_token(request.metadata())?;
+        let claims = self.verify_token(request.metadata())?;
         info!(
             "do_put_prepared_statement_update - handle: {:?}",
             std::str::from_utf8(&query.prepared_statement_handle)
@@ -885,6 +928,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|e| status!("Unable to parse uuid", e))?;
 
         let plan = self.get_plan(handle)?;
+        self.authorize_plan(&claims, &plan).await?;
         let table = match &plan {
             LogicalPlan::Dml(DmlStatement {
                 op: WriteOp::Insert(_),
@@ -1421,6 +1465,29 @@ impl FlightSqlServiceImpl {
         })
     }
 
+    /// Authorize the actual sources and targets of a plan with the claims of
+    /// the request that is executing it. A prepared plan may be executed by a
+    /// different token than the one that created it.
+    async fn authorize_plan(
+        &self,
+        claims: &Claims,
+        plan: &LogicalPlan,
+    ) -> Result<(), Status> {
+        if !self.rbac_enabled {
+            return Ok(());
+        }
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        collect_table_refs(plan, &mut reads, &mut writes);
+        for (ns, table) in reads {
+            self.verify_rbac(claims, &ns, &table, false).await?;
+        }
+        for (ns, table) in writes {
+            self.verify_rbac(claims, &ns, &table, true).await?;
+        }
+        Ok(())
+    }
+
     /// Verify the rbac authorization.
     #[instrument(skip(self))]
     async fn verify_rbac(
@@ -1428,8 +1495,9 @@ impl FlightSqlServiceImpl {
         claims: &Claims,
         ns: &str,
         table: &str,
+        write: bool,
     ) -> Result<(), Status> {
-        info!("verify_rbac, rabc_enabled:{} ", self.rbac_enabled);
+        info!("verify_rbac, rbac_enabled:{} ", self.rbac_enabled);
         if !self.rbac_enabled {
             return Ok(());
         }
@@ -1438,6 +1506,7 @@ impl FlightSqlServiceImpl {
             &claims.group,
             ns,
             table,
+            write,
             self.client.clone(),
         )
         .await

@@ -116,7 +116,10 @@ pub struct FederationStatementHook {
     runtime: Arc<FederationRuntime>,
     database: String,
     user: String,
-    domain: Option<String>,
+    /// Domain assigned to newly created federation objects (cluster write domain).
+    write_domain: Option<String>,
+    /// Domain this session acts in (token group), used for privilege checks.
+    session_domain: Option<String>,
 }
 
 impl FederationStatementHook {
@@ -124,13 +127,15 @@ impl FederationStatementHook {
         runtime: Arc<FederationRuntime>,
         database: String,
         user: String,
-        domain: Option<String>,
+        write_domain: Option<String>,
+        session_domain: Option<String>,
     ) -> Self {
         Self {
             runtime,
             database,
             user,
-            domain,
+            write_domain,
+            session_domain,
         }
     }
 
@@ -177,7 +182,7 @@ impl FederationStatementHook {
                         &driver,
                         resolved.dialect,
                         &options,
-                        self.domain.as_deref().unwrap_or("public"),
+                        self.write_domain.as_deref().unwrap_or("public"),
                         &self.user,
                         if_not_exists,
                     )
@@ -246,6 +251,22 @@ impl FederationStatementHook {
                     )));
                 }
                 require_server_write(self, session_context, &server)?;
+                // A private server cannot back a table in another domain: the
+                // server's stored credentials stay inside its own boundary.
+                if self.write_domain.is_some()
+                    && let Some(server_def) = self.runtime.server_definition(&server)
+                    && !matches!(server_def.domain.as_str(), "public" | "lake-public")
+                    && Some(server_def.domain.as_str()) != self.write_domain.as_deref()
+                {
+                    return Err(user_error(
+                        "0A000",
+                        format!(
+                            "server {server:?} belongs to domain {:?}, but this \
+                             session writes in {:?}",
+                            server_def.domain, self.write_domain
+                        ),
+                    ));
+                }
                 crate::acl::require_namespace_write(session_context, &self.database)?;
                 if self.runtime.server_backend(&server)
                     == Some(ServerBackend::ExternalFile)
@@ -270,7 +291,10 @@ impl FederationStatementHook {
                     remote_table,
                     schema: Arc::new(schema),
                     options,
-                    domain: self.domain.clone().unwrap_or_else(|| "public".to_string()),
+                    domain: self
+                        .write_domain
+                        .clone()
+                        .unwrap_or_else(|| "public".to_string()),
                     creator: self.user.clone(),
                 };
                 let created = self
@@ -1176,7 +1200,7 @@ fn server_privilege(
     Some(hook.runtime.server_privilege(
         server,
         &hook.user,
-        hook.domain.as_deref(),
+        hook.session_domain.as_deref(),
         Some(&acl),
     ))
 }
@@ -1192,7 +1216,7 @@ fn foreign_table_privilege(
         &hook.database,
         table,
         &hook.user,
-        hook.domain.as_deref(),
+        hook.session_domain.as_deref(),
         Some(&acl),
     ))
 }

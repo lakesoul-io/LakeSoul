@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
 use datafusion_postgres::QueryHook;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_metadata::MetaDataClientRef;
@@ -46,6 +48,10 @@ pub(crate) struct AclEntry {
     /// Fingerprint of [`Self::view`], used to tell the connection whether a
     /// refresh changed visibility and prepared plans must be replanned.
     fingerprint: Mutex<Option<u64>>,
+    /// Monotonic version of the published view. Unlike the local `changed`
+    /// flag of a refresh, this is visible to every connection sharing the
+    /// entry, so a prepared plan can detect a revoke performed by a peer.
+    version: AtomicU64,
     refreshed_at: Mutex<Option<Instant>>,
     refresh_lock: AsyncMutex<()>,
 }
@@ -68,6 +74,7 @@ impl AclEntry {
             interval: ACL_REFRESH_INTERVAL,
             view: RwLock::new(Arc::new(AclView::default())),
             fingerprint: Mutex::new(None),
+            version: AtomicU64::new(0),
             refreshed_at: Mutex::new(None),
             refresh_lock: AsyncMutex::new(()),
         }
@@ -75,6 +82,12 @@ impl AclEntry {
 
     pub(crate) fn view(&self) -> Arc<AclView> {
         Arc::clone(&self.view.read())
+    }
+
+    /// Version of the currently published view. Prepared statements record
+    /// this at plan time and compare it again at execute time.
+    pub(crate) fn version(&self) -> u64 {
+        self.version.load(Ordering::SeqCst)
     }
 
     pub(crate) async fn live_table_access(
@@ -115,6 +128,9 @@ impl AclEntry {
             *stored = Some(fingerprint);
             changed
         };
+        if changed {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
         *self.refreshed_at.lock() = Some(Instant::now());
         Ok(changed)
     }

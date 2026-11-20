@@ -214,8 +214,15 @@ impl SchemaProvider for PgPublicSchema {
             {
                 return Ok(None);
             }
+            let acl_view = self.acl.as_ref().map(|acl| acl.view());
             if let Some(table) = federation
-                .provider(&self.database, &self.user, name)
+                .provider(
+                    &self.database,
+                    &self.user,
+                    name,
+                    self.access.as_ref().map(DomainAccess::domain),
+                    acl_view.as_deref(),
+                )
                 .map_err(|error| DataFusionError::External(error.into()))?
             {
                 return Ok(Some(table));

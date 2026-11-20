@@ -8,12 +8,11 @@ use cached::proc_macro::cached;
 
 #[cached(
     size = 1000,
-    time = 600,
+    time = 5,
     result = true,
     sync_writes = true,
-    time_refresh = true,
     key = "String",
-    convert = r##"{ format!("{}/{}@{}.{}", user, group, ns, table) }"##
+    convert = r##"{ format!("{}/{}@{}.{}:{}", user, group, ns, table, write) }"##
 )]
 #[instrument(skip(meta_data_client))]
 pub async fn verify_permission_by_table_name(
@@ -21,20 +20,44 @@ pub async fn verify_permission_by_table_name(
     group: &str,
     ns: &str,
     table: &str,
+    write: bool,
     meta_data_client: MetaDataClientRef,
 ) -> crate::Result<()> {
-    // jwt token verification has ensured user belongs to the group
-    // we only need to verify this table belongs to the group
+    // The caller supplies the effective identity: the PG connection user and
+    // env domain for a direct job, or the token's sub/group for a session
+    // service. Both paths must resolve the effective ACL, not just existence.
     let table_name_id = meta_data_client
         .as_ref()
         .get_table_name_id_by_table_name(table, ns)
         .await?
-        .ok_or(LakeSoulMetaDataError::NotFound(format!(
-            "Table {}.{} not found, user {}, group {}",
-            table, ns, user, group
-        )))?;
-    debug!("table {}.{} in domain {}", ns, table, table_name_id.domain);
-    Ok(())
+        .ok_or_else(|| {
+            LakeSoulMetaDataError::NotFound(format!(
+                "Table {}.{} not found, user {}, group {}",
+                table, ns, user, group
+            ))
+        })?;
+    let privilege = meta_data_client
+        .as_ref()
+        .table_privilege_by_id(&table_name_id.table_id, user, group)
+        .await?
+        .ok_or_else(|| {
+            LakeSoulMetaDataError::NotFound(format!(
+                "Table {}.{} has no ACL entry, user {}, group {}",
+                table, ns, user, group
+            ))
+        })?;
+    debug!(
+        "table {}.{} in domain {}, privilege {:?}",
+        ns, table, table_name_id.domain, privilege
+    );
+    if (write && privilege.can_write()) || (!write && privilege.can_read()) {
+        Ok(())
+    } else {
+        Err(LakeSoulMetaDataError::PermissionDenied(format!(
+            "user {user} in group {group} may not {} table {ns}.{table}",
+            if write { "write" } else { "read" }
+        )))
+    }
 }
 
 /// Verify that `user`/`group` may read or write the table at `path`.
@@ -49,7 +72,6 @@ pub async fn verify_permission_by_table_name(
     time = 5,
     result = true,
     sync_writes = true,
-    time_refresh = true,
     key = "String",
     convert = r##"{ format!("{}/{}@{}:{}", user, group, path, write) }"##
 )]
@@ -129,56 +151,90 @@ mod tests {
     #[tokio::test]
     async fn test_verify_permission() -> crate::Result<()> {
         let metadata_client = Arc::new(MetaDataClient::from_env().await?);
-        let table_name = "test_rbac_table";
-        let table_path = "file:///tmp/table";
+        let table_name = format!("test_rbac_table_{}", uuid::Uuid::new_v4().simple());
+        let table_path = format!("file:///tmp/{}", table_name);
         let uuid = create_table(
-            table_name,
-            table_path,
+            &table_name,
+            &table_path,
             "lake-public",
             metadata_client.clone(),
         )
         .await?;
-        let r = verify_permission_by_table_name(
-            "lake-iam-001",
-            "lake-czods",
-            "default",
-            table_name,
-            metadata_client.clone(),
-        )
-        .await;
-        assert!(r.is_ok());
-        drop_table(uuid.as_str(), table_path, metadata_client.clone()).await?;
+        // Public tables are open to every domain.
+        assert!(
+            verify_permission_by_table_name(
+                "lake-iam-001",
+                "lake-czods",
+                "default",
+                &table_name,
+                false,
+                metadata_client.clone(),
+            )
+            .await
+            .is_ok()
+        );
+        drop_table(uuid.as_str(), &table_path, metadata_client.clone()).await?;
 
         clear_cache().await;
 
         let uuid = create_table(
-            table_name,
-            table_path,
+            &table_name,
+            &table_path,
             "lake-czads",
             metadata_client.clone(),
         )
         .await?;
-        let r = verify_permission_by_table_name(
-            "lake-iam-001",
-            "lake-czods",
-            "default",
-            table_name,
-            metadata_client.clone(),
-        )
-        .await;
-        assert!(r.is_ok());
+        // A different domain cannot read the private table, even though the
+        // table exists; this used to be a no-op check.
+        assert!(
+            verify_permission_by_table_name(
+                "lake-iam-001",
+                "lake-czods",
+                "default",
+                &table_name,
+                false,
+                metadata_client.clone(),
+            )
+            .await
+            .is_err()
+        );
+        // The owner's own domain still can.
+        assert!(
+            verify_permission_by_table_name(
+                "lake-iam-001",
+                "lake-czads",
+                "default",
+                &table_name,
+                false,
+                metadata_client.clone(),
+            )
+            .await
+            .is_ok()
+        );
+        assert!(
+            verify_permission_by_table_path(
+                "lake-iam-001",
+                "lake-czads",
+                &table_path,
+                false,
+                metadata_client.clone(),
+            )
+            .await
+            .is_ok()
+        );
+        assert!(
+            verify_permission_by_table_path(
+                "lake-iam-001",
+                "lake-czods",
+                &table_path,
+                false,
+                metadata_client.clone(),
+            )
+            .await
+            .is_err()
+        );
 
-        let r = verify_permission_by_table_path(
-            "lake-iam-001",
-            "lake-czads",
-            table_path,
-            false,
-            metadata_client.clone(),
-        )
-        .await;
-        assert!(r.is_ok());
-
-        drop_table(uuid.as_str(), table_path, metadata_client).await?;
+        drop_table(uuid.as_str(), &table_path, metadata_client).await?;
         Ok(())
     }
 }

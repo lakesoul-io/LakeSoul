@@ -160,16 +160,16 @@ impl UserStatementHook {
                 "CREATE USER requires --rbac".to_string(),
             ));
         };
-        let domain = acl
-            .cluster_domain
-            .clone()
-            .or_else(|| {
-                session_context
-                    .state()
-                    .config()
-                    .get_extension::<crate::session::PgIdentityConfig>()
-                    .and_then(|identity| identity.domain.clone())
-            })
+        // The session's domain comes from the token's group, not the cluster's
+        // write domain. A space admin can only create users in the domain the
+        // connection acts in.
+        let domain = session_context
+            .state()
+            .config()
+            .options()
+            .extensions
+            .get::<crate::session::PgIdentityConfig>()
+            .and_then(|identity| identity.domain.clone())
             .ok_or_else(|| {
                 feature_not_supported(
                     "CREATE USER requires a domain on the connection".to_string(),
