@@ -281,7 +281,11 @@ async fn prepare_upsert(
 ) -> PgWireResult<lakesoul_datafusion::planner::upsert::PlannedUpsert> {
     let (table_ref, table_name) = target_reference(&insert.table, database)?;
     crate::acl::require_table_write(session_context, database, &table_name).await?;
-    plan_upsert(session_context, insert, table_ref, mode)
+    let mut rewritten = insert.clone();
+    if let Ok(provider) = session_context.table_provider(table_ref.clone()).await {
+        rewrite_target_literals(&mut rewritten, &provider.schema())?;
+    }
+    plan_upsert(session_context, &rewritten, table_ref, mode)
         .await
         .map_err(upsert_plan_error)
 }
@@ -652,7 +656,10 @@ async fn prepare(
 /// * numeric literals above Decimal128's 38 digits are passed as text so the
 ///   target Decimal256 cast keeps every digit instead of going through a
 ///   narrower intermediate.
-fn rewrite_target_literals(insert: &mut Insert, schema: &Schema) -> PgWireResult<()> {
+pub(crate) fn rewrite_target_literals(
+    insert: &mut Insert,
+    schema: &Schema,
+) -> PgWireResult<()> {
     let Some(source) = insert.source.as_mut() else {
         return Ok(());
     };
@@ -751,7 +758,7 @@ fn rewrite_target_literals_in_body(
     }
 }
 
-fn rewrite_literal(expression: &mut Expr, target: &Field) {
+pub(crate) fn rewrite_literal(expression: &mut Expr, target: &Field) {
     if let Expr::Nested(inner) = expression {
         rewrite_literal(inner, target);
         return;

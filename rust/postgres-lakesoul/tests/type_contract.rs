@@ -69,6 +69,14 @@ async fn run(h: &Harness) -> Result<()> {
         .await
         .context("money/numeric insert")?;
 
+    h.lake
+        .simple_query(
+            "UPDATE type_contract SET money = '$2,000.00', \
+             n = 11111111111111111111111111111111111111.12 WHERE id = 2",
+        )
+        .await
+        .context("money/numeric update")?;
+
     let rows = h
         .lake
         .query(
@@ -116,8 +124,8 @@ async fn run(h: &Harness) -> Result<()> {
             &[],
         )
         .await?;
-    ensure!(values[0].get::<_, String>(0) == "1234.56");
-    ensure!(values[0].get::<_, String>(1) == "12345678901234567890123456789012345678.90");
+    ensure!(values[0].get::<_, String>(0) == "2000.00");
+    ensure!(values[0].get::<_, String>(1) == "11111111111111111111111111111111111111.12");
 
     // ALTER preserves the semantic metadata and only accepts safe widenings.
     h.lake

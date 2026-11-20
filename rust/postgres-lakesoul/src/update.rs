@@ -37,7 +37,7 @@ use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::{LogicalPlan, dml::DmlStatement};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    Statement, TableFactor, TableObject, TableWithJoins, Update,
+    AssignmentTarget, Statement, TableFactor, TableObject, TableWithJoins, Update,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
@@ -175,9 +175,35 @@ async fn prepare_with(
     let (table_ref, table_name) =
         target_reference(&table_object(&update.table)?, database)?;
     crate::acl::require_table_write(session_context, database, &table_name).await?;
-    plan_update(session_context, update, table_ref, mode)
+    let mut rewritten = update.clone();
+    if let Ok(provider) = session_context.table_provider(table_ref.clone()).await {
+        rewrite_update_literals(&mut rewritten, &provider.schema());
+    }
+    plan_update(session_context, &rewritten, table_ref, mode)
         .await
         .map_err(plan_error)
+}
+
+/// Normalize UUID/money/large-numeric literals the same way INSERT does.
+fn rewrite_update_literals(
+    update: &mut Update,
+    schema: &datafusion::arrow::datatypes::Schema,
+) {
+    for assignment in &mut update.assignments {
+        let AssignmentTarget::ColumnName(name) = &assignment.target else {
+            continue;
+        };
+        let Some(ident) = name.0.last().and_then(|part| part.as_ident()) else {
+            continue;
+        };
+        let Ok(column) = crate::ddl::normalize_column_ident(ident) else {
+            continue;
+        };
+        let Ok(index) = schema.index_of(&column) else {
+            continue;
+        };
+        crate::insert::rewrite_literal(&mut assignment.value, schema.field(index));
+    }
 }
 
 async fn execute(
