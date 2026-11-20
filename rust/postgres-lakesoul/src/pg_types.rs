@@ -148,10 +148,8 @@ pub(crate) fn field_for_sql_type(
             };
             field = with_typmod(field, kind, typmod);
         }
-        SqlDataType::Custom(name, _) => {
-            if custom_name(name).as_deref() == Some("money") {
-                field = with_metadata(field, PG_TYPE_KEY, "money");
-            }
+        SqlDataType::Custom(name, _) if custom_name(name).as_deref() == Some("money") => {
+            field = with_metadata(field, PG_TYPE_KEY, "money");
         }
         _ => {}
     }
