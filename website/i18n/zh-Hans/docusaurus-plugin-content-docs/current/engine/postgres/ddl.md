@@ -40,11 +40,11 @@ CREATE TABLE orders (
 | `append_only` | `true`、`false` | Append-only 表，不做主键合并 |
 | `use_cdc` | `true`、`false` | CDC 表，带变更列；删除和增量 SQL 目标需要它 |
 | `lakesoul_cdc_change_column` | 列名 | CDC 变更列；默认 `rowKinds` |
-| `vector_index_columns` | JSON 数组 | 向量索引声明，例如 `'[{"column":"embedding","dim":8}]'` |
-| `text_index_columns` | JSON 数组 | 文本索引声明，例如 `'[{"column":"body"}]'` |
-| `index_maintenance` | `inline`、`deferred` | `deferred` 只提交数据，索引交给后台 runner 构建 |
 
 未知选项会以 `0A000` 拒绝，而不是被忽略。
+
+向量/文本索引声明（`vector_index_columns`、`text_index_columns`、
+`index_maintenance`）统一见[向量与文本索引 DDL](../index-ddl.md)。
 
 `use_cdc = true` 需要一个变更列。声明 `rowKinds`，或用 `lakesoul_cdc_change_column` 指定其他列。没有它，删除无法表示，增量 SQL 目标也无法撤回行。
 
@@ -72,62 +72,21 @@ CREATE TABLE orders (
 | `bytea` | Binary |
 | `numeric(p, s)`、`decimal(p, s)` | `p <= 38` 为 `Decimal128`，`p <= 76` 为 `Decimal256` |
 | `money` | `Decimal128(19,2)`，带 `pg.type=money` 标记 |
-| `vector(n)` | `FixedSizeList(Float32, n)`，带 `pg.vector` 标记 |
-| `vector` | `List(Float32)`，带 `pg.vector` 标记 |
 
 `numeric` 和 `decimal` 必须显式写出精度和小数位；不带参数的 `numeric` 和精度超过 76
 会被拒绝。`time(p)`/`timestamp(p)` 只接受 `p = 0, 3, 6`；其他精度会拒绝。
 `interval` 和 `inet` 列不支持（interval 表达式仍然可用）。表以外的类型会以 `0A000` 拒绝。
 
-向量列的 `INSERT ... VALUES` 接受 pgvector 文本形式：裸写 `'[1,2,3]'` 或
-`'[1,2,3]'::vector(3)` 都可以。
+pgvector 的 `vector(n)` / `vector` 列类型和向量字面量形式见
+[向量与文本索引 DDL](../index-ddl.md)。
 
 完整映射和查询侧类型行为见[数据类型](../../reference/data-types.md)。
 
 ## 向量索引与文本索引
 
-向量索引需要主键，以及 `vector(n)`（或浮点列表）列：
-
-```sql
-CREATE TABLE docs (
-  id        bigint primary key,
-  body      text,
-  embedding vector(8)
-) WITH (vector_index_columns = '[{"column":"embedding","dim":8}]',
-        text_index_columns   = '[{"column":"body"}]');
-```
-
-`CREATE INDEX` 给已有表声明索引。LakeSoul 只有一种向量索引实现，因此
-`USING hnsw` 和 `USING ivfflat` 都会被接受并归一化到它；
-`WITH (lists = ..., m = ..., ef_construction = ...)` 为兼容而接受，但会被忽略。
-文本索引使用 `USING gin`：
-
-```sql
-CREATE INDEX docs_embedding_idx ON docs USING hnsw (embedding)
-  WITH (m = 16, ef_construction = 64);
-CREATE INDEX docs_body_idx ON docs USING gin (body);
-```
-
-每条语句只支持一列，不支持表达式、`INCLUDE` 或部分索引 `WHERE`。索引名只为
-客户端兼容而接受，不会写入元数据：LakeSoul 用 `(table, column)` 标识索引，
-因此不支持 `DROP INDEX name` 和 `REINDEX INDEX name`。
-
-除非表设置了 `index_maintenance = 'deferred'`，`CREATE INDEX` 会同步构建
-已有数据的索引；deferred 表只保存声明，由后台 runner 构建。
-`ALTER TABLE ... SET (...)` 只声明或替换索引属性，构建请执行 `REINDEX TABLE`：
-
-```sql
-ALTER TABLE docs SET (index_maintenance = 'deferred');
-REINDEX TABLE docs;
-SELECT lakesoul_rebuild_index('docs', 'all');  -- all | vector | text
-```
-
-`index_maintenance = 'deferred'` 时，写入只提交数据。以
-`--index-maintenance-executor local` 启动的 coordinator 会监督一个
-`--index-maintenance-runner` 子进程；Helm 则把它作为独立 Deployment 运行。
-runner 会在 `maintenance.lease` 中持有租约，因此多个服务同时运行也不会重复构建。
-尚未构建的 deferred 向量索引会回退到精确的排序扫描；文本索引在 runner
-构建完成前会明确报告索引尚未构建。
+`vector(n)` 列、`vector_index_columns`、`text_index_columns`、`CREATE INDEX`、
+`REINDEX TABLE` 和 deferred 索引维护统一见
+[向量与文本索引 DDL](../index-ddl.md)。
 
 ## DROP TABLE
 
@@ -146,14 +105,13 @@ DROP TABLE orders;
 - `UNIQUE`、`CHECK`、`FOREIGN KEY` 约束，以及列默认值
 - `STORED AS` / `LOCATION`（改用 `WITH (file_format = ...)` 和服务端 warehouse）
 - 受支持形式之外的 `PRIMARY KEY` 子句
-- `CREATE INDEX ... USING btree/hash/gist/brin`、多列/表达式索引、部分索引和 `INCLUDE`
-- `DROP INDEX` 和 `REINDEX INDEX/SCHEMA/DATABASE`；删除向量索引用
-  `lakesoul_drop_vector_index`，重建用 `REINDEX TABLE`
 
 每次拒绝都返回 SQLSTATE `0A000`，消息里会指出具体子句。
+索引相关的拒绝形式见[向量与文本索引 DDL](../index-ddl.md#被拒绝的形式)。
 
 ## 下一步
 
+- [向量与文本索引 DDL](../index-ddl.md)
 - [写入与 Upsert](insert-and-upsert.md)
 - [数据类型](../../reference/data-types.md)
 - [物理文件格式](../../operations/physical-file-formats.md)

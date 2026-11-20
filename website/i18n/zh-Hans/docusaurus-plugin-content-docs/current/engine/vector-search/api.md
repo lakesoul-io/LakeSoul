@@ -415,7 +415,10 @@ OPTIONS (
 - `vector_index_columns` 是 JSON 数组，可以一次声明多个向量列；
 - `hashBucketNum` 决定 hash bucket 数，索引按 bucket 分片；
 - 索引写入 `{LOCATION}/_vector_index/{column}/{partition}/{bucket}/`；
-- 也可以用 Python 建表，两种方式创建的表互相可见、共享同一套索引。
+- 也可以用 Python 建表，两种方式创建的表互相可见、共享同一套索引；
+- PostgreSQL 端点还接受 `vector(n)` 列、`CREATE INDEX ... USING
+  hnsw|ivfflat|gin`、`REINDEX TABLE` 和 deferred 维护，详见
+  [向量与文本索引 DDL](../index-ddl.md)。
 
 ### 2.2 向量类型与字面量
 
@@ -570,7 +573,13 @@ SELECT lakesoul_drop_vector_index(
 
 ## 3. pgwire 兼容
 
-`postgres-lakesoul` 提供 pgvector 风格的**只读** SQL：支持 `vector` 类型、`<->` / `<#>` / `<=>` 距离操作符、`'[...]'` 字符串字面量、`vector(n)` cast、`$1` 预处理参数、`SET ivfflat.probes` / `SHOW ivfflat.probes`，以及上面提到的 `lakesoul_vector_search*` 函数与会话设置。
+`postgres-lakesoul` 提供 pgvector 风格的 SQL，可以通过它建表、写入和建索引。
+DDL 部分（`vector(n)`、`vector_index_columns`、`CREATE INDEX`、`ALTER TABLE`
+声明、`REINDEX TABLE` 和 deferred 维护）统一见
+[向量与文本索引 DDL](../index-ddl.md)。查询侧支持 `<->` / `<#>` / `<=>`
+距离操作符、`'[...]'` 字符串字面量、`$1` 预处理参数、
+`SET ivfflat.probes` / `SHOW ivfflat.probes`，以及上面提到的
+`lakesoul_vector_search*` 函数与会话设置。
 
 ```python
 import psycopg
@@ -591,7 +600,8 @@ conn.execute("SELECT vec <=> %s FROM docs WHERE id = 7", (unit_vec,))
 
 - `ivfflat.probes` 映射到每个 shard 探测的 cluster 数（与 `lakesoul_vector_search.nprobe` 指向同一选项），**连接本地**，默认 64，`0` 会被拒绝；
 - `SET lakesoul_vector_search.rerank = 'exact'` 等设置同样生效；
-- pgwire 只读：建表/写入仍由 Python / SQL / Spark / Flink 完成；DDL/DML 会被拒绝；
+- pgwire 支持建表、写入和索引 DDL；具体语法和限制见
+  [向量与文本索引 DDL](../index-ddl.md) 以及 PostgreSQL 兼容矩阵；
 - 表解析用当前数据库 + `public` schema（如 `public.docs`）；索引下推要求该表已声明向量索引。
 
 ## 4. 混合检索与过滤
