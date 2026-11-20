@@ -157,7 +157,9 @@ inheritance: a token carries exactly one group.
 
 A connection sees its own domain plus `public` and `lake-public`. A table-level
 ACL may also grant read-only access across a domain boundary; without a grant
-the table does not exist for it:
+the table does not exist for it. Ownership and space-admin rights are identities
+in the object's own domain: they do not carry into a connection acting in
+another domain, even when the same user created or administers that object:
 
 | Path | Behaviour |
 | --- | --- |

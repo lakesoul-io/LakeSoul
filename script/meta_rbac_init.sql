@@ -79,8 +79,15 @@ AS $$
     SELECT CASE
         WHEN (SELECT count(*) FROM ti) = 0 THEN NULL
         WHEN (SELECT domain FROM ti) IN ('public', 'lake-public') THEN 'rw'
-        WHEN lakesoul_is_domain_admin((SELECT domain FROM ti), p_user) THEN 'rw'
-        WHEN (SELECT creator FROM ti) = p_user THEN 'rw'
+        -- Owner and space-admin rights are identities in the table's domain.
+        -- They only apply when that domain is in the caller's session set;
+        -- a cross-domain session gets what an explicit ACL grants it.
+        WHEN (SELECT domain FROM ti) = ANY (p_domains)
+             AND lakesoul_is_domain_admin((SELECT domain FROM ti), p_user)
+            THEN 'rw'
+        WHEN (SELECT domain FROM ti) = ANY (p_domains)
+             AND (SELECT creator FROM ti) = p_user
+            THEN 'rw'
         ELSE coalesce(
             (
                 SELECT CASE
@@ -186,8 +193,14 @@ AS $$
     SELECT CASE
         WHEN (SELECT count(*) FROM ns) = 0 THEN NULL
         WHEN (SELECT domain FROM ns) IN ('public', 'lake-public') THEN 'rw'
-        WHEN lakesoul_is_domain_admin((SELECT domain FROM ns), p_user) THEN 'rw'
-        WHEN (SELECT creator FROM ns) = p_user THEN 'rw'
+        -- As with tables, owner/admin rights only apply in a session that
+        -- includes the namespace's domain.
+        WHEN (SELECT domain FROM ns) = ANY (u.domains)
+             AND lakesoul_is_domain_admin((SELECT domain FROM ns), p_user)
+            THEN 'rw'
+        WHEN (SELECT domain FROM ns) = ANY (u.domains)
+             AND (SELECT creator FROM ns) = p_user
+            THEN 'rw'
         WHEN (SELECT domain FROM ns) = ANY (u.domains) THEN coalesce(
             (
                 SELECT na.privilege

@@ -32,8 +32,8 @@ decisions behind it.
 
 | 主体 / 表 | 权限 |
 | --- | --- |
-| owner（`table_info.creator`） | rw + DDL |
-| space admin（该 domain 的 admin） | domain 内所有表 rw + DDL |
+| owner（`table_info.creator`，且对象 domain 在当前会话域内） | rw + DDL |
+| space admin（该 domain 的 admin，且对象 domain 在当前会话域内） | domain 内所有表 rw + DDL |
 | 同 domain 其他用户，无 ACL | **ro** |
 | 同 domain 用户，ACL `rw` | rw |
 | 同 domain 用户，ACL `ro` | ro |
@@ -47,7 +47,7 @@ namespace：
 
 | 主体 | 权限 |
 | --- | --- |
-| owner / space admin | rw + 创建/删除 namespace |
+| owner / space admin（且对象 domain 在当前会话域内） | rw + 创建/删除 namespace |
 | 同 domain 用户，无 ACL | rw：可列目录、可建表 |
 | 同 domain 用户，ACL `ro` | 可列目录、可读表，不可建表 |
 | 同 domain 用户，ACL `none` | 不可见 |
@@ -70,8 +70,8 @@ namespace：
 对表：
 
 1. `table.domain in ('public', 'lake-public')` -> `rw`
-2. `user == table.creator` -> `rw`（owner）
-3. `user` 是 `table.domain` 的 space admin -> `rw`
+2. `user == table.creator` 且 `table.domain` 在当前会话域内 -> `rw`（owner）
+3. `user` 是 `table.domain` 的 space admin 且 `table.domain` 在当前会话域内 -> `rw`
 4. exact user ACL -> 值（跨 domain `rw` 降为 `ro`）
 5. group ACL（后续版本）-> 值
 6. domain grant ACL -> 值
@@ -81,12 +81,16 @@ namespace：
 对 namespace：
 
 1. `namespace.domain in ('public', 'lake-public')` -> `rw`
-2. `user == namespace.creator` -> `rw`
-3. `user` 是 `namespace.domain` 的 space admin -> `rw`
+2. `user == namespace.creator` 且 `namespace.domain` 在当前会话域内 -> `rw`
+3. `user` 是 `namespace.domain` 的 space admin 且 `namespace.domain` 在当前会话域内 -> `rw`
 4. exact user / domain namespace ACL -> 值
 5. 同 domain -> `rw`
 6. 跨 domain 且该 namespace 下至少一张表可见 -> `ro`
 7. 其他 -> `none`
+
+owner / space admin 是对象所在 domain 内的身份，不是跨域通行证。pg-wire 用
+token 的 `group` 作为当前会话域；S3 proxy 用请求携带的 domain。用其他 domain
+的 token 访问时 owner/admin 不生效，只有显式跨域 `ro` 授权可见。
 
 `effective = min(namespace_privilege, table_privilege)`，`rw > ro > none`。
 namespace 的 `ro` 是写的上限：即使表 ACL 为 `rw`，namespace 为 `ro` 时也不能写。
@@ -166,6 +170,11 @@ create table domain_admin (
 `SECURITY DEFINER` 让函数可以读 `table_info`、`table_acl`、`domain_admin`，
 不受这些表自身 RLS 的递归影响。函数的 owner 是执行 RBAC 初始化脚本的管理员；
 `search_path` 固定为 `pg_catalog, public`，`EXECUTE` 只授予 metadata 角色。
+
+owner/admin 分支只在 `table.domain = ANY(p_domains)`（namespace 为
+`namespace.domain = ANY(u.domains)`）时生效。显式 domain overload 的
+`p_domains` 是 S3 proxy 请求携带的 domain，因此跨域请求不会继承 owner/admin
+身份；直接连接路径传入用户的全部 domain 角色，身份仍按这些 domain 生效。
 
 ### 4.2 policy
 

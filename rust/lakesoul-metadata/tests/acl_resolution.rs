@@ -7,8 +7,8 @@
 //! The pg-wire application layer and the S3 proxy call `AclView`; these cases
 //! pin the same rules the SQL RLS functions implement.
 
-use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::acl::Privilege;
+use lakesoul_metadata::{MetaDataClient, QueryType};
 use lakesoul_metadata_proto::entity::{Namespace, TableInfo};
 
 const NAMESPACE: &str = "default";
@@ -252,4 +252,140 @@ async fn path_resolution_matches_table_resolution() {
         None
     );
     client.drop_table(&name, NAMESPACE).await.unwrap();
+}
+
+async fn set_domain_admin(
+    client: &MetaDataClient,
+    domain: &str,
+    user: &str,
+    admin: bool,
+) {
+    let pooled = client.pooled_client();
+    let locked = pooled.lock().await;
+    let connection = locked.get(QueryType::RW).await.unwrap();
+    if admin {
+        connection
+            .execute(
+                "insert into domain_admin(domain, user_name) values ($1, $2)
+                 on conflict do nothing",
+                &[&domain, &user],
+            )
+            .await
+            .unwrap();
+    } else {
+        connection
+            .execute(
+                "delete from domain_admin where domain = $1 and user_name = $2",
+                &[&domain, &user],
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// Ownership and space-admin rights are identities in the object's domain.
+/// A token for another domain must not inherit them; an explicit cross-domain
+/// read grant still applies and keeps the namespace read-only.
+#[tokio::test]
+async fn owner_and_admin_do_not_escape_the_session_domain() {
+    let client = MetaDataClient::from_env().await.unwrap();
+    let namespace = unique("session_ns");
+    client
+        .create_namespace(Namespace {
+            namespace: namespace.clone(),
+            properties: "{}".to_string(),
+            comment: "acl session-domain test".to_string(),
+            domain: "team_a".to_string(),
+            creator: "alice".to_string(),
+        })
+        .await
+        .unwrap();
+    let name = unique("session_table");
+    let path = format!("file:///tmp/{namespace}/{name}");
+    let table_id = create_table_in(&client, &namespace, &name, "team_a", "alice").await;
+
+    // The owner (alice) connected with a team_b token is not in team_a.
+    let alice_b = client
+        .load_acl_view("alice", &["team_b".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(alice_b.namespace_privilege(&namespace), Privilege::None);
+    assert_eq!(
+        alice_b.effective_table_privilege(&namespace, &name),
+        Privilege::None
+    );
+    assert!(!alice_b.visible_namespaces().contains(&namespace));
+
+    // The same holds for a space administrator of team_a.
+    set_domain_admin(&client, "team_a", "dave", true).await;
+    let dave_b = client
+        .load_acl_view("dave", &["team_b".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(dave_b.namespace_privilege(&namespace), Privilege::None);
+    assert_eq!(
+        dave_b.effective_table_privilege(&namespace, &name),
+        Privilege::None
+    );
+    assert!(!dave_b.visible_namespaces().contains(&namespace));
+
+    let dave_a = client
+        .load_acl_view("dave", &["team_a".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(dave_a.namespace_privilege(&namespace), Privilege::Write);
+    assert_eq!(
+        dave_a.effective_table_privilege(&namespace, &name),
+        Privilege::Write
+    );
+
+    // An explicit cross-domain read grant applies to the owner and to the
+    // administrator, and makes the namespace visible read-only.
+    client
+        .grant_table_privilege(&table_id, "team_b", "alice", Privilege::Read, "alice")
+        .await
+        .unwrap();
+    client
+        .grant_table_privilege(&table_id, "team_b", "dave", Privilege::Read, "alice")
+        .await
+        .unwrap();
+    for user in ["alice", "dave"] {
+        let view = client
+            .load_acl_view(user, &["team_b".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            view.effective_table_privilege(&namespace, &name),
+            Privilege::Read,
+            "{user} must get the explicit cross-domain read grant"
+        );
+        assert_eq!(
+            view.namespace_privilege(&namespace),
+            Privilege::Read,
+            "{user} must see the namespace read-only through the table grant"
+        );
+        assert_eq!(
+            client
+                .table_privilege_by_path(&path, user, "team_b")
+                .await
+                .unwrap(),
+            Some(Privilege::Read),
+            "{user} must get the same result from the path resolver"
+        );
+    }
+    assert_eq!(
+        client
+            .table_privilege_by_path(&path, "dave", "team_a")
+            .await
+            .unwrap(),
+        Some(Privilege::Write),
+        "the administrator keeps write in the domain they administer"
+    );
+
+    set_domain_admin(&client, "team_a", "dave", false).await;
+    client.drop_table(&name, &namespace).await.unwrap();
+    client
+        .delete_namespace_by_namespace(&namespace)
+        .await
+        .unwrap();
 }

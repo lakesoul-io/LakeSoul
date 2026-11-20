@@ -224,6 +224,7 @@ impl AclView {
         let pooled = client.pooled_client();
         let locked = pooled.lock().await;
         let connection = locked.get(QueryType::RW).await?;
+        let session_domains: HashSet<String> = domains.iter().cloned().collect();
 
         let namespace_rows = connection
             .query(
@@ -330,10 +331,13 @@ impl AclView {
         }
 
         // A namespace outside the user's domains becomes visible read-only
-        // when at least one table inside it is visible through an ACL. The
-        // namespace row itself must not grant write in that case.
+        // when at least one table inside it is visible through an ACL. A
+        // same-domain namespace keeps its own privilege (including an explicit
+        // `none`) as the upper bound.
         for (namespace, access) in namespaces.iter_mut() {
-            if access.privilege != Privilege::None || access.admin || access.owner {
+            if access.privilege != Privilege::None
+                || session_domains.contains(&access.domain)
+            {
                 continue;
             }
             let has_visible_table = tables.iter().any(|((table_namespace, _), table)| {
@@ -606,7 +610,13 @@ fn table_privilege(
     same_domain: bool,
     acl: Option<Privilege>,
 ) -> Privilege {
-    if is_public_domain(domain) || owner || admin {
+    if is_public_domain(domain) {
+        return Privilege::Write;
+    }
+    // Ownership and space-admin rights are identities in the object's domain.
+    // They must not be used from a session acting in another domain; a
+    // cross-domain session gets only what an explicit ACL grants it.
+    if same_domain && (owner || admin) {
         return Privilege::Write;
     }
     match acl {
@@ -638,13 +648,17 @@ fn namespace_privilege(
     same_domain: bool,
     acl: Option<Privilege>,
 ) -> Privilege {
-    if is_public_domain(domain) || owner || admin {
+    if is_public_domain(domain) {
         return Privilege::Write;
     }
     // Namespace ACLs are a same-domain refinement. A cross-domain namespace is
-    // invisible until a table grant makes it visible (handled by the caller).
+    // invisible until a table grant makes it visible (handled by the caller),
+    // and a cross-domain session cannot use owner/admin rights.
     if !same_domain {
         return Privilege::None;
+    }
+    if owner || admin {
+        return Privilege::Write;
     }
     match acl {
         Some(Privilege::None) => Privilege::None,
@@ -1285,6 +1299,63 @@ mod tests {
         );
         assert_eq!(
             table_privilege("public", false, false, false, Some(Privilege::None)),
+            Privilege::Write
+        );
+    }
+
+    #[test]
+    fn owner_and_admin_are_limited_to_the_session_domain() {
+        // A cross-domain session cannot use ownership or space-admin rights.
+        assert_eq!(
+            table_privilege("team_a", true, false, false, None),
+            Privilege::None
+        );
+        assert_eq!(
+            table_privilege("team_a", false, true, false, None),
+            Privilege::None
+        );
+        // An explicit cross-domain grant still applies, but only as read.
+        assert_eq!(
+            table_privilege("team_a", true, false, false, Some(Privilege::Read)),
+            Privilege::Read
+        );
+        assert_eq!(
+            table_privilege("team_a", false, true, false, Some(Privilege::Read)),
+            Privilege::Read
+        );
+        // An explicit deny is not overridden by owner/admin identity.
+        assert_eq!(
+            table_privilege("team_a", true, false, false, Some(Privilege::None)),
+            Privilege::None
+        );
+        assert_eq!(
+            table_privilege("team_a", false, true, false, Some(Privilege::None)),
+            Privilege::None
+        );
+        // The same domain keeps the owner/admin shortcut.
+        assert_eq!(
+            table_privilege("team_a", true, false, true, None),
+            Privilege::Write
+        );
+        assert_eq!(
+            table_privilege("team_a", false, true, true, None),
+            Privilege::Write
+        );
+
+        assert_eq!(
+            namespace_privilege("team_a", true, false, false, None),
+            Privilege::None
+        );
+        assert_eq!(
+            namespace_privilege("team_a", false, true, false, None),
+            Privilege::None
+        );
+        assert_eq!(
+            namespace_privilege("team_a", true, false, true, None),
+            Privilege::Write
+        );
+        assert_eq!(
+            namespace_privilege("team_a", false, true, true, None),
             Privilege::Write
         );
     }

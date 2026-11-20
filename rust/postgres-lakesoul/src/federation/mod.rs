@@ -89,13 +89,27 @@ fn object_privilege(
     let Some(acl) = acl else {
         return Privilege::Write;
     };
+    let is_public = matches!(domain, "public" | "lake-public");
+    if is_public {
+        // Public federation objects are readable by every domain, but only
+        // their creator or a public-domain space administrator may write.
+        return if creator == user || acl.is_domain_admin(domain) {
+            Privilege::Write
+        } else {
+            Privilege::Read
+        };
+    }
+    // A private federation object belongs to one domain. Creator and space
+    // admin are identities in that domain; a session acting in another domain
+    // must not use them.
+    if user_domain != Some(domain) {
+        return Privilege::None;
+    }
     if creator == user || acl.is_domain_admin(domain) {
-        return Privilege::Write;
+        Privilege::Write
+    } else {
+        Privilege::Read
     }
-    if domain == "public" || domain == "lake-public" || user_domain == Some(domain) {
-        return Privilege::Read;
-    }
-    Privilege::None
 }
 
 impl FederationRuntime {
