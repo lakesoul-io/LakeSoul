@@ -139,17 +139,6 @@ AS $$
 $$;
 
 -- RLS path: derive the PG user's domains from its role memberships.
-CREATE OR REPLACE FUNCTION lakesoul_table_privilege(p_table_id TEXT, p_user TEXT)
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-    SELECT lakesoul_table_privilege_for_domains(
-        p_table_id, p_user, lakesoul_current_domains(p_user)
-    );
-$$;
 
 
 -- Explicit-domain path (S3 proxy sidecars and the pg-wire application layer).
@@ -300,6 +289,18 @@ AS $$
     FROM table_path_id p
     JOIN table_info ti ON ti.table_id = p.table_id
     WHERE p.table_path = p_path;
+$$;
+
+CREATE OR REPLACE FUNCTION lakesoul_table_privilege(p_table_id TEXT, p_user TEXT)
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT lakesoul_effective_table_privilege_for_domains(
+        p_table_id, p_user, lakesoul_current_domains(p_user)
+    );
 $$;
 
 CREATE OR REPLACE FUNCTION lakesoul_can_manage_table(p_table_id TEXT, p_user TEXT)

@@ -401,19 +401,8 @@ async fn current_domain_guc_only_narrows_role_memberships() {
     {
         let locked = pool.lock().await;
         let conn = locked.get(QueryType::RW).await.unwrap();
-        let installed: bool = conn
-            .query_one(
-                "select to_regprocedure('lakesoul_current_domains(text)') is not null",
-                &[],
-            )
-            .await
-            .unwrap()
-            .get(0);
-        if !installed {
-            // The helper ships with meta_rbac_init.sql; Rust CI's base database
-            // only installs meta_init.sql.
-            return;
-        }
+        // `meta_init_for_local_test.sh` installs meta_rbac_init.sql, so the
+        // helper is always present in CI and local test databases.
         conn.execute(&format!("create role \"{role}\""), &[])
             .await
             .unwrap();

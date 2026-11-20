@@ -253,7 +253,8 @@ impl FederationStatementHook {
                 require_server_write(self, session_context, &server)?;
                 // A private server cannot back a table in another domain: the
                 // server's stored credentials stay inside its own boundary.
-                if let Some(server_def) = self.runtime.server_definition(&server)
+                if self.write_domain.is_some()
+                    && let Some(server_def) = self.runtime.server_definition(&server)
                     && !matches!(server_def.domain.as_str(), "public" | "lake-public")
                     && Some(server_def.domain.as_str()) != self.write_domain.as_deref()
                 {

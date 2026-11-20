@@ -1218,6 +1218,10 @@ impl LakeSoulQueryRouter {
         {
             return Err(undefined_relation(&table));
         }
+        // Capture the version before planning: if a peer publishes a new view
+        // while the replacement plan is being built, recording the post-plan
+        // version would hide that change from the next Execute.
+        let acl_version_before_plan = state.session.acl().map(|acl| acl.version());
         let Some(replanned) = self
             .parser
             .parse_sql(client, sql, &statement.parameter_types)
@@ -1253,8 +1257,8 @@ impl LakeSoulQueryRouter {
             Arc::new(tokio::sync::Mutex::new(PortalExecutionState::Initial));
         client.portal_store().put_portal(Arc::new(replacement));
         state.settings.record(&statement.id);
-        if let Some(acl) = state.session.acl() {
-            state.settings.record_acl(&statement.id, acl.version());
+        if let Some(version) = acl_version_before_plan {
+            state.settings.record_acl(&statement.id, version);
         }
         Ok(())
     }
@@ -1498,6 +1502,10 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
             }
             Err(error) => Err(error),
         };
+        // Capture the ACL version before planning; a peer may publish a new
+        // view while `on_parse` runs, and the plan must remember the version it
+        // was actually built against.
+        let acl_version_before_plan = state.session.acl().map(|acl| acl.version());
         let result = match rewrite {
             Ok(()) => {
                 run_under_limit(
@@ -1525,8 +1533,8 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
                 // The plan just made belongs to the current settings; a later
                 // `SET` bumps past it and makes the next `Execute` replan.
                 state.settings.record(&name);
-                if let Some(acl) = state.session.acl() {
-                    state.settings.record_acl(&name, acl.version());
+                if let Some(version) = acl_version_before_plan {
+                    state.settings.record_acl(&name, version);
                 }
                 // Planning is over: its slot returns, and a statement that is
                 // never executed leaves no report behind. The identity stays,

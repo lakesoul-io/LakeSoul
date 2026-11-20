@@ -200,8 +200,14 @@ domain 角色成员关系。
 
 表级 privilege 还会被 namespace privilege 取 `min`：同域 namespace `none` 隐藏
 表，namespace `ro` 把表 `rw` 降为只读；跨域表授权仍让 namespace 只读可见。
-session 服务（pg-wire / Flight）在按 id、按路径或按表名解析时都使用这个
-effective privilege。
+RLS 的 2 参数 `lakesoul_table_privilege()` 和 session 服务（pg-wire / Flight）
+按 id、按路径、按表名解析时都使用这个 effective privilege。
+
+pg-wire 的 ACL entry 按 `(user, domain)` 在多条连接间共享，但 prepared plan 的
+generation 是连接级的。`AclEntry` 因此带有单调递增的 view version，prepared
+statement 在规划前记录它、执行时再比较：即使其它连接消费了 refresh，旧 plan
+也会被判定过期并重新规划。`meta_init_for_local_test.sh` 会安装 RBAC helper，
+所以该语义在本地/CI 测试库中都会被执行到。
 
 `lakesoul_can_manage_table()` / `lakesoul_can_manage_namespace()` 也带同样的
 domain gate，否则会出现“读不到但能改 ACL/元数据”的不一致。
