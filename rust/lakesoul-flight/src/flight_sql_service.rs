@@ -299,7 +299,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 }
             }
 
-            self.verify_rbac(&claims, &namespace, &table_name)
+            self.verify_rbac(&claims, &namespace, &table_name, false)
                 .await
                 .map_err(|e| status!("Error validating rbac", e))?;
         }
@@ -815,6 +815,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             &claims,
             &schema.clone().unwrap_or("default".to_string()),
             &table,
+            true,
         )
         .await?;
         info!(
@@ -1428,8 +1429,9 @@ impl FlightSqlServiceImpl {
         claims: &Claims,
         ns: &str,
         table: &str,
+        write: bool,
     ) -> Result<(), Status> {
-        info!("verify_rbac, rabc_enabled:{} ", self.rbac_enabled);
+        info!("verify_rbac, rbac_enabled:{} ", self.rbac_enabled);
         if !self.rbac_enabled {
             return Ok(());
         }
@@ -1438,6 +1440,7 @@ impl FlightSqlServiceImpl {
             &claims.group,
             ns,
             table,
+            write,
             self.client.clone(),
         )
         .await

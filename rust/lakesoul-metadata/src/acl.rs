@@ -945,6 +945,72 @@ impl MetaDataClient {
         )
     }
 
+    /// Resolve one table id to its effective privilege for `user` in `domain`.
+    ///
+    /// The explicit-domain SQL resolver is used when available; otherwise the
+    /// Rust resolver reproduces the same rules.
+    pub async fn table_privilege_by_id(
+        &self,
+        table_id: &str,
+        user: &str,
+        domain: &str,
+    ) -> Result<Option<Privilege>> {
+        let function_result = {
+            let pooled = self.pooled_client();
+            let locked = pooled.lock().await;
+            let connection = locked.get(QueryType::RW).await?;
+            let installed: bool = connection
+                .query_one(
+                    "select to_regprocedure(
+                        'lakesoul_table_privilege(text,text,text)'
+                     ) is not null",
+                    &[],
+                )
+                .await?
+                .get(0);
+            if installed {
+                let row = connection
+                    .query_opt(
+                        "select lakesoul_table_privilege(
+                            $1::TEXT, $2::TEXT, $3::TEXT
+                         )",
+                        &[&table_id, &user, &domain],
+                    )
+                    .await?;
+                Some(
+                    row.and_then(|row| row.get::<_, Option<String>>(0))
+                        .map(|value| Privilege::parse(&value)),
+                )
+            } else {
+                None
+            }
+        };
+        if let Some(privilege) = function_result {
+            return Ok(privilege);
+        }
+        let (namespace, table) = {
+            let pooled = self.pooled_client();
+            let locked = pooled.lock().await;
+            let connection = locked.get(QueryType::RW).await?;
+            let row = connection
+                .query_opt(
+                    "select table_namespace, table_name from table_info
+                     where table_id = $1::TEXT",
+                    &[&table_id],
+                )
+                .await?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            (row.get::<_, String>(0), row.get::<_, String>(1))
+        };
+        Ok(
+            AclView::load_table(self, user, &[domain.to_string()], &namespace, &table)
+                .await?
+                .map(|access| access.privilege),
+        )
+    }
+
     /// Apply table ACL mutations atomically.
     ///
     /// The SQL front end computes one statement's changes, then calls this so

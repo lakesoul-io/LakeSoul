@@ -149,9 +149,25 @@ impl AclStatementHook {
         }
 
         let acl = pg_acl(session_context).expect("validated --rbac");
+        // GRANT is a session operation: the caller is identified by the token's
+        // group, not by the cluster's write domain.
+        let session_domain = session_context
+            .state()
+            .config()
+            .options()
+            .extensions
+            .get::<crate::session::PgIdentityConfig>()
+            .and_then(|identity| identity.domain.clone())
+            .ok_or_else(|| {
+                feature_not_supported(
+                    "GRANT requires a domain on the connection".to_string(),
+                )
+            })?;
         let tables = match &parsed.target {
-            Target::Tables(names) => self.resolve_named(&acl, names).await?,
-            Target::AllTables => self.resolve_all(&acl).await?,
+            Target::Tables(names) => {
+                self.resolve_named(&acl, names, &session_domain).await?
+            }
+            Target::AllTables => self.resolve_all(&acl, &session_domain).await?,
         };
         let changes = build_changes(&parsed, &tables, &self.user)?;
         self.client
@@ -181,11 +197,12 @@ impl AclStatementHook {
         &self,
         acl: &PgAclSession,
         names: &[String],
+        session_domain: &str,
     ) -> PgWireResult<Vec<TableAccess>> {
         let mut tables = Vec::with_capacity(names.len());
         for name in names {
             let access = self.table_access(acl, name).await?;
-            tables.push(require_manageable(access, name, acl)?);
+            tables.push(require_manageable(access, name, session_domain)?);
         }
         Ok(tables)
     }
@@ -194,7 +211,11 @@ impl AclStatementHook {
     /// not from the grantor's view: a domain administrator must be able to
     /// grant on every table in the namespace, and a table they cannot see must
     /// fail the statement rather than be silently skipped.
-    async fn resolve_all(&self, acl: &PgAclSession) -> PgWireResult<Vec<TableAccess>> {
+    async fn resolve_all(
+        &self,
+        acl: &PgAclSession,
+        session_domain: &str,
+    ) -> PgWireResult<Vec<TableAccess>> {
         let table_names = self
             .client
             .get_all_table_name_id_by_namespace(&self.namespace)
@@ -213,7 +234,11 @@ impl AclStatementHook {
                 // the authoritative answer.
                 continue;
             }
-            tables.push(require_manageable(access, &table.table_name, acl)?);
+            tables.push(require_manageable(
+                access,
+                &table.table_name,
+                session_domain,
+            )?);
         }
         Ok(tables)
     }
@@ -631,7 +656,7 @@ fn build_changes(
 fn require_manageable(
     access: Option<TableAccess>,
     table: &str,
-    acl: &PgAclSession,
+    session_domain: &str,
 ) -> PgWireResult<TableAccess> {
     let Some(access) = access else {
         return Err(invisible(table));
@@ -650,14 +675,12 @@ fn require_manageable(
             format!("must be owner of table {table}"),
         ));
     }
-    if let Some(cluster) = acl.cluster_domain.as_deref()
-        && access.domain != cluster
-    {
+    if access.domain != session_domain {
         return Err(user_error(
             INSUFFICIENT_PRIVILEGE,
             format!(
-                "permission denied for table {table}: this cluster writes \
-                 only in domain \"{cluster}\""
+                "permission denied for table {table}: this session acts \
+                 only in domain \"{session_domain}\""
             ),
         ));
     }

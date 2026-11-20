@@ -235,6 +235,19 @@ impl bb8::ManageConnection for PgConnectionManager {
 
     async fn connect(&self) -> std::result::Result<Self::Connection, Self::Error> {
         let client = self.pg_conn.connect().await?;
+        // A direct Spark/Flink/Python job selects its workspace with
+        // LAKESOUL_CURRENT_DOMAIN. Expose it to the RLS helper as a session
+        // GUC; parameterized set_config avoids quoting issues.
+        if let Ok(domain) = std::env::var("LAKESOUL_CURRENT_DOMAIN")
+            && !domain.trim().is_empty()
+        {
+            client
+                .execute(
+                    "select set_config('lakesoul.current_domain', $1, false)",
+                    &[&domain],
+                )
+                .await?;
+        }
         Ok(PgConnWithStmtCache {
             client,
             statement_cache: Arc::new(StatementCache::new()),

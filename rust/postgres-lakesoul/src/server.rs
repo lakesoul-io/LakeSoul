@@ -1030,11 +1030,16 @@ pub(crate) fn connection_statement_hooks(
     });
     hooks.push(Arc::new(crate::acl::AclRefreshHook));
     if let Some(federation) = factory.federation() {
+        let session_domain = identity
+            .access
+            .as_ref()
+            .map(|access| access.domain().to_string());
         hooks.push(Arc::new(crate::federation::FederationStatementHook::new(
             Arc::clone(federation),
             database.to_string(),
             identity.user.clone(),
             cluster_domain.clone(),
+            session_domain,
         )));
     }
     hooks.push(Arc::new(crate::user::UserStatementHook::new(

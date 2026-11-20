@@ -2,9 +2,10 @@
 
 Status: implemented in PR #1316; table-level SQL `GRANT` / `REVOKE` added in
 PR #1317. The user directory, `CREATE USER`, token validation, federation ACL
-and the read-path audit fixes are in the follow-up change on
-`feature/pg-create-user-federation-acl`. This note records the model and the
-decisions behind it.
+and the read-path audit fixes landed in PR #1319. PR #1329 additionally scopes
+owner/admin rights to the session domain and applies the same model to Flight
+and the SQL management helpers. This note records the model and the decisions
+behind it.
 
 ## 1. 目标
 
@@ -95,6 +96,23 @@ token 的 `group` 作为当前会话域；S3 proxy 用请求携带的 domain。�
 `effective = min(namespace_privilege, table_privilege)`，`rw > ro > none`。
 namespace 的 `ro` 是写的上限：即使表 ACL 为 `rw`，namespace 为 `ro` 时也不能写。
 
+### 2.3 直连用户与 session 用户
+
+权限判定必须区分两种调用方：
+
+- **直连用户**：Spark / Flink / Python job 直接连接 metadata PostgreSQL。连接
+  user 就是实际用户，domain 来自 `LAKESOUL_CURRENT_DOMAIN`（metadata client
+  连接时写成 session GUC `lakesoul.current_domain`）。权限由 RLS + metadata ACL
+  函数按连接 `user/group` 判定，不依赖任何中间服务的账号。
+- **session 用户**：pg-wire / Flight 接受带 token 的连接，使用共享的 privileged
+  metadata client。应用层必须用 token 的 `sub/group` 再走一遍 ACL resolver；
+  不能用 metadata 连接账号的身份代替 session 身份。`CREATE USER` / `GRANT` 的
+  管理权检查也使用 session user/group，而不是 cluster write domain。
+
+`verify_permission_by_table_name()` / `verify_permission_by_table_path()` 是
+session 服务共用的入口，必须按显式 `(user, group)` 解析完整 ACL（含跨域 `ro`
+与 public 规则），不能只判断表是否存在。
+
 ## 3. 元数据模型
 
 ### 3.1 `table_acl`
@@ -173,8 +191,13 @@ create table domain_admin (
 
 owner/admin 分支只在 `table.domain = ANY(p_domains)`（namespace 为
 `namespace.domain = ANY(u.domains)`）时生效。显式 domain overload 的
-`p_domains` 是 S3 proxy 请求携带的 domain，因此跨域请求不会继承 owner/admin
-身份；直接连接路径传入用户的全部 domain 角色，身份仍按这些 domain 生效。
+`p_domains` 是 session 服务传入的 token group，因此跨域请求不会继承
+owner/admin 身份；直接连接路径的 domain 来自
+`LAKESOUL_CURRENT_DOMAIN` 写入的 `lakesoul.current_domain` GUC，没有设置时
+回退到用户的 domain 角色成员关系。
+
+`lakesoul_can_manage_table()` / `lakesoul_can_manage_namespace()` 也带同样的
+domain gate，否则会出现“读不到但能改 ACL/元数据”的不一致。
 
 ### 4.2 policy
 

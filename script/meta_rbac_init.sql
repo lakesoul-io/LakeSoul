@@ -21,7 +21,10 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS table_name_id_domain_index ON table_name
 CREATE INDEX CONCURRENTLY IF NOT EXISTS data_commit_info_domain_index ON data_commit_info (domain);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS partition_info_domain_index ON partition_info (domain);
 
--- Domains the PG user belongs to through the legacy domain roles.
+-- Domains the session acts in. A direct Spark/Flink/Python job carries its
+-- workspace in LAKESOUL_CURRENT_DOMAIN, which the metadata client sets as the
+-- `lakesoul.current_domain` GUC on connect. Jobs that do not set it keep the
+-- legacy PG-role-derived domains.
 CREATE OR REPLACE FUNCTION lakesoul_current_domains(p_user TEXT)
 RETURNS TEXT[]
 LANGUAGE sql
@@ -29,16 +32,25 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-    SELECT coalesce(array_agg(r.rolname ORDER BY r.rolname), ARRAY[]::TEXT[])
-    FROM pg_roles r
-    WHERE CASE
-              WHEN EXISTS (SELECT 1 FROM pg_roles u WHERE u.rolname = p_user)
-              THEN pg_has_role(p_user, r.oid, 'member')
-              ELSE false
-          END
-      AND r.rolname NOT LIKE 'base\_%' ESCAPE '\'
-      AND r.rolname NOT LIKE '%\_admins' ESCAPE '\'
-      AND r.rolname NOT LIKE '%\_users' ESCAPE '\';
+    WITH env_domain AS (
+        SELECT nullif(current_setting('lakesoul.current_domain', true), '') AS domain
+    )
+    SELECT CASE
+        WHEN (SELECT domain FROM env_domain) IS NOT NULL
+        THEN ARRAY[(SELECT domain FROM env_domain)]::TEXT[]
+        ELSE (
+            SELECT coalesce(array_agg(r.rolname ORDER BY r.rolname), ARRAY[]::TEXT[])
+            FROM pg_roles r
+            WHERE CASE
+                      WHEN EXISTS (SELECT 1 FROM pg_roles u WHERE u.rolname = p_user)
+                      THEN pg_has_role(p_user, r.oid, 'member')
+                      ELSE false
+                  END
+              AND r.rolname NOT LIKE 'base\_%' ESCAPE '\'
+              AND r.rolname NOT LIKE '%\_admins' ESCAPE '\'
+              AND r.rolname NOT LIKE '%\_users' ESCAPE '\'
+        )
+    END;
 $$;
 
 CREATE OR REPLACE FUNCTION lakesoul_is_domain_admin(p_domain TEXT, p_user TEXT)
@@ -240,6 +252,8 @@ AS $$
     SELECT EXISTS (
         SELECT 1 FROM table_info ti
         WHERE ti.table_id = p_table_id
+          AND (ti.domain IN ('public', 'lake-public')
+               OR ti.domain = ANY (lakesoul_current_domains(p_user)))
           AND (ti.creator = p_user
                OR lakesoul_is_domain_admin(ti.domain, p_user))
     );
@@ -255,6 +269,8 @@ AS $$
     SELECT EXISTS (
         SELECT 1 FROM namespace n
         WHERE n.namespace = p_namespace
+          AND (n.domain IN ('public', 'lake-public')
+               OR n.domain = ANY (lakesoul_current_domains(p_user)))
           AND (n.creator = p_user
                OR lakesoul_is_domain_admin(n.domain, p_user))
     );

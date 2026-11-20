@@ -38,9 +38,13 @@ cluster from reaching Hive metadata directly.
 | `public` / `lake-public` | Shared workspaces visible to every user. |
 
 Each user has one PostgreSQL role and can be a member of one or more
-workspaces. A JVM job selects the workspace with `LAKESOUL_CURRENT_DOMAIN` (or
-`lakesoul.current.domain`). A pg-wire connection selects it with the token's
-`group` claim.
+workspaces. A direct Spark/Flink/Python job selects the workspace with
+`LAKESOUL_CURRENT_DOMAIN` (or `lakesoul.current.domain`); its metadata
+connection uses the actual user and that domain. A pg-wire or Flight connection
+selects it with the token's `group` claim; these services hold a shared,
+privileged metadata account, so they must re-check the ACL in application code
+with the session user/group. `CREATE USER` and `GRANT` also authorize the
+session user against the token's group, not against the cluster write domain.
 
 ## How isolation works
 

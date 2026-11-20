@@ -25,7 +25,7 @@ LakeSoul 支持多个工作空间（domain，也称域）。每个空间有自�
 | 普通用户 | `<workspace>_users` 的成员。可以在已有 namespace 中建表；默认对其他用户的表只读，具体受表级 ACL 约束。 |
 | `public` / `lake-public` | 对所有用户可见的共享空间。 |
 
-每个用户有一个 PostgreSQL role，可以是多个工作空间的成员。JVM 作业通过 `LAKESOUL_CURRENT_DOMAIN`（或 `lakesoul.current.domain`）选择工作空间；pg-wire 连接通过 token 的 `group` claim 选择。
+每个用户有一个 PostgreSQL role，可以是多个工作空间的成员。直连 Spark/Flink/Python 作业通过 `LAKESOUL_CURRENT_DOMAIN`（或 `lakesoul.current.domain`）选择工作空间，metadata 连接使用真实用户和该 domain。pg-wire / Flight 连接通过 token 的 `group` claim 选择；这些服务持有共享的 privileged metadata 账号，因此必须在应用层用 session user/group 重新检查 ACL。`CREATE USER` 和 `GRANT` 的授权主体也是 session user 及其 token group，而不是 cluster write domain。
 
 ## 隔离机制
 
