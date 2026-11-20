@@ -637,6 +637,11 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "0A000",
         ),
         (
+            "ddl_numeric_300",
+            "CREATE TABLE ddl_numeric_300 (v NUMERIC(300,2))",
+            "0A000",
+        ),
+        (
             "ddl_array_pk",
             "CREATE TABLE ddl_array_pk (id INT[] PRIMARY KEY)",
             "0A000",

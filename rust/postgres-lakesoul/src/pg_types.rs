@@ -126,18 +126,35 @@ pub(crate) fn field_for_sql_type(
         | SqlDataType::CharacterVarying(length)
         | SqlDataType::CharVarying(length) => {
             let length = character_length(length)?;
+            if length.is_some_and(|length| length > (i32::MAX - 4) as u64) {
+                return Err(feature_not_supported(
+                    "character length is too large".to_string(),
+                ));
+            }
             let typmod = length.map(|length| length as i32 + 4).unwrap_or(-1);
             field = with_typmod(field, "varchar", typmod);
         }
         SqlDataType::Char(length) | SqlDataType::Character(length) => {
             let length = character_length(length)?.unwrap_or(1);
+            if length > (i32::MAX - 4) as u64 {
+                return Err(feature_not_supported(
+                    "character length is too large".to_string(),
+                ));
+            }
             field = with_typmod(field, "bpchar", length as i32 + 4);
         }
         SqlDataType::Numeric(info)
         | SqlDataType::Decimal(info)
         | SqlDataType::Dec(info) => {
-            if let Some((precision, scale)) = numeric_info(info) {
-                field = with_typmod(field, "numeric", numeric_typmod(precision, scale));
+            if let Some((precision, scale)) = numeric_info(info)
+                && precision <= 76
+                && (0..=precision as i64).contains(&scale)
+            {
+                field = with_typmod(
+                    field,
+                    "numeric",
+                    numeric_typmod(precision as u8, scale as i8),
+                );
             }
         }
         SqlDataType::Timestamp(precision, timezone) => {
@@ -172,12 +189,12 @@ fn with_typmod(field: Field, kind: &str, typmod: i32) -> Field {
     field.with_metadata(metadata)
 }
 
-fn numeric_info(info: &ExactNumberInfo) -> Option<(u8, i8)> {
+fn numeric_info(info: &ExactNumberInfo) -> Option<(u64, i64)> {
     match info {
         ExactNumberInfo::PrecisionAndScale(precision, scale) => {
-            Some((*precision as u8, *scale as i8))
+            Some((*precision, *scale))
         }
-        ExactNumberInfo::Precision(precision) => Some((*precision as u8, 0)),
+        ExactNumberInfo::Precision(precision) => Some((*precision, 0)),
         ExactNumberInfo::None => None,
     }
 }
@@ -328,15 +345,15 @@ pub(crate) fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
                     "NUMERIC precision must be within 1..=76".to_string(),
                 ));
             }
-            if scale < 0 || scale as u8 > precision {
+            if scale < 0 || scale as u64 > precision {
                 return Err(feature_not_supported(
                     "NUMERIC scale must be within 0..=precision".to_string(),
                 ));
             }
             if precision <= 38 {
-                DataType::Decimal128(precision, scale)
+                DataType::Decimal128(precision as u8, scale as i8)
             } else {
-                DataType::Decimal256(precision, scale)
+                DataType::Decimal256(precision as u8, scale as i8)
             }
         }
         SqlDataType::Timestamp(precision, timezone) => {
