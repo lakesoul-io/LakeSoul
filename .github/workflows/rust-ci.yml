@@ -151,6 +151,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-test-fast"
+          cache-workspace-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'legacy' }}
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
@@ -250,6 +251,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-test-fast"
+          cache-workspace-crates: true
           save-if: false
       - name: Run Clippy
         # Keep every cargo invocation in this workflow on `test-fast` so all

@@ -68,10 +68,10 @@ SQL
         test -f "$jar"
         curl --fail --location --retry 3 \
             --output "$work_dir/presto.tgz" \
-            "https://repo1.maven.org/maven2/com/facebook/presto/presto-server/0.296/presto-server-0.296.tar.gz"
+            "https://maven-central.storage.googleapis.com/maven2/com/facebook/presto/presto-server/0.296/presto-server-0.296.tar.gz"
         curl --fail --location --retry 3 \
             --output "$work_dir/presto-cli" \
-            "https://repo1.maven.org/maven2/com/facebook/presto/presto-cli/0.296/presto-cli-0.296-executable.jar"
+            "https://maven-central.storage.googleapis.com/maven2/com/facebook/presto/presto-cli/0.296/presto-cli-0.296-executable.jar"
         chmod +x "$work_dir/presto-cli"
         tar -C "$work_dir" -xzf "$work_dir/presto.tgz"
         presto_home="$work_dir/presto-server-0.296"

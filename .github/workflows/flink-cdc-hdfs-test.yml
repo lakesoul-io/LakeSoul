@@ -31,7 +31,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Set up Python 3.9
         uses: actions/setup-python@v5
         with:
@@ -40,10 +39,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
-          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.5/flink-s3-fs-hadoop-1.20.5.jar -O "$HOME/flink-s3-fs-hadoop-1.20.5.jar"
-          wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O "$HOME/parquet-hadoop-bundle-1.13.1.jar"
-          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.5/flink-parquet-1.20.5.jar -O "$HOME/flink-parquet-1.20.5.jar"
-          wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
+          wget -q https://maven-central.storage.googleapis.com/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.5/flink-s3-fs-hadoop-1.20.5.jar -O "$HOME/flink-s3-fs-hadoop-1.20.5.jar"
+          wget -q https://maven-central.storage.googleapis.com/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O "$HOME/parquet-hadoop-bundle-1.13.1.jar"
+          wget -q https://maven-central.storage.googleapis.com/maven2/org/apache/flink/flink-parquet/1.20.5/flink-parquet-1.20.5.jar -O "$HOME/flink-parquet-1.20.5.jar"
+          wget -q https://maven-central.storage.googleapis.com/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
 
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
@@ -94,7 +93,6 @@ jobs:
         with:
           java-version: "17"
           distribution: "temurin"
-          cache: maven
       - name: Build LakeSoul Presto with Java 17
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -B package -f pom.xml -pl :lakesoul-presto-0.296 -Pcross-build -DskipTests -e
@@ -173,8 +171,8 @@ jobs:
         run: |
           cd ./script/benchmark/work-dir
           if [ ! -e mysql-connector-j-8.0.33.jar ]; then cp "$HOME/mysql-connector-j-8.0.33.jar" .; fi
-          if [ ! -e flink-connector-jdbc-3.2.0-1.19.jar ]; then wget -q --tries=3 --timeout=30 --retry-connrefused https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.2.0-1.19/flink-connector-jdbc-3.2.0-1.19.jar; fi
-          if [ ! -e assertj-core-3.23.1.jar ]; then wget -q --tries=3 --timeout=30 --retry-connrefused https://repo1.maven.org/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar; fi
+          if [ ! -e flink-connector-jdbc-3.2.0-1.19.jar ]; then wget -q --tries=3 --timeout=30 --retry-connrefused https://maven-central.storage.googleapis.com/maven2/org/apache/flink/flink-connector-jdbc/3.2.0-1.19/flink-connector-jdbc-3.2.0-1.19.jar; fi
+          if [ ! -e assertj-core-3.23.1.jar ]; then wget -q --tries=3 --timeout=30 --retry-connrefused https://maven-central.storage.googleapis.com/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar; fi
       - name: Create table and insert data
         run: |
           cd ./script/benchmark

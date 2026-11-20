@@ -75,7 +75,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Set up Python 3.9
         uses: actions/setup-python@v5
         with:
@@ -121,7 +120,7 @@ jobs:
           # binary, so the datafusion graph is compiled once instead of twice.
           cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17 \
             --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-datafusion \
-            --features=lakesoul-datafusion/ci --lib --tests \
+            --features=lakesoul-datafusion/ci,lakesoul-io-c/hdfs --lib --tests \
             --message-format=json > /tmp/cargo-build.json
           python3 - <<'PY' >> "$GITHUB_ENV"
           import json
