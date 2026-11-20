@@ -219,7 +219,9 @@ Local config files:
 
 ## Command preferences
 
-- Use `cargo -q` instead of `cargo`. 
+- Use `cargo -q` instead of `cargo`.
+- Use `cargo test --profile test-fast` (and other heavy Cargo builds with
+  `--profile test-fast`); the default debug profile fills the local disk.
 - Use `mvn -q` instead of `mvn`.
 - Prefer quiet command output unless debugging failures.
 
