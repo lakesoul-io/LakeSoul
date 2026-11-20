@@ -401,8 +401,9 @@ pub fn can_widen_field(from: &Field, to: &Field) -> bool {
                 let from_len = char_typmod_length(from.metadata().get("pg.typmod"));
                 let to_len = char_typmod_length(to.metadata().get("pg.typmod"));
                 match (from_len, to_len) {
-                    (None, _) => true,
-                    (Some(_), None) => false,
+                    (None, None) => true,
+                    (None, Some(_)) => false,
+                    (Some(_), None) => true,
                     (Some(from), Some(to)) => to >= from,
                 }
             }
