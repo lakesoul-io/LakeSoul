@@ -1,0 +1,29 @@
+LakeSoul PostgreSQL endpoint is installed.
+
+The coordinator Service is cluster-internal:
+  {{ include "lakesoul-pg.fullname" . }}-coordinator:{{ .Values.coordinator.service.port }}
+
+Connect with:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "lakesoul-pg.fullname" . }}-coordinator {{ .Values.coordinator.service.port }}:{{ .Values.coordinator.service.port }}
+  psql "postgresql://postgres@127.0.0.1:{{ .Values.coordinator.service.port }}/default"
+
+Workers: {{ .Values.worker.replicas }}
+Discovery: {{ .Values.distributed.discovery }}
+Subscriptions: {{ .Values.subscriptions.mode }}
+{{- if eq .Values.subscriptions.mode "runner" }}
+The subscription runner owns subscriber processes; its per-subscription logs
+are in {{ .Values.subscriptions.logDir }} inside the runner Pod.
+{{- else }}
+Subscriptions run inside the coordinator Pod. The coordinator must stay at one
+replica.
+{{- end }}
+{{- if .Values.metadata.postgresql.enabled }}
+
+WARNING: the in-cluster PostgreSQL is a single-replica development shape.
+Use an external managed metadata database for production.
+{{- end }}
+{{- if eq .Values.warehouse.type "pvc" }}
+
+WARNING: the local warehouse PVC is for single-node evaluation. Every Pod that
+mounts it must use the same node or the storage class must support RWX.
+{{- end }}

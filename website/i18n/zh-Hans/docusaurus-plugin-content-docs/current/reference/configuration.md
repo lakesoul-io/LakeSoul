@@ -49,9 +49,13 @@ Python SDK 构建索引时读取 `LAKESOUL_OBJECT_STORE_*`；见[向量索引配
 | `LAKESOUL_PG_MAX_QUERIES_PER_USER` | 每个用户的并发语句数 |
 | `LAKESOUL_PG_MAX_RESULT_ROWS` | 每条语句的行数上限 |
 | `LAKESOUL_PG_MAX_RESULT_BYTES` | 每条语句的结果大小上限 |
-| `LAKESOUL_PG_IVM` | 为 `INSERT ... SELECT` 开启增量 SQL |
+| `LAKESOUL_PG_IVM_DEFAULT` | 新连接默认 `lakesoul.ivm.enabled = on` |
 | `LAKESOUL_PG_JWT_AUTH` | 要求连接以 LakeSoul JWT 作为密码 |
 | `LAKESOUL_PG_RBAC` | 把每条连接限制在 token 的域内（需要 `LAKESOUL_PG_JWT_AUTH`） |
+| `LAKESOUL_PG_SUBSCRIPTION_EXECUTOR` | `local` 或 `external` 订阅执行方式 |
+| `LAKESOUL_PG_SUBSCRIPTION_RUNNER` | 只运行订阅 supervisor |
+| `LAKESOUL_PG_RUNNER_ID` | 订阅 runner 的租约 owner |
+| `LAKESOUL_PG_RUNNER_POLL_MS` | 订阅 runner 的 reconcile 间隔 |
 | `LAKESOUL_WORKER_THREADS` | Tokio worker 线程数 |
 
 完整参数表见 [PostgreSQL 运维](../engine/postgres/operations.md)。

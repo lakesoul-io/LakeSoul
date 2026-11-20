@@ -105,6 +105,42 @@ struct Cli {
     #[command(flatten)]
     pub subscribe: subscribe::SubscribeArgs,
 
+    /// Who owns subscriber processes: `local` starts them in this server,
+    /// `external` leaves them to a `--subscription-runner` process.
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_SUBSCRIPTION_EXECUTOR",
+        value_enum,
+        default_value = "local"
+    )]
+    subscription_executor: subscribe::supervisor::SubscriptionMode,
+
+    /// Run only the subscription supervisor (no PG wire server). It reconciles
+    /// SQL-created subscriptions from the metadata database and starts their
+    /// child processes.
+    #[clap(long, env = "LAKESOUL_PG_SUBSCRIPTION_RUNNER")]
+    subscription_runner: bool,
+
+    /// Stable identity of this subscription runner, used for the metadata
+    /// lease. Defaults to `$HOSTNAME`, then a pid-based name.
+    #[clap(long, env = "LAKESOUL_PG_RUNNER_ID")]
+    runner_id: Option<String>,
+
+    /// How often the subscription runner reconciles metadata, in milliseconds.
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_RUNNER_POLL_MS",
+        default_value_t = 2_000,
+        value_parser = clap::value_parser!(u64).range(100..)
+    )]
+    runner_poll_ms: u64,
+
+    /// Start every new connection with `lakesoul.ivm.enabled = on`. IVM is
+    /// always installed; without this flag only a session's own `SET` turns
+    /// it on. A session can still disable it with `SET`.
+    #[clap(long, env = "LAKESOUL_PG_IVM_DEFAULT")]
+    ivm_default: bool,
+
     /// Bind address, defaults to the loopback interface; container/cluster
     /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
     #[clap(long, env = "LAKESOUL_PG_BIND", default_value = "127.0.0.1")]
@@ -312,6 +348,11 @@ async fn main_inner(cli: Cli) -> Result<()> {
     alter::register_metrics();
     auth::register_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
+    if cli.subscription_runner
+        && (cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some())
+    {
+        rootcause::bail!("--subscription-runner and --subscribe are mutually exclusive");
+    }
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
         return subscribe::run(
             cli.subscribe,
@@ -333,20 +374,56 @@ async fn main_inner(cli: Cli) -> Result<()> {
         .clone()
         .or_else(|| std::env::var_os("LAKESOUL_LOG_DIR").map(PathBuf::from))
         .unwrap_or_else(|| std::env::temp_dir().join("lakesoul-subscriptions"));
-    let subscriptions = Arc::new(subscribe::supervisor::SubscriptionSupervisor::new(
-        Arc::clone(&meta_client),
-        program,
-        log_dir.clone(),
-    ));
-    info!(log_dir = %log_dir.display(), "subscription supervisor ready");
+    if cli.subscription_runner {
+        if cli.subscription_executor != subscribe::supervisor::SubscriptionMode::Local {
+            rootcause::bail!(
+                "--subscription-runner owns local subscriber processes; it cannot \
+                 also be configured as an external executor"
+            );
+        }
+        let runner_id = cli.runner_id.clone().unwrap_or_else(|| {
+            std::env::var("HOSTNAME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("runner-{}", std::process::id()))
+        });
+        return subscribe::subscription_runner::run(
+            Arc::clone(&meta_client),
+            program,
+            log_dir,
+            runner_id,
+            std::time::Duration::from_millis(cli.runner_poll_ms),
+        )
+        .await;
+    }
+    let executor = cli.subscription_executor;
+    let subscriptions =
+        Arc::new(subscribe::supervisor::SubscriptionSupervisor::with_mode(
+            Arc::clone(&meta_client),
+            program,
+            log_dir.clone(),
+            executor,
+        ));
+    info!(
+        log_dir = %log_dir.display(),
+        executor = ?executor,
+        "subscription supervisor ready"
+    );
     {
         let metadata = subscriptions.metadata().await;
         if let Err(error) = metadata.init_schema().await {
             warn!(%error, "subscription metadata schema is unavailable");
         }
     }
-    if let Err(error) = subscriptions.resume_all().await {
-        warn!(%error, "failed to resume subscriptions");
+    if executor == subscribe::supervisor::SubscriptionMode::Local {
+        if let Err(error) = subscriptions.resume_all().await {
+            warn!(%error, "failed to resume subscriptions");
+        }
+    } else {
+        info!(
+            "external subscription executor configured; start \
+             `postgres-lakesoul --subscription-runner` to run subscribers"
+        );
     }
 
     let auth_manager = Arc::new(AuthManager::new());
@@ -390,6 +467,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     .with_subscriptions(Arc::clone(&subscriptions))
     .with_federation(federation)
     .with_auth(auth)
+    .with_ivm_default(cli.ivm_default)
     .with_cluster_domain(cli.rbac_domain.clone());
     info!(
         version = lakesoul_build_info::VERSION,
@@ -686,6 +764,9 @@ mod cli_probe_tests {
             "jwt_auth": cli.jwt_auth,
             "rbac": cli.rbac,
             "rbac_domain": cli.rbac_domain,
+            "ivm_default": cli.ivm_default,
+            "subscription_executor": format!("{:?}", cli.subscription_executor),
+            "subscription_runner": cli.subscription_runner,
         })
     }
 
@@ -721,6 +802,38 @@ mod cli_probe_tests {
             .is_err()
         );
         assert!(Cli::try_parse_from(["pg", "token", "--user", "a"]).is_err());
+    }
+
+    #[test]
+    fn ivm_default_follows_cli_and_env() {
+        assert_eq!(probe(&[], &[])["ivm_default"], false);
+        assert_eq!(
+            probe(&[("LAKESOUL_PG_IVM_DEFAULT", "true")], &[])["ivm_default"],
+            true
+        );
+        assert_eq!(probe(&[], &["--ivm-default"])["ivm_default"], true);
+    }
+
+    #[test]
+    fn subscription_runner_flags_parse() {
+        assert_eq!(
+            probe(&[], &[])["subscription_executor"],
+            "Local",
+            "subscriptions stay local by default"
+        );
+        assert_eq!(
+            probe(&[("LAKESOUL_PG_SUBSCRIPTION_EXECUTOR", "external")], &[])["subscription_executor"],
+            "External"
+        );
+        assert_eq!(
+            probe(&[], &["--subscription-runner", "--runner-id", "r1"])["subscription_runner"],
+            true
+        );
+        assert!(Cli::try_parse_from(["pg", "--subscription-runner"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["pg", "--runner-poll-ms", "50"]).is_err(),
+            "a runner poll interval below 100 ms must be refused"
+        );
     }
 
     #[test]

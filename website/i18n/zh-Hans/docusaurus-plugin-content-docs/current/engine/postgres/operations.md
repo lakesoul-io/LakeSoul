@@ -31,13 +31,24 @@ SPDX-License-Identifier: Apache-2.0
 | `--max-queries-per-user` | `0` | 每个用户的并发语句数 |
 | `--max-result-rows` | `0` | 每条语句的行数上限 |
 | `--max-result-bytes` | `0` | 每条语句的编码结果大小上限 |
-| `--ivm` | 关闭 | 为 `INSERT ... SELECT` 开启增量 SQL |
+| `--ivm-default` | 关闭 | 新连接默认 `lakesoul.ivm.enabled = on`（`LAKESOUL_PG_IVM_DEFAULT`） |
+| `--subscription-executor` | `local` | `local` 由本进程拉起订阅子进程；`external` 交给 `--subscription-runner`（`LAKESOUL_PG_SUBSCRIPTION_EXECUTOR`） |
+| `--subscription-runner` | 关闭 | 只运行订阅 supervisor，不启动 PG wire server |
+| `--runner-id` | 主机名 / pid | 订阅 runner 的租约 owner |
+| `--runner-poll-ms` | `2000` | 订阅 runner 的 reconcile 间隔 |
 | `--distributed-workers` | — | 逗号分隔的 worker 端点 |
 | `--distributed-fallback-to-local` | — | 分布式计划失败时本地执行 |
 | `--jwt-auth` | 关闭 | 要求连接以 LakeSoul JWT 作为密码（`LAKESOUL_PG_JWT_AUTH`） |
 | `--rbac` | 关闭 | 把每条连接限制在 token 的域内（`LAKESOUL_PG_RBAC`，需要 `--jwt-auth`） |
 
 增量 SQL 与分布式执行可以同时启用；每个 worker 都必须启用 IVM，并使用相同的协议版本。
+
+IVM 总是安装；`--ivm-default` 只改变每个连接 `lakesoul.ivm.enabled` 的初始值，
+连接仍可用 `SET` 覆盖。
+
+`--subscription-executor external` 使 `CREATE/DROP/ALTER SUBSCRIPTION` 变成
+metadata 控制面操作；必须另外运行 `postgres-lakesoul --subscription-runner`，
+详见[PostgreSQL 订阅](subscription.md)。
 
 `--jwt-auth` 与 `--rbac` 详见[认证与权限](authentication.md)。
 

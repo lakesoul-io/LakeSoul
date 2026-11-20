@@ -19,7 +19,8 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 
 IVM maintenance is always available; it is enabled per connection with
 `SET lakesoul.ivm.enabled = on`. Without that switch, the
-statement is a normal insert.
+statement is a normal insert. To make new connections start with it on, pass
+`--ivm-default` or set `LAKESOUL_PG_IVM_DEFAULT=true`.
 
 ## 2. Create a target table
 

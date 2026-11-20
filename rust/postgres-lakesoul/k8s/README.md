@@ -4,6 +4,11 @@ Plain YAML (kustomize), one image, two entry points selected by `pod command`.
 This documents the **minimum** container/K8s integration only: EndpointSlice
 discovery in the coordinator, shared across all PG sessions.
 
+For a Helm chart with the external subscription runner, configurable worker
+resources, an optional in-cluster metadata PostgreSQL and a local PVC
+development profile, see
+[`../helm/lakesoul-pg`](../helm/lakesoul-pg/README.md).
+
 ## What this phase does and does not provide
 
 Included:

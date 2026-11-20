@@ -1,0 +1,27 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+The coordinator resolves this Service's EndpointSlices and selects the port
+named `grpc`.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lakesoul-pg.workerServiceName" . }}
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lakesoul-pg.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  ports:
+    - name: grpc
+      port: {{ .Values.worker.service.port }}
+      targetPort: grpc
+    - name: metrics
+      port: 19091
+      targetPort: metrics

@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# One container, one command:
+#
+#   docker compose -f docker/lakesoul-all-in-one/compose.yaml up -d
+#
+# The default warehouse is ${PWD}/warehouse and the metadata PostgreSQL data
+# directory is ${PWD}/pgdata. Both are bind mounts, so `docker compose down`
+# keeps the data.
+services:
+  lakesoul:
+    image: lakesoul-all-in-one:dev
+    container_name: lakesoul-all-in-one
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:5433:5433"
+    environment:
+      POSTGRES_USER: ${LAKESOUL_METADATA_USER:-lakesoul}
+      POSTGRES_PASSWORD: ${LAKESOUL_METADATA_PASSWORD:-lakesoul}
+      POSTGRES_DB: ${LAKESOUL_METADATA_DB:-lakesoul}
+      LAKESOUL_WAREHOUSE: file:///warehouse
+      WORKER_THREADS: ${WORKER_THREADS:-4}
+      WORKER_MEMORY_LIMIT: ${WORKER_MEMORY_LIMIT:-4Gi}
+      WORKER_VORTEX_DECODE_BUDGET: ${WORKER_VORTEX_DECODE_BUDGET:-1Gi}
+      COORDINATOR_THREADS: ${COORDINATOR_THREADS:-4}
+      COORDINATOR_MEMORY_LIMIT: ${COORDINATOR_MEMORY_LIMIT:-2Gi}
+      COORDINATOR_VORTEX_DECODE_BUDGET: ${COORDINATOR_VORTEX_DECODE_BUDGET:-512Mi}
+      LAKESOUL_DISTRIBUTED_TARGET_PARTITIONS: ${LAKESOUL_DISTRIBUTED_TARGET_PARTITIONS:-4}
+    volumes:
+      - "${PWD:-.}/warehouse:/warehouse"
+      - "${PWD:-.}/pgdata:/var/lib/postgresql/data"
+      - "${PWD:-.}/scratch:/var/scratch"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5433"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    # Hard limits apply to the whole container. The worker's own execution
+    # budget is WORKER_MEMORY_LIMIT above; keep this limit larger than the
+    # coordinator + worker pools plus their non-pool memory.
+    # cpus: "4"
+    # mem_limit: 8g

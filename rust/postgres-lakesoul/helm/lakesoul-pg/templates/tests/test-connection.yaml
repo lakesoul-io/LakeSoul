@@ -1,0 +1,28 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if and .Values.tests.enabled (not .Values.auth.jwt) }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-test-connection
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: psql
+      image: {{ .Values.tests.image | quote }}
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - >-
+          psql "postgresql://postgres@{{ include "lakesoul-pg.fullname" . }}-coordinator:{{ .Values.coordinator.service.port }}/default"
+          -v ON_ERROR_STOP=1 -c "select 1"
+{{- end }}

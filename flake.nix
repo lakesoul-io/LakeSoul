@@ -211,6 +211,7 @@
         ])
         (pkgs.lib.fileset.unions [
           ./rust/postgres-lakesoul/k8s
+          ./rust/postgres-lakesoul/helm
           ./rust/postgres-lakesoul/benchmark
         ]);
     };
@@ -317,6 +318,59 @@
       };
     };
 
+    # Self-contained evaluation image: PostgreSQL metadata, one worker and the
+    # PG wire coordinator in one container. The k8s image above stays the
+    # production shape; this one is for `docker compose` / one `docker run`.
+    allInOneImage = pkgs.dockerTools.streamLayeredImage {
+      name = "lakesoul-all-in-one";
+      tag = "dev";
+      contents = [
+        lakesoulBins
+        pkgs.postgresql_18
+        pkgs.util-linux
+        pkgs.bash
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.cacert
+        pkgs.dockerTools.fakeNss
+      ];
+      extraCommands = ''
+        mkdir -p app var/lib/postgresql/data var/scratch var/log/lakesoul \
+          warehouse tmp
+        chmod 1777 var/scratch tmp
+        cp ${./docker/lakesoul-all-in-one/entrypoint.sh} app/entrypoint.sh
+        chmod +x app/entrypoint.sh
+        cp ${./script/meta_init.sql} app/meta_init.sql
+        ln -s ${lakesoulBins}/bin/postgres-lakesoul app/postgres-lakesoul
+        ln -s ${lakesoulBins}/bin/lakesoul-worker app/lakesoul-worker
+      '';
+      config = {
+        # The entrypoint starts as root so it can chown bind mounts, then
+        # drops every process to nobody (65534) from fakeNss.
+        User = "0:0";
+        WorkingDir = "/app";
+        Entrypoint = ["/app/entrypoint.sh"];
+        Env = [
+          "PATH=${
+            pkgs.lib.makeBinPath [
+              pkgs.postgresql_18
+              pkgs.util-linux
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.gnugrep
+            ]
+          }"
+          "TMPDIR=/var/scratch"
+          "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+          "LANG=C.UTF-8"
+        ];
+        ExposedPorts = {
+          "5433/tcp" = {};
+          "19090/tcp" = {};
+        };
+      };
+    };
+
     # Benchmark runner image (`rust/postgres-lakesoul/benchmark`): the console
     # loads TPC-H data (the PG endpoint is read-only), python3 runs the
     # stdlib-only driver, busybox runs the resource sampler sidecar.
@@ -418,6 +472,8 @@
       lakesoul = lakesoulBins;
       # `nix build .#image && ./result | docker load`
       image = lakesoulImage;
+      # `nix build .#all-in-one-image && ./result | docker load`
+      all-in-one-image = allInOneImage;
       # `nix build .#bench-image && ./result | docker load`
       bench-image = benchImage;
     };

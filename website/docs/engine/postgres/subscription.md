@@ -286,6 +286,41 @@ directory with `--subscription-log-dir` when starting the endpoint; if it is not
 set, `LAKESOUL_LOG_DIR` is used, otherwise a directory under the system temporary
 directory is used.
 
+## External subscription runner
+
+By default the endpoint starts subscriber children itself (`local` executor).
+For Kubernetes, or to keep snapshot CPU and memory out of the coordinator Pod,
+run the endpoint with an external executor and start a dedicated runner:
+
+```bash
+# Coordinator: only write desired state and wait for the runner where needed.
+postgres-lakesoul --subscription-executor external ...
+
+# One runner owns subscriber children and their leases.
+postgres-lakesoul --subscription-runner \
+  --runner-id "$HOSTNAME" \
+  --subscription-log-dir /var/log/lakesoul/subscriptions
+```
+
+The runner reconciles `subscription.subscriptions` on a poll interval. It holds
+`subscription.progress.owner` / `lease_expires_at` while a child runs, starts
+children for `starting`, stops them for `disabled`, and completes `dropping`.
+Run one runner replica: the lease prevents two runners from managing one
+subscription, but it is not yet a full HA protocol, and MySQL sources do not
+have a replication-slot guard against a duplicate subscriber.
+
+The SQL semantics differ in this mode:
+
+- `CREATE SUBSCRIPTION` and `ALTER ... ENABLE` return after writing the desired
+  state; the child starts asynchronously.
+- `ALTER ... DISABLE` and `DROP SUBSCRIPTION` wait up to 30 seconds for the
+  runner to reach `disabled` or remove the row. A timeout returns SQLSTATE
+  `55006`; the row stays in `disabling` / `dropping` so a later command can
+  retry once the runner is available.
+
+CLI-created subscriptions are not reconciled by the runner; they remain
+manually managed.
+
 ## Lifecycle
 
 ```sql
@@ -301,8 +336,8 @@ DROP SUBSCRIPTION IF EXISTS users_from_app;
 - `ENABLE` starts the process again from the persisted watermark.
 - `DROP` stops the process, drops the source replication slot, and removes the
   subscription metadata.
-- SQL-created subscriptions that are enabled are started again when the endpoint
-  starts.
+- SQL-created subscriptions that are enabled are started again when the local
+  endpoint or the external subscription runner starts.
 - A child that exits unexpectedly is recorded as `error`; it is not retried in a
   loop. `ENABLE` or an endpoint restart starts it again.
 
@@ -317,7 +352,8 @@ manually launched subscriber is not duplicated.
 2. The definition and zero progress are written to
    `subscription.subscriptions`, `subscription.tables` and
    `subscription.progress`.
-3. The endpoint starts a local child process:
+3. The endpoint (local mode) or the standalone runner (external mode) starts a
+   child process:
 
    ```text
    postgres-lakesoul --subscribe --subscription-id <name>

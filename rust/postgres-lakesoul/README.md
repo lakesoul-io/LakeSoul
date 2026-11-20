@@ -2,7 +2,7 @@
 
 `postgres-lakesoul` is a LakeSoul service that implements the PostgreSQL protocol: it supports queries, `CREATE TABLE`/`DROP TABLE`, the schema-evolution forms of `ALTER TABLE`, `INSERT`, `UPDATE` on non-CDC primary-key tables, and the general `INSERT ... ON CONFLICT DO UPDATE` within the boundaries below, but is not a complete PostgreSQL. The matrix below records the concrete evidence for each integration target; it does not treat every DataFusion SQL capability as verified compatibility.
 
-> The same binary can run the PostgreSQL logical-replication subscriber with `--subscribe`; the server also supports `CREATE/DROP/ALTER SUBSCRIPTION` and performs synchronization through a local child process, see the [subscription design notes](SUBSCRIBE.md). It is not part of the SQL compatibility matrix below.
+> The same binary can run the PostgreSQL logical-replication subscriber with `--subscribe`; the server also supports `CREATE/DROP/ALTER SUBSCRIPTION` and performs synchronization through a local child process (or a separate `--subscription-runner` with `--subscription-executor external`), see the [subscription design notes](SUBSCRIBE.md). It is not part of the SQL compatibility matrix below.
 
 ## Running
 

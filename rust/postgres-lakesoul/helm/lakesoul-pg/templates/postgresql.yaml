@@ -1,0 +1,105 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+Development-only in-cluster metadata PostgreSQL. Production deployments use
+metadata.existingSecret with an external database.
+*/}}
+{{- if .Values.metadata.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lakesoul-pg.postgresqlServiceName" . }}
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metadata-postgresql
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lakesoul-pg.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: metadata-postgresql
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lakesoul-pg.postgresqlServiceName" . }}
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metadata-postgresql
+spec:
+  serviceName: {{ include "lakesoul-pg.postgresqlServiceName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metadata-postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "lakesoul-pg.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: metadata-postgresql
+    spec:
+      securityContext:
+        fsGroup: 999
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgresql
+          image: {{ .Values.metadata.postgresql.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ include "lakesoul-pg.postgresqlDatabase" . | quote }}
+            - name: POSTGRES_USER
+              value: {{ include "lakesoul-pg.postgresqlUsername" . | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lakesoul-pg.metadataSecretName" . }}
+                  key: pg-password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ include "lakesoul-pg.postgresqlUsername" . | quote }}
+                - -d
+                - {{ include "lakesoul-pg.postgresqlDatabase" . | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.metadata.postgresql.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/10-lakesoul.sql
+              subPath: meta_init.sql
+      volumes:
+        - name: init
+          configMap:
+            name: {{ include "lakesoul-pg.fullname" . }}-meta-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.metadata.postgresql.persistence.storageClassName }}
+        storageClassName: {{ .Values.metadata.postgresql.persistence.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.metadata.postgresql.persistence.size | quote }}
+{{- end }}

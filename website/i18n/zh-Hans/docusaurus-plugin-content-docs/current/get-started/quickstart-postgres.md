@@ -12,6 +12,21 @@ SPDX-License-Identifier: Apache-2.0
 
 这一页启动 LakeSoul 引擎，通过 PostgreSQL wire protocol 暴露出来，并用 `psql` 跑第一条 `CREATE TABLE` / `INSERT` / `SELECT`。
 
+## 单容器体验
+
+如果只需要本地端点，仓库还提供单容器镜像，内含 PostgreSQL 元数据库、一个分布式
+worker 和 coordinator：
+
+```bash
+nix build .#all-in-one-image
+./result | docker load
+docker compose -f docker/lakesoul-all-in-one/compose.yaml up -d
+```
+
+warehouse 是 `./warehouse`，元数据目录是 `./pgdata`。配置和注意事项见
+[`docker/lakesoul-all-in-one`](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-all-in-one)。
+后面的内容是手动部署方式。
+
 ## 前置条件
 
 - 一个 PostgreSQL 14+ 数据库，作为 LakeSoul 元数据存储。快速开始用 Docker。

@@ -1,0 +1,58 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-config
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+data:
+  LAKESOUL_PG_BIND: "0.0.0.0"
+  LAKESOUL_PG_PORT: "5432"
+  LAKESOUL_PG_METRICS_ADDR: "0.0.0.0:19090"
+  LAKESOUL_WORKER_BIND: "0.0.0.0"
+  LAKESOUL_WORKER_PORT: {{ .Values.worker.service.port | quote }}
+  LAKESOUL_WORKER_METRICS_ADDR: "0.0.0.0:19091"
+  LAKESOUL_DISTRIBUTED_DISCOVERY: {{ .Values.distributed.discovery | quote }}
+  {{- if eq .Values.distributed.discovery "kubernetes" }}
+  LAKESOUL_K8S_WORKER_SERVICE: {{ include "lakesoul-pg.workerServiceName" . | quote }}
+  {{- end }}
+  {{- if and (eq .Values.distributed.discovery "static") .Values.distributed.staticWorkers }}
+  LAKESOUL_DISTRIBUTED_WORKERS: {{ join "," .Values.distributed.staticWorkers | quote }}
+  {{- end }}
+  LAKESOUL_DISCOVERY_POLL_INTERVAL_SECONDS: {{ .Values.distributed.pollIntervalSeconds | quote }}
+  LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS: {{ .Values.distributed.maxStalenessSeconds | quote }}
+  LAKESOUL_DISTRIBUTED_FALLBACK_LOCAL: {{ .Values.distributed.fallbackLocal | toString | quote }}
+  LAKESOUL_DISTRIBUTED_TARGET_PARTITIONS: {{ .Values.distributed.targetPartitions | quote }}
+  LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION: {{ .Values.distributed.bytesPerPartition | quote }}
+  LAKESOUL_DISTRIBUTED_MAX_TASKS_PER_STAGE: {{ .Values.distributed.maxTasksPerStage | quote }}
+  LAKESOUL_DISTRIBUTED_LOCALITY: {{ .Values.distributed.locality | toString | quote }}
+  LAKESOUL_PG_IVM_DEFAULT: {{ .Values.ivm.defaultEnabled | toString | quote }}
+  LAKESOUL_IVM_VIEW_PARALLELISM: {{ .Values.ivm.viewParallelism | quote }}
+  LAKESOUL_IVM_MAX_ACTIVE_TASKS: {{ .Values.ivm.maxActiveTasks | quote }}
+  LAKESOUL_IVM_MAX_DERIVED_STEPS: {{ .Values.ivm.maxDerivedSteps | quote }}
+  LAKESOUL_IVM_STATE_INDEX: {{ .Values.ivm.stateIndex | quote }}
+  LAKESOUL_IVM_INTERNAL_FILE_FORMAT: {{ .Values.ivm.internalFileFormat | quote }}
+  {{- if .Values.ivm.rebuildRatio }}
+  LAKESOUL_IVM_REBUILD_RATIO: {{ .Values.ivm.rebuildRatio | quote }}
+  {{- end }}
+  {{- if .Values.ivm.topkMaterializeBytes }}
+  LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES: {{ .Values.ivm.topkMaterializeBytes | quote }}
+  {{- end }}
+  TMPDIR: "/var/scratch"
+  MALLOC_CONF: "background_thread:true"
+{{- if or .Values.metadata.postgresql.enabled .Values.metadata.initSchema }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-meta-init
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+data:
+  meta_init.sql: |-
+    {{- .Files.Get "files/meta_init.sql" | nindent 4 }}
+{{- end }}

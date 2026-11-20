@@ -1,0 +1,213 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Defaults target a production shape: an external metadata PostgreSQL and
+# object storage, one coordinator and two workers. See values-dev.yaml for a
+# self-contained single-node evaluation shape.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # Use the image built by `nix build .#image`. The chart never changes the
+  # tag for you; use an immutable digest or a release tag in production.
+  repository: lakesoul-k8s
+  tag: dev
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+serviceAccount:
+  create: true
+  coordinatorName: ""
+  workerName: ""
+  runnerName: ""
+  imagePullSecrets: []
+
+coordinator:
+  # Phase one has no coordinator HA. This value is validated as exactly 1.
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 5432
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  threads: 4
+  execution:
+    memoryLimit: 2Gi
+    vortexDecodeBudget: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  extraArgs: []
+  scratch:
+    storageClass: ""
+    size: 20Gi
+
+worker:
+  replicas: 2
+  service:
+    port: 50051
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  threads: 4
+  execution:
+    memoryLimit: 4Gi
+    vortexDecodeBudget: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  extraArgs: []
+  scratch:
+    storageClass: ""
+    size: 40Gi
+
+# Metadata PostgreSQL. In production use metadata.existingSecret with the keys
+# pg-url, pg-username and pg-password. The in-cluster StatefulSet below is for
+# the development profile only.
+metadata:
+  existingSecret: ""
+  url: ""
+  username: ""
+  password: ""
+  # Run script/meta_init.sql from a Job against an external database. Requires
+  # metadata.psqlUrl because the server URL is JDBC-flavoured.
+  initSchema: false
+  psqlUrl: ""
+  initImage: postgres:18
+  postgresql:
+    enabled: false
+    image: postgres:18
+    database: lakesoul
+    username: lakesoul
+    password: ""
+    existingSecret: ""
+    persistence:
+      size: 10Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+# Table data. S3/RustFS is the production shape. PVC is only for single-node
+# evaluation: every Pod mounting it must use the same node or RWX storage.
+warehouse:
+  type: s3
+  prefix: ""
+  existingSecret: ""
+  s3:
+    endpoint: ""
+    bucket: ""
+    accessKeyId: ""
+    secretAccessKey: ""
+    virtualHostStyle: false
+  pvc:
+    existingClaim: ""
+    size: 50Gi
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+
+distributed:
+  discovery: kubernetes
+  workerService: ""
+  # Used when discovery=static.
+  staticWorkers: []
+  pollIntervalSeconds: 5
+  maxStalenessSeconds: 30
+  fallbackLocal: false
+  targetPartitions: 4
+  bytesPerPartition: "16777216"
+  maxTasksPerStage: 0
+  locality: false
+
+ivm:
+  # New sessions start with lakesoul.ivm.enabled, matching the single-node
+  # image. The workers always receive the options below; they do not have a
+  # session GUC.
+  defaultEnabled: true
+  viewParallelism: 1
+  maxActiveTasks: 4
+  maxDerivedSteps: 64
+  stateIndex: auto
+  internalFileFormat: vortex
+  rebuildRatio: ""
+  topkMaterializeBytes: ""
+
+auth:
+  jwt: false
+  rbac: false
+  rbacDomain: ""
+
+subscriptions:
+  # runner: CREATE/DROP/ALTER writes metadata; a separate Deployment owns
+  # child processes. coordinator: the coordinator starts children itself and
+  # must stay at one replica.
+  mode: runner
+  logDir: /var/log/lakesoul/subscriptions
+  runner:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    threads: 2
+    execution:
+      memoryLimit: 2Gi
+      vortexDecodeBudget: 512Mi
+    pollMs: 2000
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podAnnotations: {}
+    extraArgs: []
+    extraEnv: []
+
+observability:
+  metrics:
+    enabled: true
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    labels: {}
+  tracing:
+    otlpEndpoint: ""
+
+networkPolicy:
+  enabled: false
+  # CIDRs are only used when networkPolicy.enabled is true. Leave empty to
+  # allow all egress of that kind; the default manifest keeps networking open.
+  apiServerCidr: ""
+  metadataCidr: ""
+  objectStoreCidr: ""
+  sourcePostgresCidr: ""
+
+pdb:
+  worker:
+    enabled: false
+    minAvailable: 1
+
+tests:
+  enabled: true
+  image: postgres:18

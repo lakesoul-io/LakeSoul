@@ -30,7 +30,11 @@ SPDX-License-Identifier: Apache-2.0
 | `--max-queries-per-user` | `0` | Concurrent statements per user |
 | `--max-result-rows` | `0` | Row limit per statement |
 | `--max-result-bytes` | `0` | Encoded result size limit per statement |
-| `--ivm` | off | Enable incremental SQL for `INSERT ... SELECT` |
+| `--ivm-default` | off | Start new sessions with `lakesoul.ivm.enabled = on` (`LAKESOUL_PG_IVM_DEFAULT`) |
+| `--subscription-executor` | `local` | `local` starts subscriber children in this server; `external` leaves them to `--subscription-runner` (`LAKESOUL_PG_SUBSCRIPTION_EXECUTOR`) |
+| `--subscription-runner` | off | Run only the subscription supervisor, without the PG wire server |
+| `--runner-id` | hostname / pid | Lease owner for the subscription runner |
+| `--runner-poll-ms` | `2000` | Subscription runner reconcile interval |
 | `--distributed-workers` | — | Comma-separated worker endpoints |
 | `--distributed-fallback-to-local` | — | Run a query locally when distributed planning fails |
 | `--jwt-auth` | off | Require a LakeSoul JWT as the connection password (`LAKESOUL_PG_JWT_AUTH`) |
@@ -38,6 +42,14 @@ SPDX-License-Identifier: Apache-2.0
 
 Incremental SQL and distributed execution can be enabled together; every worker
 must be built with IVM and the same protocol generation.
+
+IVM is always installed. `--ivm-default` only changes the initial value of the
+per-session `lakesoul.ivm.enabled` switch; `SET` still overrides it.
+
+`--subscription-executor external` makes `CREATE/DROP/ALTER SUBSCRIPTION`
+control-plane operations in metadata. A separate process must run
+`postgres-lakesoul --subscription-runner`; see
+[PostgreSQL subscriptions](subscription.md).
 
 `--jwt-auth` and `--rbac` are covered in
 [Authentication and Permissions](authentication.md).

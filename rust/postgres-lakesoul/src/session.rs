@@ -264,6 +264,10 @@ pub struct PgSessionFactory {
     catalog_options: PgCatalogOptions,
     distributed: bool,
     ivm: Option<Arc<crate::ivm::IvmService>>,
+    /// Value of `lakesoul.ivm.enabled` for new connections. The server keeps
+    /// the upstream default (off) unless the deployment asks for IVM by
+    /// default.
+    ivm_default: bool,
     /// Object-store prefix new tables are created under; `CREATE TABLE`
     /// refuses to run without one.
     warehouse: Option<String>,
@@ -319,6 +323,7 @@ impl PgSessionFactory {
             auth_manager,
             distributed: false,
             ivm: None,
+            ivm_default: false,
             catalog_options: PgCatalogOptions {
                 include_synthetic_postgres_database: false,
             },
@@ -402,6 +407,13 @@ impl PgSessionFactory {
     /// when the connection enables `lakesoul.ivm.enabled`.
     pub fn with_ivm(mut self, ivm: Arc<crate::ivm::IvmService>) -> Self {
         self.ivm = Some(ivm);
+        self
+    }
+
+    /// Start new connections with `lakesoul.ivm.enabled` set to `enabled`.
+    /// A connection can still override it with `SET`.
+    pub fn with_ivm_default(mut self, enabled: bool) -> Self {
+        self.ivm_default = enabled;
         self
     }
 
@@ -538,7 +550,9 @@ impl PgSessionFactory {
         config
             .options_mut()
             .extensions
-            .insert(crate::ivm::IvmSessionConfig::default());
+            .insert(crate::ivm::IvmSessionConfig {
+                enabled: self.ivm_default,
+            });
         config.options_mut().extensions.insert(PgIdentityConfig {
             user: identity.user.clone(),
             database: identity.database.clone(),

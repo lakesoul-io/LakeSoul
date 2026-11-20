@@ -1,0 +1,143 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-coordinator
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+spec:
+  replicas: {{ .Values.coordinator.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      labels:
+        {{- include "lakesoul-pg.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: coordinator
+      {{- with .Values.coordinator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "lakesoul-pg.coordinatorServiceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres-lakesoul
+          image: {{ include "lakesoul-pg.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/postgres-lakesoul"]
+          args:
+            - --worker-threads
+            - {{ .Values.coordinator.threads | quote }}
+            - --memory-limit
+            - {{ .Values.coordinator.execution.memoryLimit | quote }}
+            - --vortex-decode-budget
+            - {{ .Values.coordinator.execution.vortexDecodeBudget | quote }}
+            {{- range .Values.coordinator.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: pg
+              containerPort: 5432
+            - name: metrics
+              containerPort: 19090
+          envFrom:
+            - configMapRef:
+                name: {{ include "lakesoul-pg.fullname" . }}-config
+          env:
+            {{- include "lakesoul-pg.metadataEnv" . | nindent 12 }}
+            {{- include "lakesoul-pg.warehouseEnv" . | nindent 12 }}
+            {{- if eq .Values.distributed.discovery "kubernetes" }}
+            - name: LAKESOUL_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
+            - name: LAKESOUL_PG_JWT_AUTH
+              value: {{ .Values.auth.jwt | toString | quote }}
+            - name: LAKESOUL_PG_RBAC
+              value: {{ .Values.auth.rbac | toString | quote }}
+            {{- if .Values.auth.rbacDomain }}
+            - name: LAKESOUL_PG_RBAC_DOMAIN
+              value: {{ .Values.auth.rbacDomain | quote }}
+            {{- end }}
+            - name: LAKESOUL_PG_SUBSCRIPTION_EXECUTOR
+              value: {{ ternary "external" "local" (eq .Values.subscriptions.mode "runner") | quote }}
+            {{- if eq .Values.subscriptions.mode "coordinator" }}
+            - name: LAKESOUL_PG_SUBSCRIPTION_LOG_DIR
+              value: {{ .Values.subscriptions.logDir | quote }}
+            {{- end }}
+            {{- with .Values.observability.tracing.otlpEndpoint }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.instance.id=$(POD_NAME)
+            {{- end }}
+            {{- with .Values.coordinator.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.coordinator.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/scratch
+            {{- include "lakesoul-pg.warehouseVolumeMount" . | nindent 12 }}
+            {{- if eq .Values.subscriptions.mode "coordinator" }}
+            - name: subscription-logs
+              mountPath: {{ .Values.subscriptions.logDir | quote }}
+            {{- end }}
+      volumes:
+        - name: scratch
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                {{- if .Values.coordinator.scratch.storageClass }}
+                storageClassName: {{ .Values.coordinator.scratch.storageClass | quote }}
+                {{- end }}
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: {{ .Values.coordinator.scratch.size | quote }}
+        {{- include "lakesoul-pg.warehouseVolume" . | nindent 8 }}
+        {{- if eq .Values.subscriptions.mode "coordinator" }}
+        - name: subscription-logs
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.coordinator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coordinator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coordinator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

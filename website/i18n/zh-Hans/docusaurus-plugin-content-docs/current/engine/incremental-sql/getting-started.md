@@ -14,11 +14,13 @@ SPDX-License-Identifier: Apache-2.0
 ## 1. 以增量 SQL 启动端点
 
 ```bash
-cargo run -p postgres-lakesoul -- --port 5433 --ivm \
+cargo run -p postgres-lakesoul -- --port 5433 \
   --warehouse-prefix file:///tmp/lakesoul/warehouse
 ```
 
-`--ivm` 开启 `INSERT ... SELECT` 的维护路径。不加它时，这条语句就是普通插入。
+IVM 维护路径始终可用，按连接用 `SET lakesoul.ivm.enabled = on` 开启；不加这个
+开关时，`INSERT ... SELECT` 就是普通插入。需要新连接默认开启时，启动参数加
+`--ivm-default`（或设置 `LAKESOUL_PG_IVM_DEFAULT=true`）。
 
 ## 2. 创建目标表
 

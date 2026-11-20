@@ -565,6 +565,13 @@ const JWT_TEST_SECRET: &str = "server-tests-jwt-secret";
 
 /// A startup handler over a fresh factory with the given authentication.
 async fn handler_with_auth(auth: crate::auth::AuthSettings) -> LakeSoulStartupHandler {
+    handler_with_ivm_default(auth, false).await
+}
+
+async fn handler_with_ivm_default(
+    auth: crate::auth::AuthSettings,
+    ivm_default: bool,
+) -> LakeSoulStartupHandler {
     let meta_client = Arc::new(
         MetaDataClient::from_env()
             .await
@@ -576,7 +583,8 @@ async fn handler_with_auth(auth: crate::auth::AuthSettings) -> LakeSoulStartupHa
         Arc::new(datafusion_postgres::auth::AuthManager::new()),
     )
     .expect("failed to create session factory")
-    .with_auth(auth);
+    .with_auth(auth)
+    .with_ivm_default(ivm_default);
     LakeSoulStartupHandler::new(
         Arc::new(factory),
         Arc::new(crate::cancel::CancelRegistry::new()),
@@ -654,6 +662,61 @@ async fn startup_without_jwt_completes_on_the_startup_message() {
         .expect("connection session installed");
     assert_eq!(state.session.identity.user, "lakesoul_user");
     assert_eq!(state.session.identity.database, "default");
+}
+
+#[tokio::test]
+async fn ivm_default_seeds_a_new_connection() {
+    let handler =
+        handler_with_ivm_default(crate::auth::AuthSettings::default(), true).await;
+    let mut client = MockClient::new();
+    handler
+        .on_startup(&mut client, startup_message("lakesoul_user"))
+        .await
+        .expect("startup");
+    let state = client
+        .session_extensions()
+        .get::<ConnectionSession>()
+        .expect("connection session installed");
+    let enabled = state
+        .session
+        .context
+        .state()
+        .config()
+        .options()
+        .extensions
+        .get::<crate::ivm::IvmSessionConfig>()
+        .map(|config| config.enabled);
+    assert_eq!(
+        enabled,
+        Some(true),
+        "the deployment default applies to new sessions"
+    );
+
+    let handler =
+        handler_with_ivm_default(crate::auth::AuthSettings::default(), false).await;
+    let mut client = MockClient::new();
+    handler
+        .on_startup(&mut client, startup_message("lakesoul_user"))
+        .await
+        .expect("startup");
+    let state = client
+        .session_extensions()
+        .get::<ConnectionSession>()
+        .expect("connection session installed");
+    let enabled = state
+        .session
+        .context
+        .state()
+        .config()
+        .options()
+        .extensions
+        .get::<crate::ivm::IvmSessionConfig>()
+        .map(|config| config.enabled);
+    assert_eq!(
+        enabled,
+        Some(false),
+        "the default remains off without the flag"
+    );
 }
 
 #[tokio::test]

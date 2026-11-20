@@ -29,6 +29,7 @@ mod snapshot;
 mod source;
 pub(crate) mod sql;
 mod state;
+pub(crate) mod subscription_runner;
 pub(crate) mod supervisor;
 
 use std::collections::HashSet;
