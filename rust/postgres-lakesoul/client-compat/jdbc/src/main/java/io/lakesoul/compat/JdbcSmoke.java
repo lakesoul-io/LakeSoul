@@ -32,9 +32,10 @@ public final class JdbcSmoke {
     private JdbcSmoke() {}
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 6) {
+        if (args.length != 6 && args.length != 7) {
             throw new IllegalArgumentException(
-                    "usage: JdbcSmoke <host> <port> <database> <user> <password> <table>");
+                    "usage: JdbcSmoke <host> <port> <database> <user> <password> <table>"
+                            + " [sslmode]");
         }
         String host = args[0];
         String port = args[1];
@@ -42,6 +43,7 @@ public final class JdbcSmoke {
         String user = args[3];
         String password = args[4];
         String table = args[5];
+        String sslmode = args.length == 7 ? args[6] : "disable";
 
         String url =
                 "jdbc:postgresql://"
@@ -50,7 +52,9 @@ public final class JdbcSmoke {
                         + port
                         + "/"
                         + database
-                        + "?sslmode=disable&ApplicationName=lakesoul-jdbc-compat";
+                        + "?sslmode="
+                        + sslmode
+                        + "&ApplicationName=lakesoul-jdbc-compat";
         try (Connection connection = DriverManager.getConnection(url, user, password)) {
             check(connection.isValid(2), "Connection.isValid");
             run(connection, table);

@@ -58,6 +58,26 @@ export LAKESOUL_PG_URL=${LAKESOUL_PG_URL:-"jdbc:postgresql://127.0.0.1:5432/lake
 export LAKESOUL_PG_USERNAME=${LAKESOUL_PG_USERNAME:-lakesoul_test}
 export LAKESOUL_PG_PASSWORD=${LAKESOUL_PG_PASSWORD:-lakesoul_test}
 
+# A self-signed certificate is enough for sslmode=require, which encrypts
+# without validating the chain. The key must be PKCS#8: the server rejects
+# anything else at start-up instead of silently serving plaintext.
+TLS_DIR="$WAREHOUSE/tls"
+mkdir -p "$TLS_DIR"
+TLS_CERT="$TLS_DIR/server.crt"
+TLS_KEY="$TLS_DIR/server.key"
+if ! command -v openssl >/dev/null 2>&1; then
+  echo "openssl is required to generate the TLS test certificate" >&2
+  exit 1
+fi
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+  -out "$TLS_KEY" >/dev/null 2>&1
+openssl req -new -x509 -key "$TLS_KEY" -out "$TLS_CERT" -days 2 \
+  -subj "/CN=localhost" >/dev/null 2>&1
+
+# The baseline is the deployment shape this feature is for: TLS is required,
+# so every driver must negotiate it. pg_isready and psql read the same env.
+export PGSSLMODE=require
+
 "$BIN" \
   --bind "$HOST" \
   --port "$PORT" \
@@ -71,6 +91,9 @@ export LAKESOUL_PG_PASSWORD=${LAKESOUL_PG_PASSWORD:-lakesoul_test}
   --max-result-bytes 0 \
   --memory-limit 0 \
   --vortex-decode-budget 0 \
+  --tls-cert "$TLS_CERT" \
+  --tls-key "$TLS_KEY" \
+  --require-tls \
   >"$LOG" 2>&1 &
 SERVER_PID=$!
 
@@ -91,7 +114,7 @@ export PGPORT=$PORT
 export PGDATABASE=$DATABASE
 export PGUSER=$USER
 export PGPASSWORD=$PASSWORD
-export PGSSLMODE=disable
+# PGSSLMODE=require was exported before readiness and applies to psql too.
 
 echo "== psycopg baseline =="
 if command -v uv >/dev/null 2>&1; then
@@ -116,6 +139,6 @@ print(uuid.uuid4().hex[:16])
 PY
 )"
 mvn -q -f "$DIR/jdbc/pom.xml" compile exec:java \
-  -Dexec.args="$HOST $PORT $DATABASE $USER $PASSWORD $JDBC_TABLE"
+  -Dexec.args="$HOST $PORT $DATABASE $USER $PASSWORD $JDBC_TABLE require"
 
 echo "client compatibility baseline passed"

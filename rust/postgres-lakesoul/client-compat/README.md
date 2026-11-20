@@ -48,7 +48,11 @@ environment when available; otherwise install `requirements.txt` yourself.
 The JDBC half requires Maven and JDK 11 or newer.
 
 The runner starts its own server on a free loopback port and a temporary
-warehouse, then removes both on exit.
+warehouse, then removes both on exit. It generates a self-signed certificate
+with `openssl` and starts the server with `--tls-cert`, `--tls-key` and
+`--require-tls`; every client in the baseline connects with
+`PGSSLMODE=require`. `test_tls.py` additionally asserts that a plaintext
+`sslmode=disable` connection is refused with `28000`.
 
 ## Current local baseline
 
@@ -60,7 +64,8 @@ The first run used:
 Result: **all Python tests pass**; the pgjdbc workflow also passes without a
 recorded gap. The tests already cover:
 
-- connect and `SELECT`, including the default `sslmode=prefer` fallback;
+- connect and `SELECT` over TLS (`sslmode=prefer` and `sslmode=require`), with
+  `sslmode=disable` refused by the server;
 - parameterized values, `numeric`, `date`, `timestamptz`, `boolean`, `bytea`;
 - `executemany`, psycopg2 `execute_values`, and pgjdbc `addBatch`/`executeBatch`;
 - `ON CONFLICT ... DO UPDATE`;

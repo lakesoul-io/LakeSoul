@@ -58,6 +58,11 @@ pub struct AuthSettings {
     /// Validates `(sub, group)` against the LakeSoul user directory. Installed
     /// only for RBAC deployments.
     pub user_directory: Option<Arc<UserDirectory>>,
+    /// Refuse a startup that did not negotiate TLS. The listener still offers
+    /// TLS when a certificate is configured; this decides whether a plaintext
+    /// client may proceed. `false` keeps the pre-TLS behaviour for deployments
+    /// that terminate TLS in front of the server.
+    pub require_tls: bool,
 }
 
 /// A short-lived cache of the `domain_user` directory. The ACL view has a
@@ -104,12 +109,19 @@ impl AuthSettings {
             jwt: Some(Arc::new(JwtServer::new(secret))),
             rbac: false,
             user_directory: None,
+            require_tls: false,
         }
     }
 
     /// Turns domain enforcement on or off.
     pub fn with_rbac(mut self, rbac: bool) -> Self {
         self.rbac = rbac;
+        self
+    }
+
+    /// Refuse a connection that did not negotiate TLS.
+    pub fn with_require_tls(mut self, require_tls: bool) -> Self {
+        self.require_tls = require_tls;
         self
     }
 
@@ -130,6 +142,7 @@ impl fmt::Debug for AuthSettings {
             .field("jwt", &self.jwt.is_some())
             .field("rbac", &self.rbac)
             .field("user_directory", &self.user_directory.is_some())
+            .field("require_tls", &self.require_tls)
             .finish()
     }
 }
@@ -421,7 +434,8 @@ mod tests {
         assert!(!debug.contains("super-secret-value"), "{debug}");
         assert_eq!(
             debug,
-            "AuthSettings { jwt: true, rbac: false, user_directory: false }"
+            "AuthSettings { jwt: true, rbac: false, user_directory: false, \
+             require_tls: false }"
         );
     }
 }

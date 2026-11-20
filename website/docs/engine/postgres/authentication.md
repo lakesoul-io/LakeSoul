@@ -59,9 +59,11 @@ every namespace and table. Three flags add authentication and tenant isolation:
 
 | Flag | Environment | Meaning |
 | --- | --- | --- |
-| `--jwt-auth` | `LAKESOUL_PG_JWT_AUTH` | Ask every connection for a cleartext password and accept only a LakeSoul JWT |
+| `--jwt-auth` | `LAKESOUL_PG_JWT_AUTH` | Ask every connection for a cleartext password and accept only a LakeSoul JWT; pair with `--require-tls` |
 | `--rbac` | `LAKESOUL_PG_RBAC` | Confine each connection to the domain in its token's `group`; requires `--jwt-auth` |
 | `--rbac-domain` | `LAKESOUL_PG_RBAC_DOMAIN` | Fix the domain a shared cluster writes in; requires `--rbac` |
+
+TLS is configured separately, with `--tls-cert`/`--tls-key`; see [TLS](#tls).
 
 Require a token:
 
@@ -80,6 +82,42 @@ Pin the write domain of a shared cluster:
 ```sh
 postgres-lakesoul ... --jwt-auth --rbac --rbac-domain team_a
 ```
+
+## TLS
+
+The server can terminate TLS itself. Both a PEM certificate chain and a PEM
+PKCS#8 private key are required:
+
+```sh
+postgres-lakesoul ... \
+  --tls-cert /etc/lakesoul/tls/server.crt \
+  --tls-key  /etc/lakesoul/tls/server.key \
+  --require-tls
+```
+
+| Flag | Environment | Meaning |
+| --- | --- | --- |
+| `--tls-cert` | `LAKESOUL_PG_TLS_CERT` | PEM certificate chain |
+| `--tls-key` | `LAKESOUL_PG_TLS_KEY` | PEM PKCS#8 private key |
+| `--require-tls` | `LAKESOUL_PG_REQUIRE_TLS` | Refuse clients that do not negotiate TLS (`FATAL 28000`) |
+
+- The certificate and key must be given together. The key must be PKCS#8
+  (`openssl pkcs8 -topk8 -nocrypt`); a missing file, a non-PKCS#8 key or a
+  mismatched pair stops the process at start-up. Once TLS is configured the
+  server never falls back to cleartext.
+- Without `--require-tls` the listener offers TLS but still accepts plaintext
+  clients, like PostgreSQL `ssl = on` without a `hostssl` rule. With it, only a
+  completed TLS handshake reaches authentication; the client sees
+  `FATAL 28000`.
+- Use `sslmode=require` to encrypt without validating the certificate, or
+  `sslmode=verify-full` to validate the chain and host name. JDBC takes
+  `?sslmode=require` or `?sslmode=verify-full`.
+- A certificate or key change takes effect on restart; certificates are loaded
+  once at start-up.
+- `--jwt-auth` sends the token as a cleartext password. Run it with
+  `--require-tls` unless a TLS proxy already terminates the connection; the
+  server logs a warning when JWT authentication is enabled without TLS.
+- The server does not request client certificates (`with_no_client_auth`).
 
 ## The token
 
@@ -302,7 +340,8 @@ connections still work while new ones cannot authenticate.
 ## Security notes
 
 - The token travels as a cleartext password. Terminate TLS in front of the
-  server or keep the traffic on a trusted network.
+  server, or configure `--tls-cert`/`--tls-key` with `--require-tls` (the
+  server can terminate TLS itself).
 - HS256 is a shared secret: any service that can read the metadata credentials
   can mint a token for any user and group. Domain isolation is therefore as
   strong as the weakest component holding those credentials.

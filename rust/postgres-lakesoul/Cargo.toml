@@ -65,6 +65,15 @@ tokio-postgres = { version = "0.7", features = [
 ] }
 uuid.workspace = true
 libc = "0.2"
+# TLS termination for the PostgreSQL listener. The fork's ServerOptions owns
+# the acceptor; rustls is here so start-up can validate the material with the
+# same provider and fail hard instead of letting the fork serve plaintext.
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+] }
+rustls-pemfile = "2"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }

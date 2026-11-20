@@ -44,9 +44,11 @@ postgres-lakesoul --bind 0.0.0.0 --port 5432 \
 
 | 参数 | 环境变量 | 含义 |
 | --- | --- | --- |
-| `--jwt-auth` | `LAKESOUL_PG_JWT_AUTH` | 要求每条连接用明文密码方式提交 LakeSoul JWT，并只接受该 JWT |
+| `--jwt-auth` | `LAKESOUL_PG_JWT_AUTH` | 要求每条连接用明文密码方式提交 LakeSoul JWT，并只接受该 JWT；建议配合 `--require-tls` |
 | `--rbac` | `LAKESOUL_PG_RBAC` | 把每条连接限制在 token 的 `group` 所表示的域内；需要 `--jwt-auth` |
 | `--rbac-domain` | `LAKESOUL_PG_RBAC_DOMAIN` | 固定共享 cluster 的写入域；需要 `--rbac` |
+
+TLS 用 `--tls-cert`/`--tls-key` 单独配置，见 [TLS](#tls)。
 
 要求 token：
 
@@ -65,6 +67,30 @@ postgres-lakesoul ... --jwt-auth --rbac
 ```sh
 postgres-lakesoul ... --jwt-auth --rbac --rbac-domain team_a
 ```
+
+## TLS
+
+服务端可以自己终止 TLS。需要同时提供 PEM 证书链和 PEM PKCS#8 私钥：
+
+```sh
+postgres-lakesoul ... \
+  --tls-cert /etc/lakesoul/tls/server.crt \
+  --tls-key  /etc/lakesoul/tls/server.key \
+  --require-tls
+```
+
+| 参数 | 环境变量 | 含义 |
+| --- | --- | --- |
+| `--tls-cert` | `LAKESOUL_PG_TLS_CERT` | PEM 证书链 |
+| `--tls-key` | `LAKESOUL_PG_TLS_KEY` | PEM PKCS#8 私钥 |
+| `--require-tls` | `LAKESOUL_PG_REQUIRE_TLS` | 拒绝没有协商 TLS 的连接（`FATAL 28000`） |
+
+- 证书和私钥必须成对出现。私钥必须是 PKCS#8（`openssl pkcs8 -topk8 -nocrypt`）；文件不存在、私钥格式不对或两者不匹配时，进程会在启动阶段失败。配置了 TLS 之后，服务端不会回退到明文。
+- 不开 `--require-tls` 时，监听端会提供 TLS，但仍接受明文连接（相当于 PostgreSQL 的 `ssl = on` 但没有 `hostssl` 规则）。开启后，只有完成 TLS 握手的连接才会进入认证；客户端会看到 `FATAL 28000`。
+- 客户端用 `sslmode=require` 只加密、不校验证书；用 `sslmode=verify-full` 校验证书链和主机名。JDBC 对应 `?sslmode=require` 或 `?sslmode=verify-full`。
+- 证书和私钥只在启动时加载；更换后需要重启。
+- `--jwt-auth` 的 token 以明文密码形式传输。除非前面已有 TLS 代理终止，否则应配合 `--require-tls` 使用；只开 JWT 不开 TLS 时服务端会打 warning。
+- 服务端不要求客户端证书（`with_no_client_auth`）。
 
 ## Token
 
@@ -209,7 +235,7 @@ python3 script/metadata_migrate.py migrate
 
 ## 安全说明
 
-- token 以明文密码形式传输。请在服务端前面终止 TLS，或只在可信网络内使用。
+- token 以明文密码形式传输。请在服务端前面终止 TLS，或者配置 `--tls-cert`/`--tls-key` 并开启 `--require-tls`（服务端可以自己终止 TLS）。
 - HS256 是对称密钥：任何能读到 metadata 凭据的服务，都能为任意用户和 group 签出 token。域隔离的强度取决于持有该凭据的最弱组件。
 - `public` 和 `lake-public` 的对象对所有连接可见，并且（与 JVM 引擎的行级安全一致）可写。
 

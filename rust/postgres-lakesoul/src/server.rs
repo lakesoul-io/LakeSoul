@@ -193,6 +193,29 @@ fn fatal_startup_error(error: Report) -> PgWireError {
     )))
 }
 
+/// Refuse a startup that did not negotiate TLS when `--require-tls` is on.
+///
+/// PostgreSQL's `hostssl` equivalent: the listener still answers an
+/// `SSLRequest`, and only a client that completed the TLS handshake reaches
+/// authentication. The check runs before the startup parameters are stored
+/// and before any session is built, so a plaintext client holds no slot.
+fn reject_plaintext_startup<C>(
+    client: &C,
+    auth: &crate::auth::AuthSettings,
+) -> PgWireResult<()>
+where
+    C: ClientInfo + ?Sized,
+{
+    if auth.require_tls && !client.is_secure() {
+        return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+            "FATAL".to_string(),
+            "28000".to_string(),
+            "TLS is required: connect with sslmode=require (or verify-full)".to_string(),
+        ))));
+    }
+    Ok(())
+}
+
 /// PostgreSQL `cardinality_violation`.
 fn cardinality_violation_error() -> PgWireError {
     PgWireError::UserError(Box::new(ErrorInfo::new(
@@ -979,6 +1002,7 @@ impl StartupHandler for LakeSoulStartupHandler {
         match message {
             PgWireFrontendMessage::Startup(ref startup) => {
                 protocol_negotiation(client, startup).await?;
+                reject_plaintext_startup(client, self.session_factory.auth())?;
                 save_startup_parameters_to_metadata(client, startup);
                 if self.session_factory.auth().jwt.is_some() {
                     client.set_state(PgWireConnectionState::AuthenticationInProgress);
