@@ -22,10 +22,10 @@
 //! `(mantissa, scale)` in this crate; nonzero payloads are left byte-identical
 //! to the upstream encoder, which already preserves their scale.
 //!
-//! Only `Decimal128` is supported. A `Decimal256` result (precision above 38)
-//! is rejected explicitly instead of being silently truncated or falling back
-//! to scale `0`, and so is a scale PostgreSQL cannot put in the 14-bit
-//! `dscale` field.
+//! `Decimal128` values are re-encoded here. A `Decimal256` result (precision
+//! above 38) is encoded by `arrow-pg` from the Arrow value itself, so it is
+//! left untouched; a scale PostgreSQL cannot put in the 14-bit `dscale` field
+//! is still rejected.
 
 use datafusion::arrow::datatypes::DataType;
 use datafusion_postgres::pgwire::api::results::{FieldFormat, QueryResponse, Response};
@@ -160,10 +160,8 @@ fn push_header(payload: &mut Vec<u8>, ndigits: u16, weight: i16, sign: u16, dsca
 /// column that is not a `Decimal128`.
 ///
 /// The rewrite only touches columns the response encodes in binary; the scale
-/// is needed before that filter because a `Decimal256` column is an error
-/// whatever format the client asked for: this server only implements
-/// PostgreSQL `numeric` from `Decimal128`, and silently sending truncated
-/// digits (or a scale-0 zero) would corrupt the value.
+/// is needed before that filter. `Decimal256` is left to the upstream encoder,
+/// which now emits the exact Arrow value with its scale.
 pub(crate) fn decimal_scale_columns(
     arrow_types: &[DataType],
 ) -> PgWireResult<Vec<Option<u32>>> {
@@ -178,10 +176,10 @@ pub(crate) fn decimal_scale_columns(
                 }
                 Ok(Some(*scale as u32))
             }
-            DataType::Decimal256(_, _) => Err(unsupported_decimal_error(
-                "DECIMAL256 results are not supported; use DECIMAL with precision at most 38"
-                    .to_string(),
-            )),
+            // Decimal256 is encoded directly by arrow-pg, which preserves
+            // the declared scale; the local rewrite only fixes Decimal128
+            // zero values whose scale the upstream rust_decimal path drops.
+            DataType::Decimal256(_, _) => Ok(None),
             _ => Ok(None),
         })
         .collect()

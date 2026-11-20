@@ -21,6 +21,8 @@ use datafusion::sql::sqlparser::ast::{Expr, Value};
 pub const DATATYPE_MISMATCH: &str = "42804";
 /// SQLSTATE `invalid_text_representation`.
 pub const INVALID_TEXT_REPRESENTATION: &str = "22P02";
+/// SQLSTATE `string_data_right_truncation`.
+pub const STRING_DATA_RIGHT_TRUNCATION: &str = "22001";
 
 /// A literal PostgreSQL treats as `unknown` (or a parameter whose type is
 /// supplied by the target column), as opposed to a typed expression.
@@ -69,6 +71,47 @@ pub fn check_literal(value: Literal<'_>, target: &Field) -> Result<(), Assignmen
     match value {
         Literal::Null | Literal::Placeholder => Ok(()),
         Literal::String(text) => {
+            if let Some(kind) = target.metadata().get("pg.type").map(String::as_str) {
+                match kind {
+                    "uuid" => {
+                        uuid::Uuid::parse_str(text.trim()).map_err(|_| {
+                            AssignmentError {
+                                sqlstate: INVALID_TEXT_REPRESENTATION,
+                                message: format!(
+                                    "invalid input syntax for type uuid: \"{text}\""
+                                ),
+                            }
+                        })?;
+                        return Ok(());
+                    }
+                    "varchar" | "bpchar" => {
+                        if let Some(length) = target
+                            .metadata()
+                            .get("pg.typmod")
+                            .and_then(|value| value.parse::<i32>().ok())
+                            .and_then(|typmod| (typmod >= 4).then_some(typmod - 4))
+                            && text.chars().count() > length as usize
+                        {
+                            return Err(AssignmentError {
+                                sqlstate: STRING_DATA_RIGHT_TRUNCATION,
+                                message: format!(
+                                    "value too long for type {}({length})",
+                                    if kind == "bpchar" {
+                                        "character"
+                                    } else {
+                                        "character varying"
+                                    }
+                                ),
+                            });
+                        }
+                        return Ok(());
+                    }
+                    "money" => {
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
             if is_string(target_type) {
                 return Ok(());
             }
@@ -123,6 +166,22 @@ pub fn assignment_allowed(source: &DataType, target: &DataType) -> bool {
     if source == target {
         return true;
     }
+    match (source, target) {
+        (DataType::List(source), DataType::List(target))
+        | (DataType::LargeList(source), DataType::LargeList(target))
+        | (DataType::ListView(source), DataType::ListView(target))
+        | (DataType::LargeListView(source), DataType::LargeListView(target)) => {
+            return assignment_allowed(source.data_type(), target.data_type());
+        }
+        (
+            DataType::FixedSizeList(source, left),
+            DataType::FixedSizeList(target, right),
+        ) => {
+            return left == right
+                && assignment_allowed(source.data_type(), target.data_type());
+        }
+        _ => {}
+    }
     if is_numeric(source) {
         is_numeric(target) || is_string(target)
     } else if *source == DataType::Boolean {
@@ -172,6 +231,8 @@ pub fn is_temporal(data_type: &DataType) -> bool {
             | DataType::Time32(_)
             | DataType::Time64(_)
             | DataType::Timestamp(_, _)
+            | DataType::Interval(_)
+            | DataType::Duration(_)
     )
 }
 
@@ -197,6 +258,13 @@ pub fn pg_type_name(data_type: &DataType) -> &'static str {
         DataType::Float64 => "double precision",
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "text",
         DataType::Date32 | DataType::Date64 => "date",
+        DataType::Time32(_) | DataType::Time64(_) => "time",
+        DataType::Interval(_) | DataType::Duration(_) => "interval",
+        DataType::List(_)
+        | DataType::LargeList(_)
+        | DataType::FixedSizeList(_, _)
+        | DataType::ListView(_)
+        | DataType::LargeListView(_) => "array",
         DataType::Timestamp(_, timezone) => match timezone {
             Some(_) => "timestamp with time zone",
             None => "timestamp without time zone",

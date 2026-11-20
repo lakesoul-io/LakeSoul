@@ -670,6 +670,9 @@ fn check_assignment(
     target: &Field,
     source: &arrow::datatypes::DataType,
 ) -> Result<(), UpdatePlanError> {
+    if let Some(result) = crate::pg_insert_analysis::check_array_literal(value, target) {
+        return result.map_err(UpdatePlanError::Assignment);
+    }
     match pg_assignment::literal(value) {
         Some(literal) => pg_assignment::check_literal(literal, target)
             .map_err(UpdatePlanError::Assignment),

@@ -28,7 +28,7 @@
 //! which compares the stored definition with the one validated here inside
 //! the metadata transaction; a concurrent redefinition is `40001`.
 
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::arrow::datatypes::{Field, Schema};
 use datafusion::sql::sqlparser::ast::{
     AlterColumnOperation, AlterTable, AlterTableOperation, ColumnOption, Expr, SqlOption,
     Value,
@@ -57,8 +57,8 @@ use pgwire::messages::PgWireBackendMessage;
 use pgwire::messages::response::NoticeResponse;
 
 use crate::ddl::{
-    PG_JSON_KEY, arrow_type, feature_not_supported, normalize_column_ident, pg_json_kind,
-    table_option, user_error, with_json_metadata,
+    PG_JSON_KEY, feature_not_supported, normalize_column_ident, pg_json_kind,
+    table_option, user_error,
 };
 
 const UNDEFINED_COLUMN: &str = "42703";
@@ -96,7 +96,7 @@ pub(crate) enum AlterAction {
     },
     SetType {
         column: String,
-        to: DataType,
+        to: Field,
     },
     DropNotNull {
         column: String,
@@ -150,7 +150,6 @@ fn action(operation: &AlterTableOperation) -> PgWireResult<AlterAction> {
                 ));
             }
             let name = normalize_column_ident(&column_def.name)?;
-            let data_type = arrow_type(&column_def.data_type)?;
             for option in &column_def.options {
                 match &option.option {
                     ColumnOption::Null => {}
@@ -181,13 +180,11 @@ fn action(operation: &AlterTableOperation) -> PgWireResult<AlterAction> {
                 }
             }
             Ok(AlterAction::AddColumn {
-                field: {
-                    let mut field = Field::new(name, data_type, true);
-                    if let Some(kind) = pg_json_kind(&column_def.data_type) {
-                        field = with_json_metadata(field, kind);
-                    }
-                    field
-                },
+                field: crate::pg_types::field_for_sql_type(
+                    &name,
+                    &column_def.data_type,
+                    true,
+                )?,
                 if_not_exists: *if_not_exists,
             })
         }
@@ -210,8 +207,10 @@ fn action(operation: &AlterTableOperation) -> PgWireResult<AlterAction> {
                         )));
                     }
                     Ok(AlterAction::SetType {
+                        to: crate::pg_types::field_for_sql_type(
+                            &column, data_type, true,
+                        )?,
                         column,
-                        to: arrow_type(data_type)?,
                     })
                 }
                 AlterColumnOperation::DropNotNull => {
@@ -491,7 +490,7 @@ pub(crate) fn plan_alter(
                 }
                 schema = check_evolution(
                     &schema,
-                    &ColumnChange::Widen {
+                    &ColumnChange::SetField {
                         name: column.clone(),
                         to: to.clone(),
                     },
@@ -737,6 +736,7 @@ pub(crate) async fn notice(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::sql::sqlparser::ast::Statement;
     use datafusion::sql::sqlparser::parser::Parser;
     use lakesoul_common::ser::arrow_java::schema_to_metadata_str;
@@ -844,8 +844,8 @@ mod tests {
             ("ALTER TABLE t ADD COLUMN n INT DEFAULT 1", "0A000"),
             ("ALTER TABLE t ADD COLUMN n INT PRIMARY KEY", "0A000"),
             ("ALTER TABLE t ADD COLUMN n INT UNIQUE", "0A000"),
-            ("ALTER TABLE t ADD COLUMN n INT[]", "0A000"),
-            ("ALTER TABLE t ADD COLUMN n UUID", "0A000"),
+            ("ALTER TABLE t ADD COLUMN n INET", "0A000"),
+            ("ALTER TABLE t ADD COLUMN n TIMESTAMP(1)", "0A000"),
             ("ALTER TABLE t ALTER COLUMN qty SET NOT NULL", "0A000"),
             ("ALTER TABLE t ALTER COLUMN qty SET DEFAULT 1", "0A000"),
             ("ALTER TABLE t ALTER COLUMN qty DROP DEFAULT", "0A000"),

@@ -629,6 +629,8 @@ impl PgSessionFactory {
             AuthRoles(Arc::clone(&self.auth_manager)),
             self.catalog_options,
         )?;
+        crate::pg_types::install(&context)
+            .map_err(|error| report!("PostgreSQL type planner: {error}"))?;
         let parameters = Arc::new(PgParameters::new(&identity, settings));
         // After the upstream setup: the registry is keyed by name, so the shims
         // replace the narrower upstream signatures.

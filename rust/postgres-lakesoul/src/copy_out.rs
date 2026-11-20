@@ -26,7 +26,7 @@ use datafusion::arrow::array::{
     TimestampNanosecondArray, TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array,
     UInt64Array,
 };
-use datafusion::arrow::datatypes::{DataType, SchemaRef, TimeUnit};
+use datafusion::arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{DFSchema, ParamValues, TableReference};
 use datafusion::prelude::{DataFrame, SessionContext};
@@ -319,7 +319,7 @@ fn encode_row(
         if index > 0 {
             out.extend_from_slice(&[options.delimiter]);
         }
-        let value = field_text(batch.column(index), row, field.data_type())?;
+        let value = field_text(batch.column(index), row, field)?;
         match options.format {
             CopyFormat::Text => encode_text_field(&mut out, value.as_deref(), options),
             CopyFormat::Csv => encode_csv_field(&mut out, value.as_deref(), options),
@@ -401,8 +401,24 @@ fn encode_csv_field(out: &mut BytesMut, value: Option<&str>, options: &CopyOptio
 fn field_text(
     array: &ArrayRef,
     row: usize,
-    data_type: &DataType,
+    field: &Field,
 ) -> PgWireResult<Option<String>> {
+    let data_type = field.data_type();
+    if let Some(kind) = crate::pg_types::pg_type_name(field) {
+        match kind {
+            "uuid" => {
+                return Ok(Some(downcast::<StringArray>(array).value(row).to_string()));
+            }
+            "varchar" | "bpchar" => {
+                return Ok(Some(downcast::<StringArray>(array).value(row).to_string()));
+            }
+            "money" if matches!(data_type, DataType::Decimal128(_, _)) => {
+                let value = downcast::<Decimal128Array>(array).value(row);
+                return Ok(Some(money_text(value)));
+            }
+            _ => {}
+        }
+    }
     if array.is_null(row) {
         return Ok(None);
     }
@@ -432,6 +448,65 @@ fn field_text(
             bytea_text(downcast::<LargeBinaryArray>(array).value(row))
         }
         DataType::BinaryView => bytea_text(downcast::<BinaryViewArray>(array).value(row)),
+        DataType::Time32(unit) => {
+            let nanos = match unit {
+                TimeUnit::Second => {
+                    i64::from(
+                        downcast::<datafusion::arrow::array::Time32SecondArray>(array)
+                            .value(row),
+                    ) * 1_000_000_000
+                }
+                TimeUnit::Millisecond => {
+                    i64::from(
+                        downcast::<datafusion::arrow::array::Time32MillisecondArray>(
+                            array,
+                        )
+                        .value(row),
+                    ) * 1_000_000
+                }
+                _ => return Err(out_of_range()),
+            };
+            time_text(nanos)?
+        }
+        DataType::Time64(unit) => {
+            let nanos = match unit {
+                TimeUnit::Microsecond => {
+                    downcast::<datafusion::arrow::array::Time64MicrosecondArray>(array)
+                        .value(row)
+                        .checked_mul(1_000)
+                        .ok_or_else(out_of_range)?
+                }
+                TimeUnit::Nanosecond => {
+                    downcast::<datafusion::arrow::array::Time64NanosecondArray>(array)
+                        .value(row)
+                }
+                _ => return Err(out_of_range()),
+            };
+            time_text(nanos)?
+        }
+        DataType::Decimal256(_, scale) => {
+            let value =
+                downcast::<datafusion::arrow::array::Decimal256Array>(array).value(row);
+            decimal256_text(value, *scale)?
+        }
+        DataType::List(_) | DataType::LargeList(_) => {
+            let (DataType::List(inner) | DataType::LargeList(inner)) = data_type else {
+                unreachable!()
+            };
+            let values = match data_type {
+                DataType::List(_) => {
+                    let list = downcast::<datafusion::arrow::array::ListArray>(array);
+                    list.value(row)
+                }
+                DataType::LargeList(_) => {
+                    let list =
+                        downcast::<datafusion::arrow::array::LargeListArray>(array);
+                    list.value(row)
+                }
+                _ => unreachable!(),
+            };
+            array_text(&values, inner)?
+        }
         DataType::Date32 => date_text(downcast::<Date32Array>(array).value(row))?,
         DataType::Date64 => {
             let millis = downcast::<Date64Array>(array).value(row);
@@ -469,6 +544,103 @@ fn field_text(
         }
     };
     Ok(Some(text))
+}
+
+fn time_text(nanos: i64) -> PgWireResult<String> {
+    let seconds = nanos.div_euclid(1_000_000_000);
+    let sub = nanos.rem_euclid(1_000_000_000);
+    let time =
+        chrono::NaiveTime::from_num_seconds_from_midnight_opt(seconds as u32, sub as u32)
+            .ok_or_else(out_of_range)?;
+    let mut text = time.format("%H:%M:%S").to_string();
+    if sub != 0 {
+        let fraction = format!("{sub:09}");
+        text.push('.');
+        text.push_str(fraction.trim_end_matches('0'));
+    }
+    Ok(text)
+}
+
+fn money_text(value: i128) -> String {
+    let negative = value < 0;
+    let cents = value.unsigned_abs();
+    let whole = cents / 100;
+    let fraction = cents % 100;
+    let mut whole = whole.to_string();
+    let mut grouped = String::new();
+    while whole.len() > 3 {
+        let split = whole.len() - 3;
+        grouped.insert_str(0, &format!(",{}", &whole[split..]));
+        whole.truncate(split);
+    }
+    grouped.insert_str(0, &whole);
+    format!(
+        "{}${}.{:02}",
+        if negative { "-" } else { "" },
+        grouped,
+        fraction
+    )
+}
+
+fn decimal256_text(
+    value: datafusion::arrow::datatypes::i256,
+    scale: i8,
+) -> PgWireResult<String> {
+    let negative = value < datafusion::arrow::datatypes::i256::ZERO;
+    let digits = if negative {
+        (-value).to_string()
+    } else {
+        value.to_string()
+    };
+    let mut text = if scale <= 0 {
+        digits
+    } else {
+        let scale = scale as usize;
+        let mut digits = digits;
+        if digits.len() <= scale {
+            digits.insert_str(0, &"0".repeat(scale + 1 - digits.len()));
+        }
+        let split = digits.len() - scale;
+        format!("{}.{}", &digits[..split], &digits[split..])
+    };
+    if negative {
+        text.insert(0, '-');
+    }
+    Ok(text)
+}
+
+fn array_text(array: &ArrayRef, element: &Field) -> PgWireResult<String> {
+    let mut out = String::from("{");
+    for index in 0..array.len() {
+        if index > 0 {
+            out.push(',');
+        }
+        if array.is_null(index) {
+            out.push_str("NULL");
+            continue;
+        }
+        let value = field_text(array, index, element)?.unwrap_or_default();
+        let needs_quote = value.is_empty()
+            || value.trim() != value
+            || value.eq_ignore_ascii_case("NULL")
+            || value
+                .chars()
+                .any(|c| matches!(c, ',' | '{' | '}' | '"' | '\\'));
+        if needs_quote {
+            out.push('"');
+            for character in value.chars() {
+                if character == '"' || character == '\\' {
+                    out.push('\\');
+                }
+                out.push(character);
+            }
+            out.push('"');
+        } else {
+            out.push_str(&value);
+        }
+    }
+    out.push('}');
+    Ok(out)
 }
 
 fn downcast<T: Array + 'static>(array: &ArrayRef) -> &T {
@@ -601,6 +773,23 @@ mod tests {
         let labels = Arc::new(StringArray::from(vec![Some("a\tb"), Some("x,y"), None]));
         let batch = RecordBatch::try_new(schema.clone(), vec![ids, labels]).unwrap();
         (schema, batch)
+    }
+
+    #[test]
+    fn array_text_quotes_elements_that_need_it() {
+        let element = Field::new("item", DataType::Utf8, true);
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("a,b"),
+            Some("NULL"),
+            None,
+            Some(" lead"),
+            Some("{}"),
+            Some("plain"),
+        ]));
+        assert_eq!(
+            array_text(&array, &element).unwrap(),
+            r#"{"a,b","NULL",NULL," lead","{}",plain}"#
+        );
     }
 
     #[test]

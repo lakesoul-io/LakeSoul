@@ -39,6 +39,9 @@ pub enum ColumnChange {
         /// Its new type.
         to: DataType,
     },
+    /// Change a column's type while preserving/validating PostgreSQL field
+    /// metadata (length, precision, time unit, semantic type).
+    SetField { name: String, to: Field },
     /// Make a non-key column nullable.
     DropNotNull(String),
 }
@@ -179,6 +182,28 @@ pub fn check_evolution(
                 field.as_ref().clone().with_data_type(to.clone()),
             ))
         }
+        ColumnChange::SetField { name, to } => {
+            let (index, field) = existing(current, name)?;
+            if field.as_ref() == to {
+                return Ok(current.clone());
+            }
+            if let Some(role) = layout.role(name) {
+                return Err(EvolutionError::LayoutColumn {
+                    name: name.clone(),
+                    role,
+                });
+            }
+            if !can_widen_field(field, to) {
+                return Err(EvolutionError::Unsupported(format!(
+                    "cannot change column \"{name}\" from {:?} to {:?}: only \
+                     lossless widenings that keep the semantic type are supported",
+                    field, to
+                )));
+            }
+            let mut replacement = to.clone();
+            replacement = replacement.with_nullable(field.is_nullable());
+            Ok(replace(current, index, replacement))
+        }
         ColumnChange::DropNotNull(name) => {
             let (index, field) = existing(current, name)?;
             if field.is_nullable() {
@@ -318,16 +343,12 @@ fn replace(current: &Schema, index: usize, field: Field) -> Schema {
 }
 
 fn is_nested(data_type: &DataType) -> bool {
+    // List columns are ordinary LakeSoul columns (Arrow Java writes their
+    // child field). Struct/Map/Union still need a layout every writer agrees
+    // on and are not accepted by the metadata path.
     matches!(
         data_type,
-        DataType::List(_)
-            | DataType::LargeList(_)
-            | DataType::ListView(_)
-            | DataType::LargeListView(_)
-            | DataType::FixedSizeList(..)
-            | DataType::Struct(_)
-            | DataType::Map(..)
-            | DataType::Union(..)
+        DataType::Struct(_) | DataType::Map(..) | DataType::Union(..)
     )
 }
 
@@ -343,9 +364,96 @@ pub fn can_widen(from: &DataType, to: &DataType) -> bool {
         (
             DataType::Decimal128(from_precision, from_scale),
             DataType::Decimal128(to_precision, to_scale),
+        )
+        | (
+            DataType::Decimal128(from_precision, from_scale),
+            DataType::Decimal256(to_precision, to_scale),
+        )
+        | (
+            DataType::Decimal256(from_precision, from_scale),
+            DataType::Decimal256(to_precision, to_scale),
         ) => decimal_accepts(*to_precision, *to_scale, *from_precision, *from_scale),
         _ => false,
     }
+}
+
+/// Metadata-aware widening used by `ALTER COLUMN ... TYPE` and by writers that
+/// carry PostgreSQL semantic markers. Physical types must still be losslessly
+/// castable; additionally, a marker (varchar length, numeric precision,
+/// timestamp precision, UUID/money/array kind) may only stay the same or widen.
+pub fn can_widen_field(from: &Field, to: &Field) -> bool {
+    if from == to {
+        return true;
+    }
+    let from_kind = from.metadata().get("pg.type").map(String::as_str);
+    let to_kind = to.metadata().get("pg.type").map(String::as_str);
+    match (from_kind, to_kind) {
+        (Some(left), Some(right)) if left == right => match left {
+            "numeric" => match (
+                numeric_typmod_parts(from.metadata().get("pg.typmod")),
+                numeric_typmod_parts(to.metadata().get("pg.typmod")),
+            ) {
+                (Some((fp, fs)), Some((tp, ts))) => decimal_accepts(tp, ts, fp, fs),
+                (None, _) => true,
+                (_, None) => false,
+            },
+            "varchar" | "bpchar" => {
+                let from_len = char_typmod_length(from.metadata().get("pg.typmod"));
+                let to_len = char_typmod_length(to.metadata().get("pg.typmod"));
+                match (from_len, to_len) {
+                    (None, None) => true,
+                    (None, Some(_)) => false,
+                    (Some(_), None) => true,
+                    (Some(from), Some(to)) => to >= from,
+                }
+            }
+            "timestamp" | "timestamptz" | "time" => {
+                let from_precision =
+                    time_typmod_precision(from.metadata().get("pg.typmod"));
+                let to_precision = time_typmod_precision(to.metadata().get("pg.typmod"));
+                to_precision >= from_precision
+            }
+            "uuid" | "money" | "interval" => from.metadata() == to.metadata(),
+            _ => can_widen(from.data_type(), to.data_type()),
+        },
+        (None, Some("numeric")) => can_widen(from.data_type(), to.data_type()),
+        (None, None) => match (from.data_type(), to.data_type()) {
+            (DataType::List(from_inner), DataType::List(to_inner)) => {
+                can_widen_field(from_inner, to_inner)
+            }
+            (DataType::LargeList(from_inner), DataType::LargeList(to_inner)) => {
+                can_widen_field(from_inner, to_inner)
+            }
+            _ => can_widen(from.data_type(), to.data_type()),
+        },
+        _ => false,
+    }
+}
+
+fn numeric_typmod_parts(typmod: Option<&String>) -> Option<(u8, i8)> {
+    let typmod: i32 = typmod?.parse().ok()?;
+    if typmod < 4 {
+        return None;
+    }
+    let packed = typmod - 4;
+    let precision = ((packed >> 16) & 0xffff) as u8;
+    let mut scale = (packed & 0x7ff) as i16;
+    if scale & 0x400 != 0 {
+        scale -= 0x800;
+    }
+    Some((precision, scale as i8))
+}
+
+fn char_typmod_length(typmod: Option<&String>) -> Option<i32> {
+    let typmod: i32 = typmod?.parse().ok()?;
+    (typmod >= 4).then_some(typmod - 4)
+}
+
+fn time_typmod_precision(typmod: Option<&String>) -> i32 {
+    typmod
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|value| *value >= 0)
+        .unwrap_or(6)
 }
 
 /// Whether `decimal(target_precision, target_scale)` holds every value of
@@ -415,9 +523,19 @@ mod tests {
         assert!(matches!(error, EvolutionError::Unsupported(_)), "{error}");
 
         let list = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
-        let error = check_evolution(
+        let added = check_evolution(
             &schema(),
             &ColumnChange::Add(Field::new("tags", list, true)),
+            &layout(),
+        )
+        .unwrap();
+        assert_eq!(added.field(5).name(), "tags");
+
+        let nested =
+            DataType::Struct(vec![Field::new("x", DataType::Int32, true)].into());
+        let error = check_evolution(
+            &schema(),
+            &ColumnChange::Add(Field::new("nested", nested, true)),
             &layout(),
         )
         .unwrap_err();
@@ -677,5 +795,75 @@ mod tests {
             error,
             EvolutionError::UndefinedColumn("missing".to_string())
         );
+    }
+
+    fn pg_field(
+        name: &str,
+        data_type: DataType,
+        kind: &str,
+        typmod: Option<i32>,
+    ) -> Field {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("pg.type".to_string(), kind.to_string());
+        if let Some(typmod) = typmod {
+            metadata.insert("pg.typmod".to_string(), typmod.to_string());
+        }
+        Field::new(name, data_type, true).with_metadata(metadata)
+    }
+
+    #[test]
+    fn semantic_field_widening_keeps_the_declared_range() {
+        // varchar(n) may only grow, and an unbounded source may not acquire a
+        // bound: old values could be longer than the new limit.
+        let varchar = |length: Option<i32>| {
+            pg_field("v", DataType::Utf8, "varchar", length.map(|l| l + 4))
+        };
+        assert!(can_widen_field(&varchar(Some(5)), &varchar(Some(10))));
+        assert!(can_widen_field(&varchar(Some(5)), &varchar(None)));
+        assert!(!can_widen_field(&varchar(None), &varchar(Some(10))));
+        assert!(!can_widen_field(&varchar(Some(10)), &varchar(Some(5))));
+
+        // numeric(p,s) must keep every integer and fraction digit.
+        let numeric = |precision: u8, scale: i8| {
+            let data_type = if precision <= 38 {
+                DataType::Decimal128(precision, scale)
+            } else {
+                DataType::Decimal256(precision, scale)
+            };
+            pg_field(
+                "n",
+                data_type,
+                "numeric",
+                Some(((precision as i32) << 16 | scale as u16 as i32) + 4),
+            )
+        };
+        assert!(can_widen_field(&numeric(10, 2), &numeric(38, 2)));
+        assert!(can_widen_field(&numeric(38, 2), &numeric(50, 2)));
+        assert!(!can_widen_field(&numeric(50, 2), &numeric(38, 2)));
+        assert!(!can_widen_field(&numeric(10, 2), &numeric(10, 1)));
+
+        // timestamp(p) represents finer values; a coarser unit loses digits.
+        let timestamp = |precision: i32| {
+            let unit = match precision {
+                0 => arrow_schema::TimeUnit::Second,
+                3 => arrow_schema::TimeUnit::Millisecond,
+                _ => arrow_schema::TimeUnit::Microsecond,
+            };
+            pg_field(
+                "ts",
+                DataType::Timestamp(unit, None),
+                "timestamp",
+                Some(precision),
+            )
+        };
+        assert!(can_widen_field(&timestamp(0), &timestamp(3)));
+        assert!(!can_widen_field(&timestamp(3), &timestamp(0)));
+
+        // Dropping the semantic marker would change how the column reports
+        // itself even when the physical type is unchanged.
+        assert!(!can_widen_field(
+            &pg_field("u", DataType::Utf8, "uuid", None),
+            &Field::new("u", DataType::Utf8, true),
+        ));
     }
 }

@@ -57,16 +57,22 @@ CREATE TABLE orders (
 | `real`、`float4` | `Float32` |
 | `double precision`、`float8` | `Float64` |
 | `boolean` | `Boolean` |
-| `text`、`varchar`、`char` | `Utf8` |
+| `text`、`varchar`、`char` | `Utf8`；`varchar(n)`/`char(n)` 在 `pg.typmod` 中保留长度 |
+| `uuid` | `Utf8`，带 `pg.type=uuid` 标记 |
+| `INT[]`、`TEXT[]` 等 | `List<element>`；受支持标量类型的一维数组 |
 | `json` | `Utf8`，带 `arrow.json` 扩展 |
 | `jsonb` | `Utf8`，带 `arrow.json` 和 `pg.json` 标记 |
 | `date` | `Date32` |
-| `timestamp` | 微秒精度、无时区时间戳 |
-| `timestamptz` | 微秒精度、UTC 时间戳 |
+| `time(p)` | `p=0/3` 为 `Time32`，`p=6` 为 `Time64` |
+| `timestamp(p)` | `p=0/3/6` 为 `Timestamp`，默认 6 |
+| `timestamptz(p)` | `p=0/3/6` 的 UTC `Timestamp` |
 | `bytea` | Binary |
-| `numeric(p, s)`、`decimal(p, s)` | `Decimal128(p, s)`，`p <= 38` |
+| `numeric(p, s)`、`decimal(p, s)` | `p <= 38` 为 `Decimal128`，`p <= 76` 为 `Decimal256` |
+| `money` | `Decimal128(19,2)`，带 `pg.type=money` 标记 |
 
-`numeric` 和 `decimal` 必须显式写出精度和小数位；不带参数的 `numeric` 会被拒绝。`timestamp(p)` 只接受默认精度 `6`。表以外的类型会以 `0A000` 拒绝。
+`numeric` 和 `decimal` 必须显式写出精度和小数位；不带参数的 `numeric` 和精度超过 76
+会被拒绝。`time(p)`/`timestamp(p)` 只接受 `p = 0, 3, 6`；其他精度会拒绝。
+`interval` 和 `inet` 列不支持（interval 表达式仍然可用）。表以外的类型会以 `0A000` 拒绝。
 
 完整映射和查询侧类型行为见[数据类型](../../reference/data-types.md)。
 

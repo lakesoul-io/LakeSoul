@@ -26,6 +26,7 @@ use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use support::Harness;
+use uuid::Uuid;
 
 macro_rules! ensure_eq {
     ($left:expr, $right:expr $(, $($arg:tt)+)?) => {
@@ -44,6 +45,7 @@ async fn copy_scenarios(h: &Harness) -> Result<()> {
     custom_options(h).await?;
     whole_table_and_omitted_columns(h).await?;
     typed_columns(h).await?;
+    semantic_arrays(h).await?;
     json_copy(h).await?;
     empty_copy_writes_nothing(h).await?;
     transaction_rollback(h).await?;
@@ -313,6 +315,81 @@ async fn typed_columns(h: &Harness) -> Result<()> {
     );
     ensure_eq!(row.get::<_, Vec<u8>>(4), vec![0xde, 0xad], "bytea");
     eprintln!("PASS case=copy-types bool=ok numeric=ok date=ok timestamptz=ok bytea=ok");
+    Ok(())
+}
+
+/// COPY preserves semantic array element types: UUID, money, 40-digit numeric
+/// and character length, including quoted elements and NULLs.
+async fn semantic_arrays(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute(
+            "CREATE TABLE copy_arrays (\
+               id BIGINT NOT NULL PRIMARY KEY, us UUID[], m MONEY[], \
+               n NUMERIC(40,2)[], v VARCHAR(5)[]\
+             )",
+        )
+        .await
+        .context("create copy_arrays")?;
+    let mut sink = pin!(
+        h.lake
+            .copy_in("COPY copy_arrays FROM STDIN")
+            .await
+            .context("start array COPY")?
+    );
+    sink.send(Bytes::from_static(
+        b"1\t{550e8400-e29b-41d4-a716-446655440000}\t{\"$1,234.56\"}\t{12345678901234567890123456789012345678.90}\t{\"a,b\",NULL}\n",
+    ))
+    .await
+    .context("send array row")?;
+    ensure_eq!(
+        sink.finish().await.context("finish array COPY")?,
+        1,
+        "array COPY tag"
+    );
+
+    let row = h
+        .lake
+        .query_one(
+            "SELECT us, m[1]::text, n[1]::text, v FROM copy_arrays WHERE id = 1",
+            &[],
+        )
+        .await
+        .context("read the array row")?;
+    let us: Vec<Uuid> = row.get(0);
+    ensure_eq!(us.len(), 1, "UUID[] length");
+    ensure_eq!(
+        us[0].to_string(),
+        "550e8400-e29b-41d4-a716-446655440000",
+        "UUID[] element"
+    );
+    ensure_eq!(row.get::<_, String>(1), "1234.56", "money array element");
+    ensure_eq!(
+        row.get::<_, String>(2),
+        "12345678901234567890123456789012345678.90",
+        "numeric array keeps every digit"
+    );
+    ensure_eq!(
+        row.get::<_, Vec<Option<String>>>(3),
+        vec![Some("a,b".to_string()), None],
+        "quoted element and NULL"
+    );
+
+    // An over-long element is refused before the row is written.
+    let mut sink = pin!(
+        h.lake
+            .copy_in("COPY copy_arrays FROM STDIN")
+            .await
+            .context("start refused array COPY")?
+    );
+    sink.send(Bytes::from_static(b"2\t{}\t{}\t{}\t{abcdef}\n"))
+        .await
+        .context("send over-long element")?;
+    let error = sink.finish().await.expect_err("over-long array element");
+    ensure_eq!(
+        error.as_db_error().map(|error| error.code().code()),
+        Some("22001"),
+        "array element length SQLSTATE"
+    );
     Ok(())
 }
 
