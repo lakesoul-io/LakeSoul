@@ -227,6 +227,18 @@ impl std::fmt::Debug for PgTypePlanner {
 
 impl datafusion::logical_expr::planner::TypePlanner for PgTypePlanner {
     fn plan_type_field(&self, sql_type: &SqlDataType) -> DFResult<Option<FieldRef>> {
+        // An explicit cast to text must be a text result. `uuid::text` is a
+        // no-op cast (both sides are Utf8), so without a planned target field
+        // the cast keeps the source `pg.type=uuid` marker and reports the UUID
+        // OID. Marking the planned target text overrides that marker; cast
+        // planning merges the target field's metadata into the result.
+        if matches!(sql_type, SqlDataType::Text | SqlDataType::String(_)) {
+            return Ok(Some(Arc::new(with_metadata(
+                Field::new("", DataType::Utf8, true),
+                PG_TYPE_KEY,
+                "text",
+            ))));
+        }
         if !is_pg_specific(sql_type) {
             return match &self.inner {
                 Some(inner) => inner.plan_type_field(sql_type),

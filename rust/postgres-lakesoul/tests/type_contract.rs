@@ -214,6 +214,28 @@ async fn run(h: &Harness) -> Result<()> {
     ensure!(array_catalog[0].get::<_, i32>(1) == 9, "array typmod");
     ensure!(array_catalog[0].get::<_, i32>(2) == 1, "array ndims");
 
+    // An explicit cast to text must report text, even though UUID storage is
+    // already UTF-8 and the cast is a no-op.
+    let text_cast = h
+        .lake
+        .query(
+            "SELECT u::text AS u_text, u::varchar AS u_varchar FROM type_contract WHERE id = 1",
+            &[],
+        )
+        .await?;
+    ensure!(
+        text_cast[0].columns()[0].type_() == &Type::TEXT,
+        "uuid::text OID"
+    );
+    ensure!(
+        text_cast[0].columns()[1].type_() == &Type::VARCHAR,
+        "uuid::varchar OID"
+    );
+    ensure!(
+        text_cast[0].get::<_, String>(0) == "550e8400-e29b-41d4-a716-446655440000",
+        "uuid::text value"
+    );
+
     // Catalog typmods are visible to psql/SQLAlchemy reflection.
     let catalog = h
         .lake
