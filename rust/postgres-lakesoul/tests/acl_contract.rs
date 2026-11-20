@@ -953,6 +953,77 @@ async fn revoked_prepared_statement_replans() -> Result<()> {
     .await
 }
 
+/// The ACL view is shared by every connection of a user/domain pair. A peer
+/// consuming the refresh after a revoke must still invalidate a prepared plan
+/// held by another connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_refresh_invalidates_another_connections_prepared_plan() -> Result<()> {
+    support::run_rbac_suite(|h| {
+        Box::pin(async move {
+            let alice_token = h.token("alice", RBAC_TEAM_A)?;
+            let bob_token = h.token("bob", RBAC_TEAM_A)?;
+            let namespace = h.lake_namespace.clone();
+            let table = unique("revoke_peer");
+
+            let alice =
+                connect_as(h, "revoke-peer-alice", &namespace, "alice", &alice_token)
+                    .await?;
+            alice
+                .batch_execute(&format!(
+                    "CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY)"
+                ))
+                .await?;
+            alice
+                .batch_execute(&format!("INSERT INTO {table} VALUES (1)"))
+                .await?;
+            alice
+                .batch_execute(&format!("GRANT SELECT ON {table} TO bob"))
+                .await?;
+
+            let bob1 =
+                connect_as(h, "revoke-peer-bob-1", &namespace, "bob", &bob_token).await?;
+            let prepared = bob1
+                .prepare(&format!("SELECT count(*) FROM {table}"))
+                .await
+                .context("revoke-peer: prepare as bob")?;
+            let count: i64 = bob1.query_one(&prepared, &[]).await?.get(0);
+            ensure!(count == 1, "bob saw {count} rows, expected 1");
+
+            // Same user/domain: this connection shares the AclEntry with bob1.
+            let bob2 =
+                connect_as(h, "revoke-peer-bob-2", &namespace, "bob", &bob_token).await?;
+            alice
+                .batch_execute(&format!("REVOKE ALL ON {table} FROM bob"))
+                .await
+                .context("revoke-peer: revoke bob")?;
+
+            // Wait past the ACL TTL, then let bob2 consume the refresh. bob1
+            // itself sees no local "changed" flag from this refresh.
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            bob2.batch_execute("SELECT 1").await?;
+
+            match bob1.query_one(&prepared, &[]).await {
+                Ok(_) => bail!(
+                    "a prepared plan on another connection still read the table after revoke"
+                ),
+                Err(error) => {
+                    let db = error.as_db_error().context("expected a server error")?;
+                    ensure!(
+                        db.code() == &SqlState::UNDEFINED_TABLE,
+                        "stale prepared plan gave {} ({}), expected 42P01",
+                        db.code().code(),
+                        db.message()
+                    );
+                }
+            }
+
+            alice.batch_execute(&format!("DROP TABLE {table}")).await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
 /// `CREATE USER` creates a real PG login role, grants the domain RBAC roles,
 /// and records the user in the directory used by token validation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

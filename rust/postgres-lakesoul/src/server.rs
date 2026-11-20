@@ -1181,7 +1181,7 @@ impl LakeSoulQueryRouter {
         // another session may have changed this connection's visibility since
         // the portal was planned. Refresh first, then make a changed view
         // invalidate that plan.
-        if state
+        state
             .session
             .refresh_acl_if_stale()
             .await
@@ -1190,7 +1190,12 @@ impl LakeSoulQueryRouter {
                     "XX000",
                     format!("refreshing table ACLs failed: {error}"),
                 )
-            })?
+            })?;
+        // The ACL entry is shared per (user, domains). Another connection may
+        // have consumed the refresh, so the local `changed` result is not
+        // enough: compare the view version recorded at plan time as well.
+        if let Some(acl) = state.session.acl()
+            && state.settings.acl_changed(&statement.id, acl.version())
         {
             state.settings.bump();
         }
@@ -1248,6 +1253,9 @@ impl LakeSoulQueryRouter {
             Arc::new(tokio::sync::Mutex::new(PortalExecutionState::Initial));
         client.portal_store().put_portal(Arc::new(replacement));
         state.settings.record(&statement.id);
+        if let Some(acl) = state.session.acl() {
+            state.settings.record_acl(&statement.id, acl.version());
+        }
         Ok(())
     }
 }
@@ -1517,6 +1525,9 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
                 // The plan just made belongs to the current settings; a later
                 // `SET` bumps past it and makes the next `Execute` replan.
                 state.settings.record(&name);
+                if let Some(acl) = state.session.acl() {
+                    state.settings.record_acl(&name, acl.version());
+                }
                 // Planning is over: its slot returns, and a statement that is
                 // never executed leaves no report behind. The identity stays,
                 // so the `Execute` that follows reports under it.
