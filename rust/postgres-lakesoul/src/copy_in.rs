@@ -1541,7 +1541,13 @@ fn parse_array_text(text: &str) -> Result<Vec<Option<String>>, String> {
 }
 
 fn finish_array_element(value: &str, quoted: bool) -> Option<String> {
-    if !quoted && value.trim().eq_ignore_ascii_case("NULL") && value.trim() == value {
+    if quoted {
+        return Some(value.to_string());
+    }
+    // PostgreSQL ignores whitespace around an unquoted element and treats an
+    // unquoted `NULL` as SQL NULL; only a quoted "NULL" is data.
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("NULL") {
         None
     } else {
         Some(value.to_string())
@@ -2378,5 +2384,33 @@ mod new_type_tests {
         assert!(column.element.is_some(), "element column");
         let value = decode_value(&column, Some(b"{1,2,3}")).expect("array decodes");
         assert_eq!(value.data_type(), column.data_type);
+    }
+
+    #[test]
+    fn array_text_matches_postgresql_element_rules() {
+        assert_eq!(
+            parse_array_text("{}").unwrap(),
+            Vec::<Option<String>>::new()
+        );
+        // Whitespace around unquoted elements is ignored.
+        assert_eq!(
+            parse_array_text("{ 1, 2 }").unwrap(),
+            vec![Some("1".to_string()), Some("2".to_string())]
+        );
+        // Unquoted NULL is SQL NULL, quoted "NULL" is the four-character text.
+        assert_eq!(parse_array_text("{NULL}").unwrap(), vec![None]);
+        assert_eq!(
+            parse_array_text("{\"NULL\"}").unwrap(),
+            vec![Some("NULL".to_string())]
+        );
+        // Quotes and backslashes protect delimiters and are unescaped.
+        assert_eq!(
+            parse_array_text("{\"a,b\",\"c\\\"d\"}").unwrap(),
+            vec![Some("a,b".to_string()), Some("c\"d".to_string())]
+        );
+        assert_eq!(
+            parse_array_text("{\"\",{}}").unwrap(),
+            vec![Some(String::new()), Some("{}".to_string())]
+        );
     }
 }

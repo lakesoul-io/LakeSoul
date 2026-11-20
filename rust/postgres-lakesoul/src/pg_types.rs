@@ -119,9 +119,6 @@ pub(crate) fn field_for_sql_type(
                 ));
             }
         }
-        SqlDataType::Interval { .. } => {
-            field = with_metadata(field, PG_TYPE_KEY, "interval");
-        }
         SqlDataType::Varchar(length)
         | SqlDataType::CharacterVarying(length)
         | SqlDataType::CharVarying(length) => {
@@ -211,9 +208,13 @@ fn custom_name(name: &datafusion::sql::sqlparser::ast::ObjectName) -> Option<Str
         .map(|ident| ident.value.trim_matches('"').to_ascii_lowercase())
 }
 
-/// DataFusion `TypePlanner` for PostgreSQL-specific SQL types. It delegates
-/// to the planner already installed by `pg_catalog` (which handles json,
-/// pgvector and oid aliases) for everything it does not own.
+/// DataFusion `TypePlanner` for PostgreSQL-specific SQL types.
+///
+/// DataFusion holds one planner per session, so this one must also serve the
+/// types the `pg_catalog` setup installed `PgOidTypePlanner` for (json,
+/// pgvector and oid aliases): everything not owned here is delegated to it.
+/// The session state does not expose the installed planner for reading, so
+/// [`install`] constructs the same planner again.
 pub(crate) struct PgTypePlanner {
     inner: Option<Arc<dyn datafusion::logical_expr::planner::TypePlanner>>,
 }

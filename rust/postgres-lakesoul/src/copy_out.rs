@@ -621,6 +621,7 @@ fn array_text(array: &ArrayRef, element: &Field) -> PgWireResult<String> {
         }
         let value = field_text(array, index, element)?.unwrap_or_default();
         let needs_quote = value.is_empty()
+            || value.trim() != value
             || value.eq_ignore_ascii_case("NULL")
             || value
                 .chars()
@@ -772,6 +773,23 @@ mod tests {
         let labels = Arc::new(StringArray::from(vec![Some("a\tb"), Some("x,y"), None]));
         let batch = RecordBatch::try_new(schema.clone(), vec![ids, labels]).unwrap();
         (schema, batch)
+    }
+
+    #[test]
+    fn array_text_quotes_elements_that_need_it() {
+        let element = Field::new("item", DataType::Utf8, true);
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("a,b"),
+            Some("NULL"),
+            None,
+            Some(" lead"),
+            Some("{}"),
+            Some("plain"),
+        ]));
+        assert_eq!(
+            array_text(&array, &element).unwrap(),
+            r#"{"a,b","NULL",NULL," lead","{}",plain}"#
+        );
     }
 
     #[test]
