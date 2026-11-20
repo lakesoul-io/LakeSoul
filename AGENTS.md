@@ -259,6 +259,14 @@ When searching the repository, exclude generated or lock files where possible: `
 | `python-ci.yml` | Push/PR to `python/**` | Python build + pytest |
 | `native-build.yml` | Push/PR | Linux x64 native library builds |
 
+### Rust build cache
+
+`rust-test-fast` is produced only by the `legacy` leg of the `rust-ci` test
+matrix; the `v2` and `ivm` legs, Clippy, TPC-H, and the release gates restore
+it. `native-glibc217-v2` is produced by `native-build`; `maven-test`,
+`compatibility-ci`, `consistency-ci`, the CDC suites, and `python-ci` only
+restore it, so Python keeps no cache key of its own.
+
 ---
 
 ## Contribution Guidelines

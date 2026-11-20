@@ -36,8 +36,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  rust_ci:
+  rust_test:
     runs-on: ubuntu-24.04
+    # The three suites share the rust-test-fast cache but run in parallel.
+    # Only the legacy leg writes it, so a push to main produces one cache
+    # generation; the other legs only restore.
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [legacy, v2, ivm]
     env:
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       # Metadata PostgreSQL used by the postgres-lakesoul contract tests.
@@ -138,13 +145,13 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
-      # Canonical producer for rust-test-fast. Clippy, TPC-H, IVM, and release
-      # gates only restore it.
+      # Canonical producer for rust-test-fast. Clippy, TPC-H, and release gates
+      # only restore it; the v2 and ivm legs of this matrix restore it too.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-test-fast"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'legacy' }}
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
@@ -160,6 +167,7 @@ jobs:
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
       - name: Test legacy merge
+        if: matrix.suite == 'legacy'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_LOG: info
@@ -171,11 +179,13 @@ jobs:
         run: |
           cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
       - name: PostgreSQL SQL compatibility (legacy merge)
+        if: matrix.suite == 'legacy'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_BACKTRACE: full
         run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test copy_contract --test bi_contract --test acl_contract --test update_contract --test upsert_contract --jobs 4 -- --nocapture
       - name: Test v2 merge
+        if: matrix.suite == 'v2'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_LOG: info
@@ -187,6 +197,7 @@ jobs:
         run: |
           cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
       - name: PostgreSQL SQL compatibility (v2 merge)
+        if: matrix.suite == 'v2'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
@@ -199,7 +210,7 @@ jobs:
       # sqllogictest keeps md-5 aligned with object_store so the IVM build
       # does not cascade into object_store/parquet/vortex/datafusion.
       - name: IVM core tests
-        if: github.event_name != 'schedule'
+        if: matrix.suite == 'ivm' && github.event_name != 'schedule'
         env:
           RUST_LOG: info
           RUST_BACKTRACE: full
@@ -208,7 +219,7 @@ jobs:
       # The full IVM suite is nightly-only: it runs every IVM test binary
       # built by the script, without another cargo invocation.
       - name: Full IVM suite
-        if: github.event_name == 'schedule'
+        if: matrix.suite == 'ivm' && github.event_name == 'schedule'
         env:
           RUST_LOG: info
           RUST_BACKTRACE: full
