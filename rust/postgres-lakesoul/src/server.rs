@@ -173,6 +173,7 @@ fn rewrite_special_statements(sql: &str) -> PgWireResult<String> {
     let sql = crate::federation::rewrite(&sql)?.unwrap_or(sql);
     let sql = crate::user::rewrite_create_user(&sql).unwrap_or(sql);
     let sql = crate::subscribe::sql::rewrite(&sql)?.unwrap_or(sql);
+    let sql = crate::snapshot::rewrite(&sql).unwrap_or(sql);
     // psycopg2 and other libpq clients send bytea parameters as text
     // literals (`'\\x...'::bytea`). Decode them before DataFusion's raw
     // Utf8 -> Binary cast can store the literal characters.
@@ -1078,6 +1079,10 @@ pub(crate) fn connection_statement_hooks(
         database.to_string(),
         identity.user.clone(),
     )));
+    hooks.push(Arc::new(crate::snapshot::SnapshotDdlHook::new(
+        Arc::clone(factory.meta_client()),
+        database.to_string(),
+    )));
     hooks.push(Arc::new(crate::ddl::DdlStatementHook::new(
         Arc::clone(factory.meta_client()),
         database.to_string(),
@@ -1151,6 +1156,7 @@ impl QueryParser for __ConnectionParser {
         let sql = crate::user::rewrite_create_user(&sql).unwrap_or(sql);
         let sql =
             crate::subscribe::sql::rewrite(&sql)?.unwrap_or_else(|| sql.to_string());
+        let sql = crate::snapshot::rewrite(&sql).unwrap_or(sql);
         let state = connection_session(client)?;
         let parser = state.service.query_parser();
         parser.parse_sql(client, &sql, types).await

@@ -493,11 +493,27 @@ visibility applies), wraps the provider with `snapshot_view()`, and returns a
 per-query pinned scan. It stores nothing in the session: a plain `SELECT` still
 sees the latest commit, and reading an old version to write another table or
 partition is an ordinary query. Pinned scans skip vector/text index pushdown
-and use the historical partition versions through merge-on-read. Snapshot and
-tag rows are created by metadata tooling; there is no SQL DDL for them yet.
+and use the historical partition versions through merge-on-read.
 
-Covered by `tests/time_travel_contract.rs` (all four modes, filters, invalid
-arguments and RBAC visibility), the bin unit tests in `src/time_travel.rs`,
+Snapshots and tags are also managed from SQL (module `src/snapshot.rs`). A
+snapshot is an immutable table-wide freeze; a tag is its readable name. One
+statement freezes and names it, with an optional `AS OF` source:
+
+```sql
+ALTER TABLE events CREATE TAG `EOW-01`;
+ALTER TABLE events CREATE TAG `v1` AS OF timestamp '2026-11-20T10:00:00+08:00';
+ALTER TABLE events CREATE TAG `copy` AS OF VERSION 7;
+SHOW TAGS events;                       -- all-text columns, via lakesoul_tags('events')
+ALTER TABLE events DROP TAG `v1`;
+```
+
+`DROP TAG` cascades to its snapshot only when nothing else references it;
+shared snapshots are kept with a `NOTICE`. There is no standalone `DROP
+SNAPSHOT` (versions are immutable). `create_tag(..., as_of=ms)` in the Python
+catalog offers the same one-call freeze-and-tag operation.
+
+Covered by `tests/time_travel_contract.rs`, `tests/snapshot_tag_contract.rs`,
+the bin unit tests in `src/time_travel.rs` and `src/snapshot.rs`,
 `client-compat/test_time_travel.py`, and the RBAC contract. See
 `website/docs/engine/postgres/time-travel.md` for the user-facing semantics.
 

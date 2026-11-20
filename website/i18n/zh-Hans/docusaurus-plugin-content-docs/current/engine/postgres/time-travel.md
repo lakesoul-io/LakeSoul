@@ -50,11 +50,40 @@ GROUP BY user_id;
 
 - **每次查询生效，不是会话级。** 函数只返回一张表的固定视图，不写任何会话状态；同一会话里的普通 `SELECT` 仍然读最新提交。
 - **`timestamp` 是“不晚于”。** 对每个分区，服务端选择 `partition_info.timestamp <=` 给定时刻的最新版本。这个时间戳是分区版本提交时的墙钟时间；同一次原子提交更新的多个分区共享同一个 PostgreSQL 事务时间。必须提供带显式偏移的 RFC3339 字符串（`+08:00`、`Z` 等），不带偏移的字符串会被拒绝。
-- **snapshot / tag 读取依赖元数据行**，来自 `table_snapshot`、`snapshot_commit` 和 `table_snapshot_tag`。这个前端目前没有创建它们的 SQL DDL；它们由元数据工具和 Flink clean job 创建。`timestamp` 不需要预先准备。
+- **snapshot / tag 读取依赖元数据行**，来自 `table_snapshot`、`snapshot_commit` 和 `table_snapshot_tag`。可以直接用 SQL 创建它们（见[管理 snapshot 与 tag](#管理-snapshot-与-tag)），Python catalog 也提供相同操作。`timestamp` 不需要预先准备。
 - **固定读不使用向量/文本索引下推。** 这些索引描述的是最新文件，所以扫描会退回常规的 merge-on-read 路径，通常比等价的当前状态查询慢。
 - **读写互不影响。** 读旧版本再把结果写到其他表或分区是普通查询，不会被拒绝；目标表自身的写入仍基于它当前的提交。
 - **可见性不变。** 表通过连接所属的 catalog 解析，因此 RBAC 域和 ACL 规则对 `lakesoul_table_scan` 与普通 `SELECT` 完全一致。不支持外部表。
 - **注意保留策略。** 固定读需要历史的 `partition_info` 行和 commit 文件仍然存在。tag 通过 `pinned` 标记让 clean job 保留对应 commit；没有 tag 的 snapshot 在足够旧之后可能被回收。
+
+## 管理 snapshot 与 tag
+
+**snapshot** 是对整张表在某个时刻的分区版本和 commit 的不可变冻结，它的数字 `snapshot_id` 就是 `lakesoul_table_scan` 里的“version”。**tag** 是给 snapshot 起的可读名字。创建时一步完成冻结和命名：
+
+```sql
+ALTER TABLE events CREATE TAG `EOW-01`;                                       -- 冻结当前状态
+ALTER TABLE events CREATE TAG `v1` AS OF timestamp '2026-11-20T10:00:00+08:00';
+ALTER TABLE events CREATE TAG `copy` AS OF VERSION 7;                          -- 给已有版本起名
+
+SHOW TAGS events;                -- tag, version, created_at, snapshot_created_at, description
+ALTER TABLE events DROP TAG `v1`;
+```
+
+- `AS OF timestamp` 冻结该时刻或之前最新提交的分区版本，tag 读到的正是那个时间点的状态；`AS OF VERSION` 要求 id 是该表已有的 snapshot。不写 `AS OF` 则冻结当前状态。
+- `SHOW TAGS` 的**所有列都是文本**，时间是 RFC3339 字符串。它实际上由表函数 `lakesoul_tags('table')` 生成，也可以直接查询。
+- `DROP TAG` 删除 tag；当没有其他 tag 或样本 manifest 引用该 snapshot 时，一并删除 snapshot（unpin 其 commit 供正常 GC）。若被共享，则只删 tag 并返回 `NOTICE` 说明保留原因。
+- snapshot 版本不可变：刻意**不提供**独立的 `DROP SNAPSHOT` / `DROP VERSION` 语句（`0A000`）。tag DDL 和其他 DDL 一样，不允许在显式事务块中执行。
+- RBAC/ACL 可见性同样生效：不可见的表无法打 tag，也不会出现在列表里。
+
+Python 提供相同操作：
+
+```python
+catalog.create_tag("events", "EOW-01")                 # 冻结当前 + tag
+catalog.create_tag("events", "v1", as_of=as_of_ms)      # 冻结 Unix 毫秒时刻 + tag
+catalog.create_tag("events", "copy", snapshot=7)        # 给已有版本起名
+catalog.list_tags("events")
+catalog.drop_tag("events", "v1")                        # 只删 tag；snapshot 保留
+```
 
 ## 错误情况
 

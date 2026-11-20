@@ -27,7 +27,8 @@ use datafusion::scalar::ScalarValue;
 use lakesoul_datafusion::datasource::table_provider::{
     LakeSoulTableProvider, TableReadSnapshot,
 };
-use tokio::runtime::{Handle, RuntimeFlavor};
+
+use crate::async_util::wait_on_runtime;
 
 pub(crate) const FUNCTION_NAME: &str = "lakesoul_table_scan";
 
@@ -147,28 +148,6 @@ fn string_literal(expr: &Expr, name: &str) -> DFResult<String> {
             "{name} must be a string literal, got '{expr}'"
         ))),
     }
-}
-
-/// Drive an async catalog lookup from a synchronous table-function call.
-///
-/// `Handle::current()` panics without a runtime and plain `block_on` deadlocks
-/// a runtime worker; `block_in_place` lets the multi-thread runtime move other
-/// tasks away while this thread waits. A current-thread runtime is refused
-/// with a planner error rather than risking a hang.
-fn wait_on_runtime<T: Send + 'static>(
-    future: impl std::future::Future<Output = DFResult<T>> + Send + 'static,
-) -> DFResult<T> {
-    let handle = Handle::try_current().map_err(|error| {
-        invalid(format!(
-            "a tokio runtime is required for a pinned read: {error}"
-        ))
-    })?;
-    if handle.runtime_flavor() != RuntimeFlavor::MultiThread {
-        return Err(invalid(
-            "a pinned read requires a multi-thread tokio runtime",
-        ));
-    }
-    tokio::task::block_in_place(|| handle.block_on(future))
 }
 
 fn invalid(message: impl Into<String>) -> DataFusionError {

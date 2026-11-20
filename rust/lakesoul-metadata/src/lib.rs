@@ -240,6 +240,10 @@ pub enum DaoType {
     DropTagByTableIdAndTag = DAO_TYPE_QUERY_LIST_OFFSET + 24,
     /// The coded type for the Data Access Object for creating a tag.
     CreateTag = DAO_TYPE_QUERY_LIST_OFFSET + 25,
+    /// Freeze the partition versions committed at or before a timestamp into
+    /// a new snapshot. `CreateSnapshot` always freezes the latest versions;
+    /// this variant takes `(table_id, description, as_of_ms)`.
+    CreateSnapshotAsOf = DAO_TYPE_QUERY_LIST_OFFSET + 26,
 
     // ==== Coded Insert One ====
     /// The coded type for the Data Access Object for insert namespace.
@@ -339,6 +343,7 @@ fn get_query_type(dao_type: DaoType) -> QueryType {
     if matches!(
         dao_type,
         DaoType::CreateSnapshot
+            | DaoType::CreateSnapshotAsOf
             | DaoType::DropSnapshot
             | DaoType::DropTagByTableIdAndTag
             | DaoType::CreateTag
@@ -588,6 +593,43 @@ async fn get_prepared_statement<'a>(
                 returning 1
             )
             select table_id, snapshot_id, created_at, description from new_snapshot",
+        // Same freeze as CreateSnapshot, but the frozen version of each
+        // partition is the latest one committed at or before $3 (Unix ms).
+        // Used by `ALTER TABLE ... CREATE TAG ... AS OF timestamp` and the
+        // Python `create_tag(as_of=...)` path.
+        DaoType::CreateSnapshotAsOf =>
+            "with new_snapshot as (
+                 insert into table_snapshot(table_id, created_at, description)
+                 values ($1::TEXT, (extract(epoch from now()) * 1000)::BIGINT, $2::TEXT)
+                 returning table_id, snapshot_id, created_at, description
+             ),
+             as_of as (
+                 select distinct on (table_id, partition_desc)
+                        table_id, partition_desc, version, snapshot
+                 from partition_info
+                 where table_id = $1::TEXT and timestamp <= $3::BIGINT
+                 order by table_id, partition_desc, version desc
+             ),
+             inserted as (
+                 insert into snapshot_commit(table_id, snapshot_id, partition_desc, version, commit_id)
+                 select distinct ns.table_id, ns.snapshot_id, a.partition_desc, a.version, c.commit_id
+                 from new_snapshot ns, as_of a, unnest(a.snapshot) as c(commit_id)
+                 returning commit_id, partition_desc, version
+             ),
+             pin_commits as (
+                 update data_commit_info dci set pinned = true
+                 where dci.table_id = $1::TEXT
+                   and dci.commit_id in (select commit_id from inserted)
+                 returning 1
+             ),
+             pin_versions as (
+                 update partition_info pi set pinned = true
+                 where pi.table_id = $1::TEXT
+                   and (pi.partition_desc, pi.version) in
+                       (select partition_desc, version from inserted)
+                 returning 1
+             )
+             select table_id, snapshot_id, created_at, description from new_snapshot",
         DaoType::DropSnapshot =>
             "with removed as (
                 delete from table_snapshot
@@ -1045,7 +1087,7 @@ pub async fn execute_query(
                 Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
-        DaoType::CreateTag if params.len() == 3 => {
+        DaoType::CreateTag | DaoType::CreateSnapshotAsOf if params.len() == 3 => {
             let result = conn
                 .query(
                     &statement,
@@ -1304,6 +1346,7 @@ pub async fn execute_query(
 
         DaoType::ListSnapshotsByTableId
         | DaoType::CreateSnapshot
+        | DaoType::CreateSnapshotAsOf
         | DaoType::DropSnapshot => ResultType::SnapshotInfo,
 
         DaoType::ListSnapshotCommitsBySnapshot => ResultType::SnapshotCommitInfo,

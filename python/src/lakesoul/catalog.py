@@ -557,16 +557,30 @@ class LakeSoulCatalog:
         table: str | LakeSoulTable,
         tag: str,
         snapshot: int | None = None,
+        as_of: int | None = None,
     ) -> int:
-        """Tag a snapshot (creating one first when ``snapshot`` is omitted)."""
+        """Tag a snapshot, freezing one first when needed.
+
+        ``snapshot`` tags an existing version. Without it, a new snapshot is
+        frozen and tagged in the same call; ``as_of`` (Unix milliseconds)
+        freezes the state committed at or before that instant instead of the
+        current state. ``snapshot`` and ``as_of`` are mutually exclusive.
+        """
+        if snapshot is not None and as_of is not None:
+            raise ValueError("snapshot and as_of are mutually exclusive")
         handle = self._resolve_table(table)
         snapshot_id = snapshot
         if snapshot_id is None:
-            snapshot_id = self._client.create_snapshot(
-                handle.name,
-                "",
-                namespace=handle.namespace,
-            ).snapshot_id
+            # Keep the old call shape when as_of is omitted so lightweight
+            # metadata-client doubles in tests still work.
+            if as_of is None:
+                snapshot_id = self._client.create_snapshot(
+                    handle.name, "", namespace=handle.namespace
+                ).snapshot_id
+            else:
+                snapshot_id = self._client.create_snapshot(
+                    handle.name, "", namespace=handle.namespace, as_of_ms=as_of
+                ).snapshot_id
         info = self._client.create_tag(
             handle.name,
             tag,

@@ -313,3 +313,37 @@ async fn data_file_infos_replay_the_selected_snapshot_without_the_latest() -> Re
     client.drop_table(&name, NAMESPACE).await?;
     Ok(())
 }
+
+/// A snapshot_commit row exists per commit id, but one partition version can
+/// hold several commit ids. Reading that snapshot must return the version
+/// once, or a pinned scan schedules the same files twice.
+#[tokio::test]
+async fn snapshot_partition_infos_are_deduplicated() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("snapshot_dedup");
+    let table_id = create_test_table(&client, &name).await?;
+
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "f1")])
+        .await?;
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "f2")])
+        .await?;
+
+    let snapshot = client.create_snapshot(&table_id, "dedup").await?;
+    let infos = client
+        .get_partition_infos_at_snapshot(&table_id, snapshot.snapshot_id)
+        .await?;
+    assert_eq!(
+        infos.len(),
+        1,
+        "one partition version must be returned once, got {infos:?}"
+    );
+    assert_eq!(infos[0].version, 1);
+
+    client
+        .drop_snapshot(&table_id, snapshot.snapshot_id)
+        .await?;
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}

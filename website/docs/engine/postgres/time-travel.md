@@ -60,9 +60,9 @@ GROUP BY user_id;
   transaction time. An RFC3339 string with an explicit offset is required
   (`+08:00`, `Z`, …); a naive string without an offset is refused.
 - **Snapshot and tag reads use the metadata rows** in `table_snapshot`,
-  `snapshot_commit` and `table_snapshot_tag`. This front end has no SQL DDL to
-  create them yet; they are created by the metadata tooling and the Flink
-  clean job. `timestamp` needs no such preparation.
+  `snapshot_commit` and `table_snapshot_tag`. You can create them from SQL (see
+  [Managing snapshots and tags](#managing-snapshots-and-tags)); the Python
+  catalog offers the same operations. `timestamp` needs no such preparation.
 - **Pinned reads do not use vector or text index pushdown.** Those indexes
   describe the latest files, so the scan falls back to the regular
   merge-on-read path. Expect it to be slower than an equivalent current-state
@@ -77,6 +77,49 @@ GROUP BY user_id;
   rows and commit files to still exist. Tags pin commits for the clean job via
   the `pinned` flag; an untagged snapshot may be reclaimed once it is old
   enough.
+
+## Managing snapshots and tags
+
+A **snapshot** is an immutable, table-wide freeze of the partition versions
+and commit ids that were current at a point in time. Its numeric `snapshot_id`
+is the "version" used by `lakesoul_table_scan`. A **tag** is a readable name
+attached to one snapshot. Creating one freezes and names it in a single
+statement:
+
+```sql
+ALTER TABLE events CREATE TAG `EOW-01`;                                       -- freeze now
+ALTER TABLE events CREATE TAG `v1` AS OF timestamp '2026-11-20T10:00:00+08:00';
+ALTER TABLE events CREATE TAG `copy` AS OF VERSION 7;                          -- name an existing version
+
+SHOW TAGS events;                -- tag, version, created_at, snapshot_created_at, description
+ALTER TABLE events DROP TAG `v1`;
+```
+
+- `AS OF timestamp` freezes the latest partition version committed at or before
+  that instant, so the tag reads exactly the state at that time. `AS OF VERSION`
+  requires an existing snapshot id of that table. Omitting `AS OF` freezes the
+  current state.
+- `SHOW TAGS` returns **all columns as text**; timestamps are RFC3339 strings.
+  Its output is produced by the `lakesoul_tags('table')` table function, which
+  you can also query directly.
+- `DROP TAG` removes the tag and, when no other tag or sample manifest
+  references that snapshot, the snapshot itself (unpinning its commits for
+  normal GC). If it is shared, only the tag is removed and a `NOTICE` explains
+  why the version was kept.
+- Snapshot versions are immutable: there is deliberately **no** standalone
+  `DROP SNAPSHOT`/`DROP VERSION` statement (`0A000`). Tag DDL is refused inside
+  an explicit transaction block, like other DDL.
+- RBAC/ACL visibility applies: a hidden table cannot be tagged or listed.
+
+The same operations are available in Python:
+
+```python
+catalog.create_tag("events", "EOW-01")                 # freeze now + tag
+catalog.create_tag("events", "v1", as_of=as_of_ms)      # freeze at a Unix-ms instant + tag
+catalog.create_tag("events", "copy", snapshot=7)        # name an existing version
+catalog.list_tags("events")
+catalog.drop_tag("events", "v1")                        # tag only; snapshot stays
+```
 
 ## Error cases
 

@@ -700,6 +700,14 @@ impl PgSessionFactory {
             crate::time_travel::FUNCTION_NAME,
             Arc::new(crate::time_travel::TableScanFunction::new(&context)),
         );
+        context.register_udtf(
+            crate::snapshot::TAGS_FUNCTION,
+            Arc::new(crate::snapshot::TagsFunction::new(
+                &context,
+                Arc::clone(self.meta_client()),
+                identity.database.clone(),
+            )),
+        );
         lakesoul_datafusion::udf::vector_batch::register(&context);
         let mut session = PgSession::new(
             identity,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -63,6 +64,35 @@ def test_snapshot_and_tag_reads(tmp_path: Path) -> None:
         ]
         tags = catalog.list_tags(name)
         assert [(item.tag, item.snapshot_id) for item in tags] == [("v1", snapshot_id)]
+    finally:
+        catalog.drop_table(name, if_exists=True)
+
+
+def test_create_tag_as_of_freezes_and_tags_in_one_call(tmp_path: Path) -> None:
+    """``create_tag(as_of=...)`` freezes the state at that instant and tags it."""
+    catalog = LakeSoulCatalog.from_env()
+    name = _table_name("snap_as_of")
+    table = catalog.create_table(name, path=(tmp_path / name).as_uri(), schema=SCHEMA)
+
+    try:
+        table.write_arrow(_batch(1), format="parquet")
+        # The as-of instant is after the first commit and before the second.
+        time.sleep(1)
+        as_of_ms = int(time.time() * 1000) - 100
+        time.sleep(0.2)
+        table.write_arrow(_batch(2), format="parquet")
+        assert sorted(_ids(table)) == [1, 2]
+
+        snapshot_id = catalog.create_tag(name, "early", as_of=as_of_ms)
+        assert snapshot_id > 0
+        assert _ids(table, tag="early") == [1]
+        assert [(item.tag, item.snapshot_id) for item in catalog.list_tags(name)] == [
+            ("early", snapshot_id)
+        ]
+
+        # snapshot and as_of are mutually exclusive.
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            catalog.create_tag(name, "bad", snapshot=snapshot_id, as_of=as_of_ms)
     finally:
         catalog.drop_table(name, if_exists=True)
 

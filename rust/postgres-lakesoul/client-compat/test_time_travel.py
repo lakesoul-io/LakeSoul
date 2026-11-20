@@ -68,6 +68,36 @@ def test_timestamp_pinned_scan_through_drivers(connector, table_factory):
                 assert cursor.fetchall() == [(2,)]
 
 
+def test_snapshot_tag_ddl_through_drivers(connector, table_factory):
+    table = table_factory("id BIGINT PRIMARY KEY", "compat_tag_ddl")
+    with closing(connector("psycopg2")) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"INSERT INTO {table} VALUES (1), (2)")
+
+    for driver in DRIVERS:
+        with closing(connector(driver)) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"ALTER TABLE {table} CREATE TAG `v1`")
+                cursor.execute(f"SHOW TAGS {table}")
+                tags = cursor.fetchall()
+                assert [row[0] for row in tags] == ["v1"], tags
+                assert all(isinstance(value, str) for value in tags[0]), tags
+
+                cursor.execute(
+                    f"SELECT id FROM lakesoul_table_scan('{table}', 'tag', 'v1') "
+                    "ORDER BY id"
+                )
+                assert cursor.fetchall() == [(1,), (2,)]
+
+                cursor.execute(f"ALTER TABLE {table} DROP TAG v1")
+                cursor.execute(f"SHOW TAGS {table}")
+                assert cursor.fetchall() == []
+
+                with pytest.raises(Exception) as error:
+                    cursor.execute(f"ALTER TABLE {table} DROP SNAPSHOT 1")
+                assert sqlstate(error.value) == "0A000", sqlstate(error.value)
+
+
 def test_invalid_mode_is_refused(connector, table_factory):
     table = table_factory("id BIGINT PRIMARY KEY", "compat_time_travel")
     with closing(connector("psycopg3")) as connection:

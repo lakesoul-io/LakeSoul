@@ -20,7 +20,8 @@ use url::Url;
 
 use lakesoul_metadata_proto::entity::{
     self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo,
-    SnapshotCommitInfo, SnapshotTagInfo, TableInfo, TableNameId, TablePathId,
+    SnapshotCommitInfo, SnapshotInfo, SnapshotTagInfo, TableInfo, TableNameId,
+    TablePathId,
 };
 
 use crate::error::{LakeSoulMetaDataError, Result};
@@ -3189,6 +3190,109 @@ impl MetaDataClient {
         }
     }
 
+    /// Freeze the current partition versions into a new, immutable snapshot.
+    pub async fn create_snapshot(
+        &self,
+        table_id: &str,
+        description: &str,
+    ) -> Result<SnapshotInfo> {
+        let wrapper = self
+            .execute_query(
+                DaoType::CreateSnapshot as i32,
+                [table_id, description].join(PARAM_DELIM),
+            )
+            .await?;
+        wrapper.snapshot_info.into_iter().next().ok_or_else(|| {
+            LakeSoulMetaDataError::Internal("create snapshot returned no row".into())
+        })
+    }
+
+    /// Freeze the partition versions committed at or before `as_of_ms` into a
+    /// new immutable snapshot.
+    pub async fn create_snapshot_as_of(
+        &self,
+        table_id: &str,
+        description: &str,
+        as_of_ms: i64,
+    ) -> Result<SnapshotInfo> {
+        let wrapper = self
+            .execute_query(
+                DaoType::CreateSnapshotAsOf as i32,
+                [table_id, description, &as_of_ms.to_string()].join(PARAM_DELIM),
+            )
+            .await?;
+        wrapper.snapshot_info.into_iter().next().ok_or_else(|| {
+            LakeSoulMetaDataError::Internal(
+                "create snapshot as of returned no row".into(),
+            )
+        })
+    }
+
+    /// All immutable snapshots of a table.
+    pub async fn list_snapshots(&self, table_id: &str) -> Result<Vec<SnapshotInfo>> {
+        let wrapper = self
+            .execute_query(DaoType::ListSnapshotsByTableId as i32, table_id.to_string())
+            .await?;
+        Ok(wrapper.snapshot_info)
+    }
+
+    /// Attach a readable name to a snapshot.
+    pub async fn create_tag(
+        &self,
+        table_id: &str,
+        tag: &str,
+        snapshot_id: i64,
+    ) -> Result<SnapshotTagInfo> {
+        let wrapper = self
+            .execute_query(
+                DaoType::CreateTag as i32,
+                [table_id, tag, &snapshot_id.to_string()].join(PARAM_DELIM),
+            )
+            .await?;
+        wrapper.snapshot_tag_info.into_iter().next().ok_or_else(|| {
+            LakeSoulMetaDataError::Internal("create tag returned no row".into())
+        })
+    }
+
+    /// All tags of a table, with the snapshot each one pins.
+    pub async fn list_tags(&self, table_id: &str) -> Result<Vec<SnapshotTagInfo>> {
+        let wrapper = self
+            .execute_query(DaoType::ListTagsByTableId as i32, table_id.to_string())
+            .await?;
+        Ok(wrapper.snapshot_tag_info)
+    }
+
+    /// Remove a tag only; the snapshot it pinned stays immutable.
+    pub async fn drop_tag(
+        &self,
+        table_id: &str,
+        tag: &str,
+    ) -> Result<Option<SnapshotTagInfo>> {
+        let wrapper = self
+            .execute_query(
+                DaoType::DropTagByTableIdAndTag as i32,
+                [table_id, tag].join(PARAM_DELIM),
+            )
+            .await?;
+        Ok(wrapper.snapshot_tag_info.into_iter().next())
+    }
+
+    /// Remove a snapshot and unpin its commits. Callers must first check that
+    /// no tag or manifest still references it.
+    pub async fn drop_snapshot(
+        &self,
+        table_id: &str,
+        snapshot_id: i64,
+    ) -> Result<Option<SnapshotInfo>> {
+        let wrapper = self
+            .execute_query(
+                DaoType::DropSnapshot as i32,
+                [table_id, &snapshot_id.to_string()].join(PARAM_DELIM),
+            )
+            .await?;
+        Ok(wrapper.snapshot_info.into_iter().next())
+    }
+
     /// Read the partition commits frozen into a snapshot.
     ///
     /// A snapshot stores `(partition_desc, version, commit_id)` rows; reading
@@ -3245,7 +3349,16 @@ impl MetaDataClient {
     ) -> Result<Vec<PartitionInfo>> {
         let commits = self.get_snapshot_commits(table_id, snapshot_id).await?;
         let mut partitions = Vec::with_capacity(commits.len());
+        // A snapshot_commit row exists per commit id, but several commit ids
+        // can belong to one partition version. Returning that version twice
+        // would make a scan schedule the same files twice. Keep one
+        // PartitionInfo per (partition_desc, version), as the snapshot's
+        // frozen view intends.
+        let mut seen = std::collections::HashSet::new();
         for commit in commits {
+            if !seen.insert((commit.partition_desc.clone(), commit.version)) {
+                continue;
+            }
             if let Some(info) = self
                 .get_partition_info_by_version(
                     table_id,
