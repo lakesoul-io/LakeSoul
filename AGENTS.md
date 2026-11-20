@@ -259,6 +259,20 @@ When searching the repository, exclude generated or lock files where possible: `
 | `python-ci.yml` | Push/PR to `python/**` | Python build + pytest |
 | `native-build.yml` | Push/PR | Linux x64 native library builds |
 
+### Rust build cache (Kache)
+
+Rust jobs use `kunobi-ninja/kache-action` with the Huawei OBS bucket
+`lakesoul-build` instead of `Swatinem/rust-cache`. The action exports
+`RUSTC_WRAPPER`, so every `cargo` step in a job must come after it. Give each
+build variant a distinct `manifest-key`, and keep consumers on
+`save-cache: false`.
+
+Kache only uploads on a push to a protected branch (`main`); pull-request runs
+are read-only for the base prefix. Same-repository pull requests upload to the
+`artifacts-pr` prefix so repeated pushes reuse their own work. GitHub withholds
+secrets from fork pull requests, so those fall back to the GitHub Actions cache;
+open the PR from a branch in this repository when the S3 cache matters.
+
 ---
 
 ## Contribution Guidelines

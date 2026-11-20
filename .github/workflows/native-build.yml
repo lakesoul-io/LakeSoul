@@ -93,11 +93,21 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
       # Canonical producer for native-glibc217-v2. Other zigbuild jobs only restore it.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: kunobi-ninja/kache-action@v1
+        env:
+          # Same-repository pull requests write only this prefix; main writes the base prefix.
+          KACHE_PULL_REQUEST_PREFIX: artifacts-pr
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "native-glibc217-v2"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          version: v2.2.0
+          # Fork pull requests receive no secrets; an empty bucket falls back to the Actions cache.
+          s3-bucket: ${{ secrets.S3_ACCESS_KEY_ID != '' && 'lakesoul-build' || '' }}
+          s3-region: ap-southeast-3
+          s3-endpoint: https://obs.ap-southeast-3.myhuaweicloud.com
+          s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          manifest-key: native-glibc217-v2
+          save-cache: ${{ github.ref == 'refs/heads/main' || secrets.S3_ACCESS_KEY_ID != '' }}
+          pr-comment: false
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:

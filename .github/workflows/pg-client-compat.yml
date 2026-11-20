@@ -98,11 +98,18 @@ jobs:
       # Share rust-ci's test cache: rust-ci already builds and tests
       # postgres-lakesoul with the same test-fast profile and RUSTFLAGS.
       # Only main's rust-ci job updates this cache.
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@v1
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "rust-test-fast"
-          save-if: false
+          version: v2.2.0
+          # Fork pull requests receive no secrets; an empty bucket falls back to the Actions cache.
+          s3-bucket: ${{ secrets.S3_ACCESS_KEY_ID != '' && 'lakesoul-build' || '' }}
+          s3-region: ap-southeast-3
+          s3-endpoint: https://obs.ap-southeast-3.myhuaweicloud.com
+          s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          manifest-key: rust-test-fast
+          save-cache: false
+          pr-comment: false
       - name: Build postgres-lakesoul
         run: cargo build --profile test-fast -p postgres-lakesoul
       - name: Run psycopg and pgjdbc baseline

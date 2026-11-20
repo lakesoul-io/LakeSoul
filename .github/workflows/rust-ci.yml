@@ -138,13 +138,23 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
-      # Canonical producer for rust-test-fast. Clippy, TPC-H, IVM, and release
-      # gates only restore it.
-      - uses: Swatinem/rust-cache@v2
+      # Canonical producer for rust-test-fast. TPC-H, IVM, and release gates
+      # only restore it; clippy owns rust-clippy-test-fast.
+      - uses: kunobi-ninja/kache-action@v1
+        env:
+          # Same-repository pull requests write only this prefix; main writes the base prefix.
+          KACHE_PULL_REQUEST_PREFIX: artifacts-pr
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "rust-test-fast"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          version: v2.2.0
+          # Fork pull requests receive no secrets; an empty bucket falls back to the Actions cache.
+          s3-bucket: ${{ secrets.S3_ACCESS_KEY_ID != '' && 'lakesoul-build' || '' }}
+          s3-region: ap-southeast-3
+          s3-endpoint: https://obs.ap-southeast-3.myhuaweicloud.com
+          s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          manifest-key: rust-test-fast
+          save-cache: ${{ github.ref == 'refs/heads/main' || secrets.S3_ACCESS_KEY_ID != '' }}
+          pr-comment: false
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
@@ -217,9 +227,10 @@ jobs:
   clippy_check:
     runs-on: ubuntu-24.04
     env:
-      # Match the test job's compiler flags so both jobs share rust-test-fast.
-      # Warnings are denied on the clippy command line instead of RUSTFLAGS,
-      # because RUSTFLAGS participates in the cache key and dependency fingerprints.
+      # Match the test job's compiler flags so dependency keys line up; clippy
+      # keeps its own manifest. Warnings are denied on the clippy command line
+      # instead of RUSTFLAGS, because RUSTFLAGS participates in the cache key
+      # and dependency fingerprints.
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v5
@@ -235,11 +246,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
           command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@v1
+        env:
+          # Same-repository pull requests write only this prefix; main writes the base prefix.
+          KACHE_PULL_REQUEST_PREFIX: artifacts-pr
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "rust-test-fast"
-          save-if: false
+          version: v2.2.0
+          # Fork pull requests receive no secrets; an empty bucket falls back to the Actions cache.
+          s3-bucket: ${{ secrets.S3_ACCESS_KEY_ID != '' && 'lakesoul-build' || '' }}
+          s3-region: ap-southeast-3
+          s3-endpoint: https://obs.ap-southeast-3.myhuaweicloud.com
+          s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          manifest-key: rust-clippy-test-fast
+          save-cache: ${{ github.ref == 'refs/heads/main' || secrets.S3_ACCESS_KEY_ID != '' }}
+          pr-comment: false
       - name: Run Clippy
         # Keep every cargo invocation in this workflow on `test-fast` so all
         # artifacts stay in a single profile directory (rust/target/test-fast).
