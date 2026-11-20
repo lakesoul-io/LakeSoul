@@ -44,7 +44,7 @@ CREATE TABLE orders (
 未知选项会以 `0A000` 拒绝，而不是被忽略。
 
 向量/文本索引声明（`vector_index_columns`、`text_index_columns`、
-`index_maintenance`）统一见[向量与文本索引 DDL](../index-ddl.md)。
+`index_maintenance`）统一见[向量与文本索引 DDL](index-ddl.md)。
 
 `use_cdc = true` 需要一个变更列。声明 `rowKinds`，或用 `lakesoul_cdc_change_column` 指定其他列。没有它，删除无法表示，增量 SQL 目标也无法撤回行。
 
@@ -78,7 +78,7 @@ CREATE TABLE orders (
 `interval` 和 `inet` 列不支持（interval 表达式仍然可用）。表以外的类型会以 `0A000` 拒绝。
 
 pgvector 的 `vector(n)` / `vector` 列类型和向量字面量形式见
-[向量与文本索引 DDL](../index-ddl.md)。
+[向量与文本索引 DDL](index-ddl.md)。
 
 完整映射和查询侧类型行为见[数据类型](../../reference/data-types.md)。
 
@@ -86,7 +86,7 @@ pgvector 的 `vector(n)` / `vector` 列类型和向量字面量形式见
 
 `vector(n)` 列、`vector_index_columns`、`text_index_columns`、`CREATE INDEX`、
 `REINDEX TABLE` 和 deferred 索引维护统一见
-[向量与文本索引 DDL](../index-ddl.md)。
+[向量与文本索引 DDL](index-ddl.md)。
 
 ## DROP TABLE
 
@@ -107,11 +107,11 @@ DROP TABLE orders;
 - 受支持形式之外的 `PRIMARY KEY` 子句
 
 每次拒绝都返回 SQLSTATE `0A000`，消息里会指出具体子句。
-索引相关的拒绝形式见[向量与文本索引 DDL](../index-ddl.md#被拒绝的形式)。
+索引相关的拒绝形式见[向量与文本索引 DDL](index-ddl.md#被拒绝的形式)。
 
 ## 下一步
 
-- [向量与文本索引 DDL](../index-ddl.md)
+- [向量与文本索引 DDL](index-ddl.md)
 - [写入与 Upsert](insert-and-upsert.md)
 - [数据类型](../../reference/data-types.md)
 - [物理文件格式](../../operations/physical-file-formats.md)

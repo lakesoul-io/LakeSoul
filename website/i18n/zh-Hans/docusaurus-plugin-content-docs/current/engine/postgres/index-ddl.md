@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3
+sidebar_position: 2.5
 sidebar_label: 向量与文本索引 DDL
 ---
 
@@ -14,7 +14,7 @@ SPDX-License-Identifier: Apache-2.0
 LakeSoul 的向量索引和文本索引都声明在表上，作为派生对象维护。PostgreSQL
 端点把这套声明暴露为普通 DDL，因此可以直接在 `psql` 或 PostgreSQL 驱动里
 建表、建索引和查询。Python 和 Spark 使用同一组表属性；对应 API 见
-[向量检索 API](vector-search/api.md) 和[全文检索](full-text-search/overview.md)。
+[向量检索 API](../vector-search/api.md) 和[全文检索](../full-text-search/overview.md)。
 
 ## 建表
 
@@ -164,7 +164,7 @@ SELECT lakesoul_drop_vector_index(
 
 ## 另见
 
-- [PostgreSQL DDL](postgres/ddl.md) — 普通建表和列 DDL。
-- [向量检索 API](vector-search/api.md) — Python、SQL 和 pgwire 检索。
-- [全文检索](full-text-search/overview.md) — 文本索引和 BM25 API。
-- [向量检索快速开始](vector-search/quickstart.md)。
+- [PostgreSQL DDL](ddl.md) — 普通建表和列 DDL。
+- [向量检索 API](../vector-search/api.md) — Python、SQL 和 pgwire 检索。
+- [全文检索](../full-text-search/overview.md) — 文本索引和 BM25 API。
+- [向量检索快速开始](../vector-search/quickstart.md)。

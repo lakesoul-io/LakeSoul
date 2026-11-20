@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3
+sidebar_position: 2.5
 sidebar_label: Vector & text index DDL
 ---
 
@@ -15,8 +15,8 @@ LakeSoul vector and text indexes are declared on the table and maintained as
 derived objects. The PostgreSQL endpoint exposes the declarations through
 ordinary DDL, so a table can be created, indexed and searched without leaving
 `psql` or a PostgreSQL driver. Python and Spark use the same table properties;
-see [Vector search API](vector-search/api.md) and
-[Full-text search](full-text-search/overview.md) for those APIs.
+see [Vector search API](../vector-search/api.md) and
+[Full-text search](../full-text-search/overview.md) for those APIs.
 
 ## Create a table
 
@@ -176,7 +176,7 @@ SELECT lakesoul_drop_vector_index(
 
 ## See also
 
-- [PostgreSQL DDL](postgres/ddl.md) — ordinary table and column DDL.
-- [Vector search API](vector-search/api.md) — Python, SQL and pgwire search.
-- [Full-text search](full-text-search/overview.md) — text index and BM25 API.
-- [Vector search quick start](vector-search/quickstart.md).
+- [PostgreSQL DDL](ddl.md) — ordinary table and column DDL.
+- [Vector search API](../vector-search/api.md) — Python, SQL and pgwire search.
+- [Full-text search](../full-text-search/overview.md) — text index and BM25 API.
+- [Vector search quick start](../vector-search/quickstart.md).
