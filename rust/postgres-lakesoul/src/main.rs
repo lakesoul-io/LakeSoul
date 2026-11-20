@@ -5,7 +5,7 @@
 
 use std::io::IsTerminal;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -252,11 +252,27 @@ struct Cli {
     #[clap(long, env = "LAKESOUL_PG_JOB_CLUSTER_ID")]
     job_cluster_id: Option<String>,
 
+    /// PEM certificate chain for TLS. Requires `--tls-key`; the key must be
+    /// PKCS#8 (`openssl pkcs8 -topk8 -nocrypt`). The listener offers TLS only
+    /// when both are configured.
+    #[clap(long, env = "LAKESOUL_PG_TLS_CERT", requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM PKCS#8 private key for TLS. Requires `--tls-cert`.
+    #[clap(long, env = "LAKESOUL_PG_TLS_KEY", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
+
+    /// Refuse clients that do not negotiate TLS. Requires `--tls-cert` and
+    /// `--tls-key`; deployments that terminate TLS in front of the server
+    /// leave this off.
+    #[clap(long, env = "LAKESOUL_PG_REQUIRE_TLS", requires = "tls_cert")]
+    require_tls: bool,
+
     /// Require a LakeSoul JWT as the password of every connection. The token
     /// is the one the Flight server and the S3 proxy accept: HS256 with the
     /// metadata client secret, and its `sub` must equal the connecting user.
-    /// It travels as a cleartext password, so terminate TLS in front of the
-    /// server or keep it on a trusted network.
+    /// It travels as a cleartext password: configure `--tls-cert`/`--tls-key`
+    /// with `--require-tls`, or terminate TLS in front of the server.
     #[clap(long, env = "LAKESOUL_PG_JWT_AUTH")]
     jwt_auth: bool,
 
@@ -336,6 +352,42 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // `kill -HUP <pid>`.
     spawn_reload_on_sighup(tracing.filter_handle());
     allocator::log_active();
+    // Validate TLS before any listener, metadata connection or worker starts.
+    // datafusion-postgres' setup_tls warns and keeps serving in cleartext when
+    // the material cannot be loaded; an operator who configured TLS must get a
+    // hard failure instead.
+    if cli.require_tls && (cli.tls_cert.is_none() || cli.tls_key.is_none()) {
+        rootcause::bail!("--require-tls requires --tls-cert and --tls-key");
+    }
+    if let (Some(cert), Some(key)) = (&cli.tls_cert, &cli.tls_key) {
+        validate_tls_material(cert, key)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(key)
+                && metadata.permissions().mode() & 0o077 != 0
+            {
+                warn!(
+                    key = %key.display(),
+                    "TLS private key is readable by group or others"
+                );
+            }
+        }
+        info!(
+            cert = %cert.display(),
+            require_tls = cli.require_tls,
+            "TLS configured"
+        );
+    } else {
+        info!("TLS not configured; client traffic is unencrypted");
+    }
+    if cli.jwt_auth && cli.tls_cert.is_none() {
+        warn!(
+            "JWT authentication without TLS: the token travels as a cleartext \
+             password; configure --tls-cert/--tls-key with --require-tls, or \
+             terminate TLS in front of the server"
+        );
+    }
     if !cli.no_metrics {
         install_prometheus_metrics(PrometheusMetricsConfig::new(
             "postgres-lakesoul",
@@ -458,6 +510,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     } else {
         auth::AuthSettings::default()
     };
+    let auth = auth.with_require_tls(cli.require_tls);
     let session_factory = PgSessionFactory::new_with_memory_pool(
         Arc::clone(&meta_client),
         &cli.core,
@@ -589,10 +642,15 @@ async fn main_inner(cli: Cli) -> Result<()> {
         cli.max_jobs
     );
 
-    let server_opts = ServerOptions::new()
+    let mut server_opts = ServerOptions::new()
         .with_host(cli.bind.clone())
         .with_port(cli.port)
         .with_tcp_keepalive(tcp_keepalive(&cli));
+    if let (Some(cert), Some(key)) = (&cli.tls_cert, &cli.tls_key) {
+        server_opts = server_opts
+            .with_tls_cert_path(Some(cert.display().to_string()))
+            .with_tls_key_path(Some(key.display().to_string()));
+    }
     info!(tcp_keepalive = ?server_opts.tcp_keepalive(), "client connection keepalive");
 
     let limits = Limits {
@@ -699,6 +757,73 @@ fn tcp_keepalive(cli: &Cli) -> Option<TcpKeepalive> {
     })
 }
 
+/// Load the configured certificate and key and build the rustls configuration
+/// the listener will use.
+///
+/// `datafusion-postgres` treats a TLS setup failure as a warning and keeps
+/// serving in cleartext. That is fine for an embedding that never claimed TLS,
+/// but not for an operator who passed `--tls-cert`: validating here, with the
+/// same PEM parser and provider, turns a bad path, a non-PKCS#8 key or a
+/// mismatched pair into a start-up failure instead of a silent downgrade.
+fn validate_tls_material(cert_path: &Path, key_path: &Path) -> Result<()> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let mut certificate_reader =
+        BufReader::new(File::open(cert_path).map_err(|error| {
+            rootcause::report!("open TLS certificate {}: {error}", cert_path.display())
+        })?);
+    let certificates = rustls_pemfile::certs(&mut certificate_reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| {
+            rootcause::report!("read TLS certificate {}: {error}", cert_path.display())
+        })?;
+    if certificates.is_empty() {
+        rootcause::bail!(
+            "TLS certificate {} contains no PEM certificate",
+            cert_path.display()
+        );
+    }
+
+    let mut key_reader = BufReader::new(File::open(key_path).map_err(|error| {
+        rootcause::report!("open TLS private key {}: {error}", key_path.display())
+    })?);
+    let mut keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader);
+    let key = keys
+        .next()
+        .transpose()
+        .map_err(|error| {
+            rootcause::report!("read TLS private key {}: {error}", key_path.display())
+        })?
+        .ok_or_else(|| {
+            rootcause::report!(
+                "TLS private key {} is not PKCS#8; convert it with `openssl \
+                 pkcs8 -topk8 -nocrypt -in <key> -out <key.pk8>`",
+                key_path.display()
+            )
+        })?;
+    if keys.next().is_some() {
+        rootcause::bail!(
+            "TLS private key {} contains more than one PKCS#8 key",
+            key_path.display()
+        );
+    }
+
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificates, rustls::pki_types::PrivateKeyDer::from(key))
+        .map_err(|error| {
+            rootcause::report!(
+                "TLS certificate {} and key {} cannot be used together: {error}",
+                cert_path.display(),
+                key_path.display()
+            )
+        })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod cli_probe_tests {
     use super::*;
@@ -764,6 +889,9 @@ mod cli_probe_tests {
             "jwt_auth": cli.jwt_auth,
             "rbac": cli.rbac,
             "rbac_domain": cli.rbac_domain,
+            "tls_cert": cli.tls_cert.as_ref().map(|path| path.display().to_string()),
+            "tls_key": cli.tls_key.as_ref().map(|path| path.display().to_string()),
+            "require_tls": cli.require_tls,
             "ivm_default": cli.ivm_default,
             "subscription_executor": format!("{:?}", cli.subscription_executor),
             "subscription_runner": cli.subscription_runner,
@@ -844,6 +972,99 @@ mod cli_probe_tests {
             true
         );
         assert_eq!(probe(&[], &["--jwt-auth"])["jwt_auth"], true);
+    }
+
+    #[test]
+    fn tls_flags_must_be_paired() {
+        assert!(
+            Cli::try_parse_from(["pg", "--tls-cert", "/etc/lakesoul/tls.crt"]).is_err(),
+            "--tls-cert without --tls-key must be refused"
+        );
+        assert!(
+            Cli::try_parse_from(["pg", "--tls-key", "/etc/lakesoul/tls.key"]).is_err(),
+            "--tls-key without --tls-cert must be refused"
+        );
+        let cli = Cli::try_parse_from([
+            "pg",
+            "--tls-cert",
+            "/etc/lakesoul/tls.crt",
+            "--tls-key",
+            "/etc/lakesoul/tls.key",
+        ])
+        .expect("parse");
+        assert_eq!(
+            cli.tls_cert.as_deref(),
+            Some(std::path::Path::new("/etc/lakesoul/tls.crt"))
+        );
+        assert_eq!(
+            cli.tls_key.as_deref(),
+            Some(std::path::Path::new("/etc/lakesoul/tls.key"))
+        );
+        assert!(!cli.require_tls, "TLS is offered, not required, by default");
+    }
+
+    #[test]
+    fn require_tls_needs_a_certificate() {
+        assert!(
+            Cli::try_parse_from(["pg", "--require-tls"]).is_err(),
+            "--require-tls without a certificate must be refused"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pg",
+                "--require-tls",
+                "--tls-cert",
+                "/etc/lakesoul/tls.crt",
+            ])
+            .is_err(),
+            "--require-tls with only one half of the pair must be refused"
+        );
+        let cli = Cli::try_parse_from([
+            "pg",
+            "--require-tls",
+            "--tls-cert",
+            "/etc/lakesoul/tls.crt",
+            "--tls-key",
+            "/etc/lakesoul/tls.key",
+        ])
+        .expect("parse");
+        assert!(cli.require_tls);
+    }
+
+    #[test]
+    fn tls_flags_follow_env() {
+        let result = probe(
+            &[
+                ("LAKESOUL_PG_TLS_CERT", "/etc/lakesoul/tls.crt"),
+                ("LAKESOUL_PG_TLS_KEY", "/etc/lakesoul/tls.key"),
+                ("LAKESOUL_PG_REQUIRE_TLS", "true"),
+            ],
+            &[],
+        );
+        assert_eq!(result["tls_cert"], "/etc/lakesoul/tls.crt");
+        assert_eq!(result["tls_key"], "/etc/lakesoul/tls.key");
+        assert_eq!(result["require_tls"], true);
+
+        let result = probe(&[], &[]);
+        assert!(result["tls_cert"].is_null());
+        assert!(result["tls_key"].is_null());
+        assert_eq!(result["require_tls"], false);
+    }
+
+    #[test]
+    fn invalid_tls_material_is_rejected() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let cert = directory.path().join("server.crt");
+        let key = directory.path().join("server.key");
+        std::fs::write(&cert, "this is not a PEM certificate").expect("write cert");
+        std::fs::write(&key, "this is not a PEM key").expect("write key");
+        let error = validate_tls_material(&cert, &key)
+            .expect_err("a malformed certificate must be refused");
+        let message = format!("{error}");
+        assert!(
+            message.contains("certificate"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]

@@ -74,9 +74,9 @@ def test_version_function_is_driver_compatible(connector):
             assert "LakeSoul" in version, version
 
 
-def test_sslmode_prefer_falls_back_to_plaintext(connector):
-    """Most libpq/JDBC clients default to prefer, not disable: the server must
-    answer the SSLRequest and continue when no TLS listener is configured."""
+def test_sslmode_prefer_uses_available_tls(connector):
+    """Most libpq/JDBC clients default to prefer: the server must answer the
+    SSLRequest, and with --require-tls the connection completes over TLS."""
     with closing(connector("psycopg3", sslmode="prefer")) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")

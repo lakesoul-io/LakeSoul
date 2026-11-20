@@ -665,6 +665,37 @@ async fn startup_without_jwt_completes_on_the_startup_message() {
 }
 
 #[tokio::test]
+async fn require_tls_rejects_a_plaintext_startup() {
+    let handler =
+        handler_with_auth(crate::auth::AuthSettings::default().with_require_tls(true))
+            .await;
+    let mut client = MockClient::new();
+    let error = handler
+        .on_startup(&mut client, startup_message("lakesoul_user"))
+        .await
+        .expect_err("a plaintext startup must be refused");
+    match error {
+        PgWireError::UserError(info) => {
+            assert_eq!(info.severity, "FATAL");
+            assert_eq!(info.code, "28000");
+            assert!(
+                info.message.contains("TLS is required"),
+                "unexpected message: {}",
+                info.message
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert!(
+        client
+            .session_extensions()
+            .get::<ConnectionSession>()
+            .is_none(),
+        "no session may exist for a refused plaintext client"
+    );
+}
+
+#[tokio::test]
 async fn ivm_default_seeds_a_new_connection() {
     let handler =
         handler_with_ivm_default(crate::auth::AuthSettings::default(), true).await;

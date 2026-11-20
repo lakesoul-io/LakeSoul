@@ -37,6 +37,9 @@ SPDX-License-Identifier: Apache-2.0
 | `--runner-poll-ms` | `2000` | Subscription runner reconcile interval |
 | `--distributed-workers` | — | Comma-separated worker endpoints |
 | `--distributed-fallback-to-local` | — | Run a query locally when distributed planning fails |
+| `--tls-cert` | — | PEM certificate chain for TLS (`LAKESOUL_PG_TLS_CERT`) |
+| `--tls-key` | — | PEM PKCS#8 private key for TLS (`LAKESOUL_PG_TLS_KEY`) |
+| `--require-tls` | off | Refuse clients that do not negotiate TLS (`LAKESOUL_PG_REQUIRE_TLS`) |
 | `--jwt-auth` | off | Require a LakeSoul JWT as the connection password (`LAKESOUL_PG_JWT_AUTH`) |
 | `--rbac` | off | Confine each connection to the token's domain (`LAKESOUL_PG_RBAC`, requires `--jwt-auth`) |
 

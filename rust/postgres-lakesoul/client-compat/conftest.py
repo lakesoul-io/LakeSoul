@@ -24,8 +24,13 @@ DATABASE = os.environ.get("PGDATABASE", "default")
 USER = os.environ.get("PGUSER", "lakesoul_test")
 PASSWORD = os.environ.get("PGPASSWORD", "lakesoul_test")
 
+# `run.sh` starts the server with --require-tls and exports sslmode=require.
+# A manual run against a plaintext server still defaults to disable.
+DEFAULT_SSLMODE = os.environ.get("PGSSLMODE", "disable")
 
-def make_dsn(sslmode: str = "disable") -> str:
+
+def make_dsn(sslmode: str | None = None) -> str:
+    sslmode = sslmode or DEFAULT_SSLMODE
     return (
         f"postgresql://{quote(USER, safe='')}:{quote(PASSWORD, safe='')}"
         f"@{HOST}:{PORT}/{quote(DATABASE, safe='')}"
@@ -33,11 +38,12 @@ def make_dsn(sslmode: str = "disable") -> str:
     )
 
 
-def connect(driver: str, *, autocommit: bool = True, sslmode: str = "disable"):
+def connect(driver: str, *, autocommit: bool = True, sslmode: str | None = None):
     """Open a connection through one of the configured real drivers."""
+    effective = DEFAULT_SSLMODE if sslmode is None else sslmode
     dsn = os.environ.get("LAKESOUL_CLIENT_DSN")
-    if dsn is None or sslmode != "disable":
-        dsn = make_dsn(sslmode)
+    if dsn is None or effective != "disable":
+        dsn = make_dsn(effective)
     if driver == "psycopg2":
         import psycopg2
 
@@ -75,7 +81,7 @@ def pg_env():
         "PGDATABASE": DATABASE,
         "PGUSER": USER,
         "PGPASSWORD": PASSWORD,
-        "PGSSLMODE": "disable",
+        "PGSSLMODE": DEFAULT_SSLMODE,
     }
 
 
@@ -83,7 +89,7 @@ def pg_env():
 def sqlalchemy_url():
     return (
         f"postgresql+psycopg2://{quote(USER, safe='')}:{quote(PASSWORD, safe='')}"
-        f"@{HOST}:{PORT}/{quote(DATABASE, safe='')}?sslmode=disable"
+        f"@{HOST}:{PORT}/{quote(DATABASE, safe='')}?sslmode={DEFAULT_SSLMODE}"
     )
 
 
