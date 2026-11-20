@@ -296,6 +296,38 @@ async fn run(h: &Harness) -> Result<()> {
     let param_uuids: Vec<Uuid> = param_rows[0].get(0);
     ensure!(param_uuids == vec![uuid], "array parameter value");
 
+    // UPSERT validates and applies semantic array elements as well.
+    h.lake
+        .simple_query(
+            "INSERT INTO type_arrays VALUES \
+             (1, ARRAY['11111111-1111-1111-1111-111111111111'], \
+              ARRAY[1.00], ARRAY['ab']) \
+             ON CONFLICT (id) DO UPDATE SET \
+             u = ARRAY['22222222-2222-2222-2222-222222222222']",
+        )
+        .await
+        .context("upsert semantic array")?;
+    let upserted = h
+        .lake
+        .query("SELECT u FROM type_arrays WHERE id = 1", &[])
+        .await?;
+    let upserted_uuids: Vec<Uuid> = upserted[0].get(0);
+    ensure!(
+        upserted_uuids == vec![Uuid::parse_str("22222222-2222-2222-2222-222222222222")?],
+        "upserted UUID[] element: {upserted_uuids:?}"
+    );
+    let upsert_long = h
+        .lake
+        .simple_query(
+            "INSERT INTO type_arrays VALUES \
+             (1, ARRAY['11111111-1111-1111-1111-111111111111'], \
+              ARRAY[1.00], ARRAY['ab']) \
+             ON CONFLICT (id) DO UPDATE SET v = ARRAY['abcdef']",
+        )
+        .await
+        .expect_err("over-long array element in UPSERT");
+    ensure!(sqlstate(&upsert_long) == Some("22001"), "{upsert_long}");
+
     // An explicit cast to text must report text, even though UUID storage is
     // already UTF-8 and the cast is a no-op.
     let text_cast = h
