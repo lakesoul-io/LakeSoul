@@ -85,6 +85,12 @@ spec:
             - name: LAKESOUL_PG_SUBSCRIPTION_LOG_DIR
               value: {{ .Values.subscriptions.logDir | quote }}
             {{- end }}
+            - name: LAKESOUL_PG_INDEX_MAINTENANCE_EXECUTOR
+              value: {{ ternary "external" (ternary "local" "off" (ne .Values.indexMaintenance.mode "off")) (eq .Values.indexMaintenance.mode "runner") | quote }}
+            - name: LAKESOUL_PG_INDEX_MAINTENANCE_POLL_MS
+              value: {{ .Values.indexMaintenance.pollMs | quote }}
+            - name: LAKESOUL_PG_INDEX_LEASE_TTL_MS
+              value: {{ .Values.indexMaintenance.leaseTtlMs | quote }}
             {{- with .Values.observability.tracing.otlpEndpoint }}
             - name: POD_NAME
               valueFrom:

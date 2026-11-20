@@ -4,8 +4,8 @@
 #
 # Self-contained single-node / kind evaluation profile. Not production:
 # PostgreSQL is a one-replica StatefulSet, the warehouse is a local PVC, and
-# there is one worker. Use it to exercise the chart and the subscription
-# runner without external infrastructure.
+# there is one worker. Use it to exercise the chart, the subscription runner
+# and the deferred-index runner without external infrastructure.
 
 metadata:
   postgresql:
@@ -43,6 +43,20 @@ coordinator:
     vortexDecodeBudget: 256Mi
 
 subscriptions:
+  mode: runner
+  runner:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+    execution:
+      memoryLimit: 1Gi
+      vortexDecodeBudget: 256Mi
+
+indexMaintenance:
   mode: runner
   runner:
     resources:

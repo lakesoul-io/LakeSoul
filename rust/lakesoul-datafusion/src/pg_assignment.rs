@@ -182,6 +182,21 @@ pub fn assignment_allowed(source: &DataType, target: &DataType) -> bool {
         }
         _ => {}
     }
+
+    // A pgvector column created as `vector(n)` is a
+    // `FixedSizeList(Float32, n)`; PostgreSQL clients write it as an array or
+    // a `FLOAT[]` cast, which arrives as `List(Float32)`.
+    if let (Some(source_element), Some(target_element)) =
+        (list_element(source), list_element(target))
+        && is_vector_element(source_element)
+        && is_vector_element(target_element)
+    {
+        // A pgvector literal parses as `List<Float64>` while a `vector(n)`
+        // column is `FixedSizeList(Float32, n)`; the planner's nested cast
+        // converts the element type.  Equal element types take the same path.
+        return true;
+    }
+    }
     if is_numeric(source) {
         is_numeric(target) || is_string(target)
     } else if *source == DataType::Boolean {
@@ -195,6 +210,22 @@ pub fn assignment_allowed(source: &DataType, target: &DataType) -> bool {
     } else {
         false
     }
+}
+
+fn list_element(data_type: &DataType) -> Option<&DataType> {
+    match data_type {
+        DataType::FixedSizeList(field, _)
+        | DataType::List(field)
+        | DataType::LargeList(field) => Some(field.data_type()),
+        _ => None,
+    }
+}
+
+fn is_vector_element(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Float16 | DataType::Float32 | DataType::Float64
+    )
 }
 
 pub fn is_numeric(data_type: &DataType) -> bool {
@@ -274,6 +305,13 @@ pub fn pg_type_name(data_type: &DataType) -> &'static str {
         | DataType::LargeBinary
         | DataType::BinaryView
         | DataType::FixedSizeBinary(_) => "bytea",
+        DataType::FixedSizeList(inner, _)
+        | DataType::List(inner)
+        | DataType::LargeList(inner)
+            if is_vector_element(inner.data_type()) =>
+        {
+            "vector"
+        }
         _ => "unknown",
     }
 }
@@ -325,6 +363,21 @@ mod tests {
         )));
         assert!(assignment_allowed(&vector, &vector));
         assert!(!assignment_allowed(&DataType::Utf8, &vector));
+
+        // A pgvector text literal is rewritten to `List<Float64>` while the
+        // target column is `FixedSizeList(Float32, n)`; the nested cast
+        // converts the element type.
+        let parsed = DataType::List(std::sync::Arc::new(Field::new(
+            "item",
+            DataType::Float64,
+            true,
+        )));
+        let fixed = DataType::FixedSizeList(
+            std::sync::Arc::new(Field::new("item", DataType::Float32, true)),
+            4,
+        );
+        assert!(assignment_allowed(&parsed, &fixed));
+        assert_eq!(pg_type_name(&fixed), "vector");
     }
 
     #[test]

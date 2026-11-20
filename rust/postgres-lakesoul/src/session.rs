@@ -17,7 +17,7 @@ use datafusion_postgres::auth::AuthManager;
 use datafusion_postgres::datafusion_pg_catalog::{
     PgCatalogOptions, setup_pg_catalog_with_options,
 };
-use lakesoul_common::misc::TimeZone;
+use lakesoul_common::misc::{SecretMap, TimeZone};
 use lakesoul_datafusion::catalog::{
     CatalogSnapshot, LakeSoulProviderOptions, LakeSoulVectorFieldMetadata,
 };
@@ -272,6 +272,10 @@ pub struct PgSessionFactory {
     /// Object-store prefix new tables are created under; `CREATE TABLE`
     /// refuses to run without one.
     warehouse: Option<String>,
+    /// `fs.s3a.*` options from the server's CLI/environment.  Index DDL and
+    /// the background runner build stores outside a connection's
+    /// `SessionContext`, so they need these explicitly.
+    object_store_options: SecretMap,
     /// Supervises SQL-created subscription processes. `None` in tests and in
     /// embeddings that do not enable subscriptions.
     subscriptions: Option<Arc<crate::subscribe::supervisor::SubscriptionSupervisor>>,
@@ -329,6 +333,7 @@ impl PgSessionFactory {
                 include_synthetic_postgres_database: false,
             },
             warehouse: args.warehouse_prefix.clone(),
+            object_store_options: SecretMap::from_map(args.s3_options()),
             subscriptions: None,
             federation: None,
             jobs: None,
@@ -437,6 +442,11 @@ impl PgSessionFactory {
     /// The object-store prefix new tables are created under.
     pub fn warehouse(&self) -> Option<&str> {
         self.warehouse.as_deref()
+    }
+
+    /// `fs.s3a.*` options from the server's CLI/environment.
+    pub fn object_store_options(&self) -> &SecretMap {
+        &self.object_store_options
     }
 
     /// The metadata view shared by every connection of this factory.
@@ -674,6 +684,14 @@ impl PgSessionFactory {
                 Arc::new(crate::jobs::QueryResultSetsFunction::new(Arc::clone(jobs))),
             );
         }
+        // Index rebuild is a per-session function: it captures the
+        // connection's database and the server's object-store options, which
+        // a shared UDF in the base session cannot know.
+        context.register_udf(crate::index_ddl::rebuild_udf(
+            Arc::clone(&self.meta_client),
+            identity.database.clone(),
+            self.object_store_options.clone(),
+        ));
         // Register on the final frontend context, after catalog/default-schema
         // and expression-planner replacement. UDTFs resolve through this state.
         lakesoul_datafusion::udf::vector_batch::register(&context);

@@ -49,6 +49,25 @@
         }
       }
     },
+    "indexMaintenance": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["runner", "coordinator", "off"]
+        },
+        "runner": {
+          "type": "object",
+          "properties": {
+            "replicas": {
+              "type": "integer",
+              "enum": [1],
+              "description": "The maintenance lease makes one runner the active builder."
+            }
+          }
+        }
+      }
+    },
     "auth": {
       "type": "object",
       "properties": {

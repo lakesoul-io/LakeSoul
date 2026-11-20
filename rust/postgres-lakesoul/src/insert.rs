@@ -40,7 +40,9 @@
 //! columns, an untyped string literal is converted to the target type
 //! (`22P02` when it does not convert), and every other expression must be
 //! assignment-castable (`42804`). `SELECT` expression casts keep their own
-//! documented boundary.
+//! documented boundary.  A pgvector text literal (`'[1,2,3]'` or
+//! `'[1,2,3]'::vector(3)`) in a `VALUES` row is rewritten to a float array
+//! before this analysis, so it can target a `FixedSizeList` column.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -60,14 +62,16 @@ use datafusion::logical_expr::{
 use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
-    AssignmentTarget, ConflictTarget, Expr, FunctionArg, FunctionArgExpr,
-    FunctionArguments, Insert, ObjectNamePart, OnConflictAction, OnInsert, SelectItem,
-    SetExpr, Statement, TableObject, Value,
+    Array, AssignmentTarget, ConflictTarget, Expr, FunctionArg, FunctionArgExpr,
+    FunctionArguments, Insert, ObjectNamePart, OnConflictAction, OnInsert,
+    SelectItem, SetExpr, Statement, TableObject, UnaryOperator, Value,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::arrow_pg::datatypes::arrow_schema_to_pg_fields;
+use datafusion_postgres::arrow_pg::datatypes::df::parse_vector_text;
 use datafusion_postgres::arrow_pg::encode_recordbatch;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
+use datafusion_postgres::datafusion_pg_catalog::sql::is_vector_type;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire::api::ClientInfo;
 use datafusion_postgres::pgwire::api::portal::Format;
@@ -886,12 +890,112 @@ async fn checked_statement(
     statement.on = None;
     statement.returning = None;
     rewrite_target_literals(&mut statement, schema.as_ref())?;
+    // pgvector text literals need a separate rewrite before insert analysis:
+    // DataFusion has no Utf8 -> FixedSizeList cast.
+    rewrite_vector_literals(&mut statement, schema.as_ref())?;
     let analysis =
         pg_insert_analysis::analyse(&statement, schema.as_ref(), session_context)
             .await
             .map_err(insert_analysis_error)?;
     pg_insert_analysis::pad_insert_source(&mut statement, &analysis);
     Ok(statement)
+}
+
+/// Rewrite pgvector string literals in `INSERT ... VALUES` into float arrays.
+fn rewrite_vector_literals(insert: &mut Insert, schema: &Schema) -> PgWireResult<()> {
+    let targets: Vec<usize> = if insert.columns.is_empty() {
+        (0..schema.fields().len()).collect()
+    } else {
+        insert
+            .columns
+            .iter()
+            .map(|column| {
+                let Some(ident) = column.0.last().and_then(|part| part.as_ident()) else {
+                    return Ok(usize::MAX);
+                };
+                let name = normalize_column_ident(ident)?;
+                Ok(schema.index_of(&name).unwrap_or(usize::MAX))
+            })
+            .collect::<PgWireResult<Vec<_>>>()?
+    };
+    let Some(source) = insert.source.as_deref_mut() else {
+        return Ok(());
+    };
+    let SetExpr::Values(values) = source.body.as_mut() else {
+        return Ok(());
+    };
+    for row in &mut values.rows {
+        for (position, value) in row.content.iter_mut().enumerate() {
+            let Some(target_index) = targets.get(position).copied() else {
+                continue;
+            };
+            if target_index == usize::MAX {
+                continue;
+            }
+            let field = schema.field(target_index);
+            if !is_vector_column(field.data_type()) {
+                continue;
+            }
+            if let Some(array) = vector_array_literal(value) {
+                *value = array;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_vector_column(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::FixedSizeList(inner, _) | DataType::List(inner)
+            if matches!(
+                inner.data_type(),
+                DataType::Float16 | DataType::Float32 | DataType::Float64
+            )
+    )
+}
+
+fn vector_array_literal(expr: &Expr) -> Option<Expr> {
+    let text = match expr {
+        Expr::Value(literal) => match &literal.value {
+            Value::SingleQuotedString(text) => Some(text.as_str()),
+            _ => None,
+        },
+        Expr::Cast {
+            expr, data_type, ..
+        } if is_vector_type(data_type) => match expr.as_ref() {
+            Expr::Value(literal) => match &literal.value {
+                Value::SingleQuotedString(text) => Some(text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }?;
+    let values = parse_vector_text(text)?;
+    Some(Expr::Array(Array {
+        elem: values.iter().map(|value| float_literal(*value)).collect(),
+        named: true,
+    }))
+}
+
+fn float_literal(value: f32) -> Expr {
+    // `Debug` keeps a decimal point (`1.0`), so the literal plans as a float
+    // rather than an integer.
+    let rendered = format!("{value:?}");
+    let (negative, digits) = match rendered.strip_prefix('-') {
+        Some(digits) => (true, digits),
+        None => (false, rendered.as_str()),
+    };
+    let number = Expr::value(Value::Number(digits.to_string(), false));
+    if negative {
+        Expr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr: Box::new(number),
+        }
+    } else {
+        number
+    }
 }
 
 fn insert_analysis_error(error: pg_insert_analysis::InsertAnalysisError) -> PgWireError {

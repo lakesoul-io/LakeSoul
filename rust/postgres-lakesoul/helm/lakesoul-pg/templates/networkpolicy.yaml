@@ -148,4 +148,44 @@ spec:
             cidr: {{ . }}
     {{- end }}
 {{- end }}
+{{- if eq .Values.indexMaintenance.mode "runner" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-index-maintenance-runner
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: index-maintenance-runner
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+    {{- with .Values.networkPolicy.metadataCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- with .Values.networkPolicy.objectStoreCidr }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+    {{- end }}
+{{- end }}
 {{- end }}

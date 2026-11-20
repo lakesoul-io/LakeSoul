@@ -26,7 +26,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | 领域 | 语句 |
 | --- | --- |
 | 查询 | 带 join、聚合、窗口、CTE、`UNION`/`INTERSECT`/`EXCEPT`、子查询的 `SELECT` |
-| DDL | `CREATE TABLE`、`DROP TABLE`、`ALTER TABLE` schema evolution（加列/加宽列、`SET`/`RESET` 支持的选项）、主键、`PARTITIONED BY`、`WITH (...)` |
+| DDL | `CREATE TABLE`、`DROP TABLE`、`ALTER TABLE` schema evolution（加列/加宽列、`SET`/`RESET` 支持的选项）、向量/文本索引的 `CREATE INDEX`、`REINDEX TABLE`、主键、`PARTITIONED BY`、`WITH (...)` |
 | 写入 | `INSERT ... VALUES`（包括 `RETURNING *`/列引用）、`INSERT ... SELECT`、`COPY ... FROM STDIN` 和 `COPY ... TO STDOUT`（TEXT 和 CSV）、非 CDC 主键表上的 `UPDATE`、`DELETE`（CDC tombstone、分区清空或分区重写）和 `TRUNCATE`（含 `PARTITION (...)`）、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | 订阅 | `CREATE SUBSCRIPTION`、`ALTER SUBSCRIPTION ... ENABLE/DISABLE`、`DROP SUBSCRIPTION`，把源 PostgreSQL 逻辑复制到 LakeSoul CDC 表 |
 | 事务 | Autocommit、`READ COMMITTED`；LakeSoul 写入使用 deferred publication 的 `BEGIN`/`COMMIT`/`ROLLBACK` |
@@ -51,6 +51,9 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 - `REPEATABLE READ` 和 `SERIALIZABLE`
 - `LIKE`、`CLONE`、`INHERITS`
 - 列默认值、`UNIQUE`、`CHECK`、`FOREIGN KEY` 约束
+- btree/hash/GiST/BRIN 索引、表达式/多列/部分索引
+- `DROP INDEX`、`REINDEX INDEX/SCHEMA/DATABASE`（改用
+  `lakesoul_drop_vector_index` 和 `REINDEX TABLE`）
 - DDL 里的 `STORED AS` / `LOCATION`（改用 `WITH (file_format = ...)`）
 - PostgreSQL 扩展、PL/pgSQL、`LISTEN`/`NOTIFY`
 

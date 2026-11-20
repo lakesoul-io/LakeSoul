@@ -45,6 +45,9 @@ CREATE TABLE orders (
 | `append_only` | `true`, `false` | Append-only table; no primary-key merge |
 | `use_cdc` | `true`, `false` | CDC table with a change column; required for deletes and incremental SQL targets |
 | `lakesoul_cdc_change_column` | column name | Change column for CDC; defaults to `rowKinds` |
+| `vector_index_columns` | JSON array | Vector index declarations, e.g. `'[{"column":"embedding","dim":8}]'` |
+| `text_index_columns` | JSON array | Text index declarations, e.g. `'[{"column":"body"}]'` |
+| `index_maintenance` | `inline`, `deferred` | `deferred` commits data only and leaves index builds to the background runner |
 
 An unknown option is rejected with `0A000` rather than ignored.
 
@@ -74,6 +77,8 @@ An unknown option is rejected with `0A000` rather than ignored.
 | `bytea` | Binary |
 | `numeric(p, s)`, `decimal(p, s)` | `Decimal128` for `p <= 38`, `Decimal256` for `p <= 76` |
 | `money` | `Decimal128(19,2)` with a `pg.type=money` marker |
+| `vector(n)` | `FixedSizeList(Float32, n)` with the `pg.vector` marker |
+| `vector` | `List(Float32)` with the `pg.vector` marker |
 
 `numeric` and `decimal` require an explicit precision and scale; bare `numeric`
 is rejected, as is precision above 76. `time(p)`/`timestamp(p)` accept only
@@ -81,8 +86,60 @@ is rejected, as is precision above 76. `time(p)`/`timestamp(p)` accept only
 rejected (interval expressions still work). Types outside this table are
 rejected with `0A000`.
 
+`INSERT ... VALUES` accepts the pgvector text form for a vector column, either
+bare (`'[1,2,3]'`) or cast (`'[1,2,3]'::vector(3)`).
+
 See [Data types](../../reference/data-types.md) for the full mapping and the
 query-side type behaviour.
+
+## Vector and text indexes
+
+A vector index requires a primary key and a `vector(n)` (or `LIST` of float)
+column:
+
+```sql
+CREATE TABLE docs (
+  id        bigint primary key,
+  body      text,
+  embedding vector(8)
+) WITH (vector_index_columns = '[{"column":"embedding","dim":8}]',
+        text_index_columns   = '[{"column":"body"}]');
+```
+
+`CREATE INDEX` declares an index on an existing table. LakeSoul has one
+vector-index implementation, so `USING hnsw` and `USING ivfflat` are accepted
+and normalized to it; `WITH (lists = ..., m = ..., ef_construction = ...)` is
+accepted for compatibility and ignored. Text indexes use `USING gin`:
+
+```sql
+CREATE INDEX docs_embedding_idx ON docs USING hnsw (embedding)
+  WITH (m = 16, ef_construction = 64);
+CREATE INDEX docs_body_idx ON docs USING gin (body);
+```
+
+Only one column per statement is supported, without expressions, `INCLUDE` or
+a partial `WHERE`. Index names are accepted for client compatibility but are
+not stored: LakeSoul identifies an index by `(table, column)`, so
+`DROP INDEX name` and `REINDEX INDEX name` are not available.
+
+`CREATE INDEX` builds the index over existing rows unless the table has
+`index_maintenance = 'deferred'`, in which case the declaration is stored and
+the background runner builds it. `ALTER TABLE ... SET (...)` only declares or
+replaces index properties; run `REINDEX TABLE` to build them:
+
+```sql
+ALTER TABLE docs SET (index_maintenance = 'deferred');
+REINDEX TABLE docs;
+SELECT lakesoul_rebuild_index('docs', 'all');  -- all | vector | text
+```
+
+With `index_maintenance = 'deferred'`, writes commit data only. A coordinator
+started with `--index-maintenance-executor local` supervises a
+`--index-maintenance-runner` child; Helm runs it as a separate Deployment. The
+runner holds a lease in `maintenance.lease`, so several servers can run without
+duplicating the work. Vector search on a not-yet-built deferred declaration
+falls back to the exact ordered scan; text search reports that the index is not
+built until the runner has built it.
 
 ## DROP TABLE
 
@@ -104,6 +161,10 @@ The front end refuses, rather than silently ignoring:
 - `STORED AS` / `LOCATION` (use `WITH (file_format = ...)` and the server
   warehouse instead)
 - `PRIMARY KEY` as a clause outside the supported column/table constraint forms
+- `CREATE INDEX ... USING btree/hash/gist/brin`, multi-column or expression
+  indexes, partial indexes and `INCLUDE`
+- `DROP INDEX` and `REINDEX INDEX/SCHEMA/DATABASE`; use the per-column
+  `lakesoul_drop_vector_index` function and `REINDEX TABLE`
 
 Each refusal returns SQLSTATE `0A000` with a message naming the clause.
 

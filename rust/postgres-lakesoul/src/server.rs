@@ -167,6 +167,9 @@ fn rewrite_special_statements(sql: &str) -> PgWireResult<String> {
     // `ALTER TABLE ... RESET (...)` is not in sqlparser either; it becomes the
     // `SET (k = NULL)` form `DdlStatementHook` reads as a reset.
     let sql = crate::alter::rewrite_reset_options(sql).unwrap_or_else(|| sql.to_string());
+    // `REINDEX` is not in sqlparser either; it becomes the sentinel SELECT
+    // `IndexStatementHook` claims.
+    let sql = crate::index_ddl::rewrite(&sql)?.unwrap_or(sql);
     let sql = crate::federation::rewrite(&sql)?.unwrap_or(sql);
     let sql = crate::user::rewrite_create_user(&sql).unwrap_or(sql);
     let sql = crate::subscribe::sql::rewrite(&sql)?.unwrap_or(sql);
@@ -1081,6 +1084,11 @@ pub(crate) fn connection_statement_hooks(
         factory.warehouse().map(str::to_owned),
         cluster_domain,
         identity.user.clone(),
+    )));
+    hooks.push(Arc::new(crate::index_ddl::IndexStatementHook::new(
+        Arc::clone(factory.meta_client()),
+        database.to_string(),
+        factory.object_store_options().clone(),
     )));
     hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
     hooks.push(Arc::new(crate::ivm::IvmInsertHook));

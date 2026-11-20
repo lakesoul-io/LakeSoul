@@ -36,6 +36,11 @@ SPDX-License-Identifier: Apache-2.0
 | `--subscription-runner` | 关闭 | 只运行订阅 supervisor，不启动 PG wire server |
 | `--runner-id` | 主机名 / pid | 订阅 runner 的租约 owner |
 | `--runner-poll-ms` | `2000` | 订阅 runner 的 reconcile 间隔 |
+| `--index-maintenance-executor` | `local` | `local` 监督一个索引维护子进程；`external` 交给独立 Deployment；`off` 关闭 deferred 构建（`LAKESOUL_PG_INDEX_MAINTENANCE_EXECUTOR`） |
+| `--index-maintenance-runner` | 关闭 | 只运行 deferred 索引 builder，不启动 PG wire server |
+| `--index-runner-id` | hostname / pid | 索引 runner 的租约 owner（`LAKESOUL_PG_INDEX_RUNNER_ID`） |
+| `--index-maintenance-poll-ms` | `5000` | deferred 索引扫描间隔 |
+| `--index-lease-ttl-ms` | `60000` | 租约有效期；构建大索引时由心跳续约 |
 | `--distributed-workers` | — | 逗号分隔的 worker 端点 |
 | `--distributed-fallback-to-local` | — | 分布式计划失败时本地执行 |
 | `--tls-cert` | — | TLS 的 PEM 证书链（`LAKESOUL_PG_TLS_CERT`） |
@@ -52,6 +57,14 @@ IVM 总是安装；`--ivm-default` 只改变每个连接 `lakesoul.ivm.enabled` 
 `--subscription-executor external` 使 `CREATE/DROP/ALTER SUBSCRIPTION` 变成
 metadata 控制面操作；必须另外运行 `postgres-lakesoul --subscription-runner`，
 详见[PostgreSQL 订阅](subscription.md)。
+
+`--index-maintenance-executor local` 会启动一个
+`postgres-lakesoul --index-maintenance-runner` 子进程，并在退出后按退避重启。
+该进程为 `index_maintenance = 'deferred'` 的表构建 pending 索引；`external`
+把它交给独立 Deployment（Helm 的 `indexMaintenance.mode: runner`）。
+runner 会在 `maintenance.lease` 中持有租约，同一时间只有一个 runner 工作。
+租约依赖 `script/meta_init.sql` 或 `script/metadata_migrate.py` 安装的
+metadata schema。
 
 `--jwt-auth` 与 `--rbac` 详见[认证与权限](authentication.md)。
 

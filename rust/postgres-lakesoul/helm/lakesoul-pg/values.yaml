@@ -184,6 +184,33 @@ subscriptions:
     extraArgs: []
     extraEnv: []
 
+indexMaintenance:
+  # runner: a separate Deployment builds pending indexes for tables with
+  # index_maintenance=deferred. coordinator: the coordinator starts and
+  # supervises one child process. off: no deferred-index builds.
+  mode: runner
+  pollMs: 5000
+  leaseTtlMs: 60000
+  runner:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    threads: 2
+    execution:
+      memoryLimit: 2Gi
+      vortexDecodeBudget: 512Mi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podAnnotations: {}
+    extraArgs: []
+    extraEnv: []
+
 observability:
   metrics:
     enabled: true

@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 This chart deploys the LakeSoul PostgreSQL wire coordinator, its distributed
-workers, and (optionally) the standalone subscription runner.
+workers, and (optionally) the standalone subscription and deferred-index
+runners.
 
 The chart vendors `files/meta_init.sql` for the optional in-cluster
 PostgreSQL/dev profile and the external init Job. Keep it in sync with
@@ -22,7 +23,9 @@ directory remains the minimal hand-applied example.
   `script/meta_init.sql` or `script/metadata_migrate.py`;
 - S3 / RustFS warehouse;
 - one coordinator and at least two workers;
-- `subscriptions.mode=runner` so subscribers do not share the coordinator Pod.
+- `subscriptions.mode=runner` so subscribers do not share the coordinator Pod;
+- `indexMaintenance.mode=runner` so deferred-index builds run outside the
+  coordinator Pod.
 
 Create the secrets first:
 
@@ -88,6 +91,18 @@ The runner is single-replica. It uses `subscription.progress.owner` and
 not yet a full HA protocol: the source PostgreSQL replication slot is the
 ultimate duplicate guard for PostgreSQL sources, and MySQL sources currently
 rely on the single runner replica.
+
+## Index maintenance modes
+
+| `indexMaintenance.mode` | Behaviour |
+| --- | --- |
+| `runner` (default) | A separate `index-maintenance-runner` Deployment builds pending indexes for tables with `index_maintenance=deferred`. |
+| `coordinator` | The coordinator supervises one child process. Use this only when the coordinator stays at one replica. |
+| `off` | Deferred-index builds are disabled; `CREATE INDEX` on an inline table still builds synchronously. |
+
+The runner takes a lease in `maintenance.lease`, so a rolling update or two
+runners never build the same table at once. The metadata schema must include
+that table (`script/meta_init.sql` or `script/metadata_migrate.py`).
 
 ## Values worth checking
 

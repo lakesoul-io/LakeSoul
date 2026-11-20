@@ -1,0 +1,113 @@
+{{/*
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+The external deferred-index builder. It scans metadata for tables with
+`index_maintenance=deferred` and builds their pending index shards. A lease in
+`maintenance.lease` keeps the work single-owner if several runners run.
+*/}}
+{{- if eq .Values.indexMaintenance.mode "runner" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lakesoul-pg.fullname" . }}-index-maintenance-runner
+  labels:
+    {{- include "lakesoul-pg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: index-maintenance-runner
+spec:
+  replicas: {{ .Values.indexMaintenance.runner.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lakesoul-pg.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: index-maintenance-runner
+  template:
+    metadata:
+      labels:
+        {{- include "lakesoul-pg.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: index-maintenance-runner
+      {{- with .Values.indexMaintenance.runner.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "lakesoul-pg.runnerServiceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: index-maintenance-runner
+          image: {{ include "lakesoul-pg.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/postgres-lakesoul"]
+          args:
+            - --index-maintenance-runner
+            - --no-metrics
+            - --worker-threads
+            - {{ .Values.indexMaintenance.runner.threads | quote }}
+            - --memory-limit
+            - {{ .Values.indexMaintenance.runner.execution.memoryLimit | quote }}
+            - --vortex-decode-budget
+            - {{ .Values.indexMaintenance.runner.execution.vortexDecodeBudget | quote }}
+            {{- range .Values.indexMaintenance.runner.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "lakesoul-pg.fullname" . }}-config
+          env:
+            {{- include "lakesoul-pg.metadataEnv" . | nindent 12 }}
+            {{- include "lakesoul-pg.warehouseEnv" . | nindent 12 }}
+            - name: LAKESOUL_PG_INDEX_RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LAKESOUL_PG_INDEX_MAINTENANCE_POLL_MS
+              value: {{ .Values.indexMaintenance.pollMs | quote }}
+            - name: LAKESOUL_PG_INDEX_LEASE_TTL_MS
+              value: {{ .Values.indexMaintenance.leaseTtlMs | quote }}
+            {{- with .Values.indexMaintenance.runner.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.indexMaintenance.runner.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/scratch
+            {{- include "lakesoul-pg.warehouseVolumeMount" . | nindent 12 }}
+      volumes:
+        - name: scratch
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: 20Gi
+        {{- include "lakesoul-pg.warehouseVolume" . | nindent 8 }}
+      {{- with .Values.indexMaintenance.runner.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.indexMaintenance.runner.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.indexMaintenance.runner.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

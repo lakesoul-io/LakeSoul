@@ -20,7 +20,10 @@ use datafusion::sql::sqlparser::ast::{
 };
 use datafusion_postgres::pgwire::error::PgWireResult;
 
-use crate::ddl::{feature_not_supported, pg_json_kind, with_json_metadata};
+use crate::ddl::{
+    feature_not_supported, is_vector_column, pg_json_kind, with_json_metadata,
+    with_vector_metadata,
+};
 
 /// Field metadata key carrying the semantic PostgreSQL type.
 pub(crate) const PG_TYPE_KEY: &str = "pg.type";
@@ -101,6 +104,9 @@ pub(crate) fn field_for_sql_type(
 
     let arrow = crate::ddl::arrow_type(data_type)?;
     let mut field = Field::new(name, arrow, nullable);
+    if is_vector_column(data_type) {
+        field = with_vector_metadata(field);
+    }
     match data_type {
         SqlDataType::Uuid => {
             // UUID is stored as canonical text. Arrow's canonical UUID

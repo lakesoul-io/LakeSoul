@@ -23,6 +23,7 @@ use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::filter::{FilterExec, FilterExecBuilder};
 use datafusion::physical_plan::projection::ProjectionExec;
 use lakesoul_io::text::verify::TEXT_SCORE_FIELD;
 
@@ -73,17 +74,13 @@ impl PhysicalOptimizerRule for TextScoreProjectionRule {
                 return Ok(Transformed::no(node));
             }
 
-            // Rebuild the scan with the score column, then read it here.
-            let input = projection
-                .input()
-                .clone()
-                .transform_down(|node: Arc<dyn ExecutionPlan>| {
-                    if let Some(search) = node.downcast_ref::<LakeSoulTextSearchExec>() {
-                        return Ok(Transformed::yes(search.with_exposed_score()?));
-                    }
-                    Ok(Transformed::no(node))
-                })?
-                .data;
+            // Rebuild the scan with the score column, then read it here.  The
+            // score must be exposed directly above the index scan: a
+            // PostgreSQL plan keeps a `FilterExec`/`CooperativeExec` between
+            // this projection and the scan, and those nodes only preserve
+            // their input schema.  Wrapping the scan in a projection that
+            // appends the score makes every ancestor carry it.
+            let input = expose_score(projection.input().clone())?;
             let score_index = input.schema().index_of(TEXT_SCORE_FIELD)?;
             let exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projection
                 .expr()
@@ -117,6 +114,71 @@ impl PhysicalOptimizerRule for TextScoreProjectionRule {
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+/// Make the text scan's internal score column visible to every ancestor.
+///
+/// `FilterExec`, `GlobalLimitExec` and `CooperativeExec` only forward their
+/// input schema, so appending the score at the scan itself is not enough when
+/// the score projection sits above them.  Wrap the scan in a projection that
+/// keeps all visible columns and appends the score; ancestors then rebuild
+/// with the wider schema.
+fn expose_score(plan: Arc<dyn ExecutionPlan>) -> DFResult<Arc<dyn ExecutionPlan>> {
+    if plan.schema().index_of(TEXT_SCORE_FIELD).is_ok() {
+        return Ok(plan);
+    }
+    if let Some(search) = plan.downcast_ref::<LakeSoulTextSearchExec>() {
+        let exposed = search.with_exposed_score()?;
+        let schema = exposed.schema();
+        let score_index = schema.index_of(TEXT_SCORE_FIELD)?;
+        let mut exprs: Vec<(Arc<dyn PhysicalExpr>, String)> =
+            Vec::with_capacity(schema.fields().len());
+        for (index, field) in schema.fields().iter().enumerate() {
+            if field.name() == TEXT_SCORE_FIELD {
+                continue;
+            }
+            exprs.push((
+                Arc::new(Column::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
+                field.name().clone(),
+            ));
+        }
+        exprs.push((
+            Arc::new(Column::new(TEXT_SCORE_FIELD, score_index)) as Arc<dyn PhysicalExpr>,
+            TEXT_SCORE_FIELD.to_string(),
+        ));
+        return Ok(Arc::new(ProjectionExec::try_new(exprs, exposed)?));
+    }
+    let children = plan.children();
+    if children.is_empty() {
+        return Ok(plan);
+    }
+    let rewritten = children
+        .into_iter()
+        .map(|child| expose_score(Arc::clone(child)))
+        .collect::<DFResult<Vec<_>>>()?;
+    let rewritten = plan.with_new_children(rewritten)?;
+    // `FilterExec` can carry a projection that drops the score column.  Keep
+    // its existing output columns and append the score when its input now
+    // exposes it, so the projection above the filter can read it.
+    if let Some(filter) = rewritten.downcast_ref::<FilterExec>()
+        && filter.schema().index_of(TEXT_SCORE_FIELD).is_err()
+        && let Ok(score_index) = filter.input().schema().index_of(TEXT_SCORE_FIELD)
+    {
+        let mut projection = filter
+            .projection()
+            .as_ref()
+            .map(|projection| projection.to_vec())
+            .unwrap_or_else(|| (0..filter.input().schema().fields().len()).collect());
+        projection.push(score_index);
+        let new_filter = FilterExecBuilder::new(
+            Arc::clone(filter.predicate()),
+            Arc::clone(filter.input()),
+        )
+        .apply_projection(Some(projection))?
+        .build()?;
+        return Ok(Arc::new(new_filter));
+    }
+    Ok(rewritten)
 }
 
 /// Whether an expression is a `text_score(column, query)` UDF call.
