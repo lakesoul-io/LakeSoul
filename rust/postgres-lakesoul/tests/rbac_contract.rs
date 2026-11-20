@@ -257,6 +257,45 @@ async fn table_visibility(h: &Harness, alice: &Client, bob: &Client) -> Result<(
         "rbac-hidden-catalog: bob's pg_class/pg_tables list {OWNED}"
     );
     expect_item_count(bob, "rbac-public-still-readable").await?;
+
+    // The pinned-read table function resolves through the session catalog,
+    // so a hidden table stays hidden there too. A far-future timestamp makes
+    // the only possible failure the table lookup, not the pinned view.
+    let as_of = "2099-01-01T00:00:00+00:00";
+    let error = bob
+        .query_opt(
+            &format!(
+                "SELECT * FROM lakesoul_table_scan('{OWNED}', 'timestamp', '{as_of}')"
+            ),
+            &[],
+        )
+        .await
+        .expect_err("rbac-hidden-time-travel: a hidden table must be refused");
+    let (code, message) = match error.as_db_error() {
+        Some(db) => (db.code().code().to_string(), db.message().to_string()),
+        None => (String::new(), error.to_string()),
+    };
+    // The catalog may report a hidden table either as an undefined relation
+    // (42P01, like a plain SELECT) or as the function's own "not found" error.
+    ensure!(
+        code == "42P01" || message.contains("not found or not visible"),
+        "rbac-hidden-time-travel: unexpected error ({code}): {message}"
+    );
+    let count: i64 = alice
+        .query_one(
+            &format!(
+                "SELECT count(*) FROM lakesoul_table_scan('{OWNED}', 'timestamp', '{as_of}')"
+            ),
+            &[],
+        )
+        .await
+        .context("rbac-owner-time-travel")?
+        .get(0);
+    ensure!(
+        count == 2,
+        "rbac-owner-time-travel: {count} rows, expected 2"
+    );
+
     let after = h.authoritative_snapshot().await?;
     ensure!(
         before == after,

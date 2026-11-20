@@ -476,6 +476,31 @@ explicit transaction block (their publication is not staged yet); `MERGE` is not
 implemented. The rewrite cost is the affected partition size, not the deleted
 row count; a key-targeted file rewrite is the planned optimization.
 
+### Time travel: `lakesoul_table_scan(table, mode, value)`
+
+The SQL entry point for the provider's `snapshot_view()`. The three arguments
+are string literals; `mode` is `timestamp` (RFC3339 with an explicit offset,
+`<=` semantics per partition), `tag`, or `snapshot_id` (alias `version`):
+
+```sql
+SELECT * FROM lakesoul_table_scan('events', 'timestamp', '2026-11-20T10:00:00+08:00');
+SELECT * FROM lakesoul_table_scan('events', 'tag', 'release-2026-11');
+SELECT * FROM lakesoul_table_scan('events', 'snapshot_id', '42');
+```
+
+The function resolves the table through the session catalog (so ACL/RBAC
+visibility applies), wraps the provider with `snapshot_view()`, and returns a
+per-query pinned scan. It stores nothing in the session: a plain `SELECT` still
+sees the latest commit, and reading an old version to write another table or
+partition is an ordinary query. Pinned scans skip vector/text index pushdown
+and use the historical partition versions through merge-on-read. Snapshot and
+tag rows are created by metadata tooling; there is no SQL DDL for them yet.
+
+Covered by `tests/time_travel_contract.rs` (all four modes, filters, invalid
+arguments and RBAC visibility), the bin unit tests in `src/time_travel.rs`,
+`client-compat/test_time_travel.py`, and the RBAC contract. See
+`website/docs/engine/postgres/time-travel.md` for the user-facing semantics.
+
 ### Transport security: TLS
 
 The listener can terminate TLS itself. `--tls-cert` (PEM chain) and `--tls-key`

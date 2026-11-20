@@ -59,6 +59,7 @@ mod server;
 mod session;
 mod session_settings;
 mod subscribe;
+mod time_travel;
 mod transaction;
 mod truncate;
 mod update;

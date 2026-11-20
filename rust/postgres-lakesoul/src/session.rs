@@ -694,6 +694,12 @@ impl PgSessionFactory {
         ));
         // Register on the final frontend context, after catalog/default-schema
         // and expression-planner replacement. UDTFs resolve through this state.
+        // The pinned-read function resolves tables through this context's
+        // catalog, so ACL/RBAC visibility is the same as for a plain scan.
+        context.register_udtf(
+            crate::time_travel::FUNCTION_NAME,
+            Arc::new(crate::time_travel::TableScanFunction::new(&context)),
+        );
         lakesoul_datafusion::udf::vector_batch::register(&context);
         let mut session = PgSession::new(
             identity,
