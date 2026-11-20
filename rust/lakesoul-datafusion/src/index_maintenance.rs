@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use datafusion::error::{DataFusionError, Result};
 use lakesoul_common::IndexKind;
 use lakesoul_common::index::pending_shard_files;
+use lakesoul_common::misc::SecretMap;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_text::TextSplitEntry;
 use rootcause::compat::boxed_error::IntoBoxedError;
@@ -34,6 +35,25 @@ pub async fn build_pending_indices(
     client: MetaDataClientRef,
     table_name: &str,
     namespace: &str,
+) -> Result<usize> {
+    build_pending_indices_with_options(
+        client,
+        table_name,
+        namespace,
+        SecretMap::default(),
+    )
+    .await
+}
+
+/// [`build_pending_indices`] with the object-store options the caller's
+/// session uses.  The background maintenance runner has no `SessionContext`,
+/// so it passes the server's `fs.s3a.*` options explicitly; without them an
+/// S3 table cannot resolve `fs.s3a.bucket` while building.
+pub async fn build_pending_indices_with_options(
+    client: MetaDataClientRef,
+    table_name: &str,
+    namespace: &str,
+    object_store_options: SecretMap,
 ) -> Result<usize> {
     let Some(table_info) = client
         .get_table_info_by_table_name(table_name, namespace)
@@ -59,7 +79,7 @@ pub async fn build_pending_indices(
         false,
         namespace,
         Default::default(),
-        Default::default(),
+        object_store_options,
     )
     .await
     .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
@@ -130,13 +150,41 @@ pub async fn build_pending_indices(
             files = pending.values().map(|(files, _)| files.len()).sum::<usize>(),
             "building pending vector index shards"
         );
-        built += crate::vector_index::auto_build_vector_index(
+        let shards = match crate::vector_index::auto_build_vector_index(
             std::slice::from_ref(config),
             std::slice::from_ref(&pk_column),
             &object_store_options,
             &pending,
             Some(&all_files),
             &catalog,
+        )
+        .await
+        {
+            Ok(shards) => shards,
+            Err(report) => {
+                // The index is now stale or incomplete; keep queries on the
+                // exact ordered scan until a rebuild succeeds.
+                let _ = crate::vector_index::mark_vector_index_available(
+                    client.as_ref(),
+                    table_name,
+                    namespace,
+                    false,
+                )
+                .await;
+                return Err(DataFusionError::External(report.into_boxed_error()));
+            }
+        };
+        built += shards;
+    }
+
+    // A deferred declaration starts unavailable; the pending shards are now
+    // built (or already covered), so index-only ordering is safe again.
+    if !vector_configs.is_empty() {
+        crate::vector_index::mark_vector_index_available(
+            client.as_ref(),
+            table_name,
+            namespace,
+            true,
         )
         .await
         .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;

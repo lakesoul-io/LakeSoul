@@ -773,6 +773,9 @@ impl StartupState {
             .arg("16")
             .args(["--max-result-rows", "0", "--max-result-bytes", "0"])
             .args(["--memory-limit", "0", "--vortex-decode-budget", "0"])
+            // Deferred-index maintenance has its own unit tests; a background
+            // child in every contract suite would only add noise.
+            .args(["--index-maintenance-executor", "off"])
             .arg("--warehouse-prefix")
             .arg(&self.warehouse_url)
             .env("TZ", "UTC")

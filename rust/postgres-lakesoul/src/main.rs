@@ -12,7 +12,7 @@ use clap::Parser;
 use datafusion_postgres::{
     ServerOptions, TcpKeepalive, auth::AuthManager, serve_with_handlers,
 };
-use lakesoul_common::misc::JiffTime;
+use lakesoul_common::misc::{JiffTime, SecretMap};
 use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs, IvmArgs};
 use lakesoul_datafusion::session::{ExecutionMemoryArgs, IvmRefreshSessionFactory};
 use lakesoul_ivm::IvmRuntimeConfig;
@@ -43,6 +43,8 @@ mod delete;
 mod failed_transaction;
 mod federation;
 mod grant;
+mod index_ddl;
+mod index_runner;
 mod insert;
 mod ivm;
 mod jobs;
@@ -135,6 +137,42 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(100..)
     )]
     runner_poll_ms: u64,
+
+    /// Who owns deferred-index builds: `local` starts one child process,
+    /// `external` leaves it to a separate Deployment, `off` disables it.
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_INDEX_MAINTENANCE_EXECUTOR",
+        value_enum,
+        default_value = "local"
+    )]
+    index_maintenance_executor: index_runner::IndexMaintenanceExecutor,
+
+    /// Run only the deferred-index builder (no PG wire server).
+    #[clap(long, env = "LAKESOUL_PG_INDEX_MAINTENANCE_RUNNER")]
+    index_maintenance_runner: bool,
+
+    /// Stable identity of this index runner, used for the metadata lease.
+    #[clap(long, env = "LAKESOUL_PG_INDEX_RUNNER_ID")]
+    index_runner_id: Option<String>,
+
+    /// How often the deferred-index runner scans metadata, in milliseconds.
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_INDEX_MAINTENANCE_POLL_MS",
+        default_value_t = 5_000,
+        value_parser = clap::value_parser!(u64).range(100..)
+    )]
+    index_maintenance_poll_ms: u64,
+
+    /// Lifetime of the index-maintenance lease, in milliseconds.
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_INDEX_LEASE_TTL_MS",
+        default_value_t = 60_000,
+        value_parser = clap::value_parser!(u64).range(1_000..)
+    )]
+    index_lease_ttl_ms: u64,
 
     /// Start every new connection with `lakesoul.ivm.enabled = on`. IVM is
     /// always installed; without this flag only a session's own `SET` turns
@@ -401,10 +439,39 @@ async fn main_inner(cli: Cli) -> Result<()> {
     alter::register_metrics();
     auth::register_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
+    let object_store_options = SecretMap::from_map(cli.core.s3_options());
     if cli.subscription_runner
+        && (cli.subscribe.subscribe
+            || cli.subscribe.subscription_id.is_some()
+            || cli.index_maintenance_runner)
+    {
+        rootcause::bail!(
+            "--subscription-runner cannot be combined with --subscribe or \
+             --index-maintenance-runner"
+        );
+    }
+    if cli.index_maintenance_runner
         && (cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some())
     {
-        rootcause::bail!("--subscription-runner and --subscribe are mutually exclusive");
+        rootcause::bail!(
+            "--index-maintenance-runner cannot be combined with --subscribe"
+        );
+    }
+    if cli.index_maintenance_runner {
+        let owner = cli.index_runner_id.clone().unwrap_or_else(|| {
+            std::env::var("HOSTNAME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("index-runner-{}", std::process::id()))
+        });
+        return index_runner::run(
+            Arc::clone(&meta_client),
+            object_store_options,
+            owner,
+            std::time::Duration::from_millis(cli.index_maintenance_poll_ms),
+            std::time::Duration::from_millis(cli.index_lease_ttl_ms),
+        )
+        .await;
     }
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
         return subscribe::run(
@@ -449,6 +516,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
         )
         .await;
     }
+    let index_program = program.clone();
     let executor = cli.subscription_executor;
     let subscriptions =
         Arc::new(subscribe::supervisor::SubscriptionSupervisor::with_mode(
@@ -673,6 +741,32 @@ async fn main_inner(cli: Cli) -> Result<()> {
     }
     let limits = ServerLimits::new(limits);
 
+    let index_supervisor = match cli.index_maintenance_executor {
+        index_runner::IndexMaintenanceExecutor::Local => {
+            info!(
+                poll_ms = cli.index_maintenance_poll_ms,
+                lease_ttl_ms = cli.index_lease_ttl_ms,
+                "starting the local index maintenance child"
+            );
+            Some(index_runner::spawn_local_supervisor(
+                index_program,
+                std::time::Duration::from_millis(cli.index_maintenance_poll_ms),
+                std::time::Duration::from_millis(cli.index_lease_ttl_ms),
+            ))
+        }
+        index_runner::IndexMaintenanceExecutor::External => {
+            info!(
+                "external index maintenance executor configured; start \
+                 `postgres-lakesoul --index-maintenance-runner` to build deferred indexes"
+            );
+            None
+        }
+        index_runner::IndexMaintenanceExecutor::Off => {
+            info!("deferred index maintenance is disabled");
+            None
+        }
+    };
+
     let handlers = Arc::new(LakeSoulHandlers::new(Arc::clone(&session_factory), limits));
     let server_result = tokio::select! {
         result = serve_with_handlers(handlers, &server_opts) => Some(result),
@@ -682,6 +776,9 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // otherwise a graceful server shutdown would leave them holding
     // replication slots.
     subscriptions.stop_all().await;
+    if let Some(supervisor) = index_supervisor {
+        supervisor.stop().await;
+    }
     jobs.shutdown().await;
     if let Some(result) = server_result {
         result?;

@@ -44,8 +44,10 @@ use lakesoul_common::schema_evolution::{
 use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_parts,
 };
+use lakesoul_datafusion::text_index::TEXT_INDEX_COLUMNS_KEY;
 use lakesoul_datafusion::vector_index::{
-    VECTOR_INDEX_COLUMNS_KEY, parse_vector_index_columns,
+    VECTOR_INDEX_AVAILABLE_KEY, VECTOR_INDEX_COLUMNS_KEY, VECTOR_INDEX_EPOCH_KEY,
+    parse_vector_index_columns, vector_index_epoch,
 };
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::{
@@ -71,7 +73,18 @@ const INTERNAL_ERROR: &str = "XX000";
 /// Options `SET (...)`/`RESET (...)` may change: writer tuning only. Every
 /// other option `CREATE TABLE` accepts decides how existing data is laid out
 /// or read, so changing it would misread the files already written.
-const MUTABLE_OPTIONS: &[&str] =
+const MUTABLE_OPTIONS: &[&str] = &[
+    "vortex_row_block_size",
+    "vortex_data_block_target_bytes",
+    "index_maintenance",
+    "vector_index_columns",
+    "text_index_columns",
+];
+
+/// Options that tune the Vortex layout of vector columns.  Only these need
+/// the "a writer would apply it" check; index declarations and
+/// `index_maintenance` are not writer-tuning options.
+const WRITER_TUNING_OPTIONS: &[&str] =
     &["vortex_row_block_size", "vortex_data_block_target_bytes"];
 
 /// `CREATE TABLE` options that fix the physical layout, refused by name.
@@ -527,12 +540,97 @@ pub(crate) fn plan_alter(
         }
     }
 
+    // Index declarations are properties, not schema: validate them against
+    // the final schema (so ADD COLUMN + SET works in one statement) and keep
+    // the vector epoch in sync with a changed declaration.
+    let vector_before = original_properties
+        .get(VECTOR_INDEX_COLUMNS_KEY)
+        .and_then(json_property_string);
+    let text_before = original_properties
+        .get(TEXT_INDEX_COLUMNS_KEY)
+        .and_then(json_property_string);
+    let vector_after = properties
+        .get(VECTOR_INDEX_COLUMNS_KEY)
+        .and_then(json_property_string);
+    let text_after = properties
+        .get(TEXT_INDEX_COLUMNS_KEY)
+        .and_then(json_property_string);
+
+    let vector_changed = vector_before != vector_after;
+    let text_changed = text_before != text_after;
+    if vector_after.is_none() && vector_before.is_some() {
+        return Err(feature_not_supported(format!(
+            "ALTER TABLE on \"{table}\" cannot remove vector_index_columns: use \
+             SELECT lakesoul_drop_vector_index(...) so index files are cleaned up"
+        )));
+    }
+    if vector_changed && let Some(raw) = &vector_after {
+        let Some(canonical) = crate::index_ddl::canonical_index_property(
+            table,
+            VECTOR_INDEX_COLUMNS_KEY,
+            raw,
+            &schema,
+            &layout.primary_keys,
+        )?
+        else {
+            return Err(feature_not_supported(format!(
+                "ALTER TABLE on \"{table}\" cannot remove vector_index_columns: use \
+                 SELECT lakesoul_drop_vector_index(...) so index files are cleaned up"
+            )));
+        };
+        properties.insert(
+            VECTOR_INDEX_COLUMNS_KEY.to_string(),
+            serde_json::Value::String(canonical),
+        );
+        let next =
+            vector_index_epoch(&serde_json::to_string(&properties).unwrap_or_default())
+                + 1;
+        properties.insert(
+            VECTOR_INDEX_EPOCH_KEY.to_string(),
+            serde_json::Value::Number(next.into()),
+        );
+        // `ALTER TABLE SET` only declares the new index; it does not build
+        // it.  Keep the planner on the exact ordered scan until `REINDEX`
+        // (or a deferred-runner build) marks the declaration available.
+        properties.insert(
+            VECTOR_INDEX_AVAILABLE_KEY.to_string(),
+            serde_json::Value::Bool(false),
+        );
+    }
+    if text_changed && let Some(raw) = &text_after {
+        match crate::index_ddl::canonical_index_property(
+            table,
+            TEXT_INDEX_COLUMNS_KEY,
+            raw,
+            &schema,
+            &layout.primary_keys,
+        )? {
+            Some(canonical) => {
+                properties.insert(
+                    TEXT_INDEX_COLUMNS_KEY.to_string(),
+                    serde_json::Value::String(canonical),
+                );
+            }
+            None => {
+                properties.remove(TEXT_INDEX_COLUMNS_KEY);
+            }
+        }
+    }
+
     let update = TableDefinitionUpdate {
         schema: (schema != current).then(|| schema_to_metadata_parts(&schema)),
         properties: (properties != original_properties)
             .then(|| serde_json::Value::Object(properties)),
     };
     Ok((update, notices))
+}
+
+fn json_property_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
+    }
 }
 
 /// Refuse to store a writer-tuning option the table's writers would ignore.
@@ -551,7 +649,7 @@ pub(crate) fn check_option_takes_effect<'a>(
     option: &str,
     property: impl Fn(&str) -> Option<&'a str>,
 ) -> PgWireResult<()> {
-    if !MUTABLE_OPTIONS.contains(&option) {
+    if !WRITER_TUNING_OPTIONS.contains(&option) {
         return Ok(());
     }
     // Parsed the way writers parse it, so the check follows their reading.
@@ -736,6 +834,8 @@ pub(crate) async fn notice(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use datafusion::arrow::datatypes::DataType;
     use datafusion::sql::sqlparser::ast::Statement;
     use datafusion::sql::sqlparser::parser::Parser;
@@ -780,9 +880,30 @@ mod tests {
         )
     }
 
-    /// `base()` with `properties` merged in.
-    fn with_properties(properties: serde_json::Value) -> TableInfo {
-        let mut info = base();
+    /// A table declaring a vector index column, so the Vortex block options
+    /// shape its writes.
+    fn vector_table() -> TableInfo {
+        table_info(
+            &Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("qty", DataType::Int32, false),
+                Field::new("label", DataType::Utf8, true),
+                Field::new(
+                    "embedding",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new_list_field(DataType::Float32, true)),
+                        4,
+                    ),
+                    true,
+                ),
+            ]),
+            ";id",
+            r#"{"hashBucketNum":"4","vortex_row_block_size":"8192","vector_index_columns":"[{\"column\":\"embedding\",\"dim\":4}]"}"#,
+        )
+    }
+
+    fn vector_with_properties(properties: serde_json::Value) -> TableInfo {
+        let mut info = vector_table();
         let mut merged: serde_json::Value =
             serde_json::from_str(&info.properties).unwrap();
         merged
@@ -791,14 +912,6 @@ mod tests {
             .extend(properties.as_object().unwrap().clone());
         info.properties = merged.to_string();
         info
-    }
-
-    /// A table declaring a vector index column, so the Vortex block options
-    /// shape its writes.
-    fn vector_table() -> TableInfo {
-        with_properties(serde_json::json!({
-            "vector_index_columns": r#"[{"column":"label","dim":4}]"#,
-        }))
     }
 
     fn plan_on(
@@ -1014,7 +1127,7 @@ mod tests {
 
     #[test]
     fn options_set_and_reset_keep_other_properties() {
-        let vector_index_columns = r#"[{"column":"label","dim":4}]"#;
+        let vector_index_columns = r#"[{"column":"embedding","dim":4}]"#;
         let (update, _) = plan_on(
             &vector_table(),
             "ALTER TABLE t SET (vortex_data_block_target_bytes = 1048576)",
@@ -1051,8 +1164,7 @@ mod tests {
     fn options_no_writer_applies_are_refused() {
         // No vector index column: every column keeps the Vortex defaults.
         // Parquet: the Vortex layout does not apply at all.
-        let parquet = with_properties(serde_json::json!({
-            "vector_index_columns": r#"[{"column":"label","dim":4}]"#,
+        let parquet = vector_with_properties(serde_json::json!({
             "file_format": "Parquet",
         }));
         for (info, sql) in [
@@ -1088,8 +1200,7 @@ mod tests {
             );
         }
         // A vortex table with a vector index column takes it.
-        let vortex = with_properties(serde_json::json!({
-            "vector_index_columns": r#"[{"column":"label","dim":4}]"#,
+        let vortex = vector_with_properties(serde_json::json!({
             "file_format": "vortex",
         }));
         plan_on(&vortex, "ALTER TABLE t SET (vortex_row_block_size = 4096)").unwrap();

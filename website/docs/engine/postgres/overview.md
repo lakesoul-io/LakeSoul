@@ -34,7 +34,7 @@ for the metadata database and the first table.
 | Area | Support |
 | --- | --- |
 | **Connectivity** | PostgreSQL wire protocol, simple and extended query protocol, `pg_catalog`, `psql \d` |
-| **DDL** | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` options |
+| **DDL** | `CREATE TABLE`, `DROP TABLE`, `CREATE INDEX` for vector/text indexes, `REINDEX TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` options |
 | **Writes** | `INSERT ... VALUES` (including `RETURNING`), `INSERT ... SELECT`, `COPY ... FROM STDIN`, `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstones, partition clears and rewrites), `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial columns, expressions and conflict `WHERE`) |
 | **Queries** | The DataFusion SQL surface, including joins, aggregates, windows, CTEs and set operations |
 | **Search** | pgvector-compatible vector operators, `text_score` for BM25 |

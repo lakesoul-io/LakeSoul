@@ -1412,6 +1412,35 @@ pub async fn rebuild_vector_index(
     Ok(rebuilt)
 }
 
+/// Publish whether a declared vector index is usable.
+///
+/// A deferred declaration starts with `vector_index_available = false`; the
+/// background runner flips it to `true` after building the pending shards.
+/// Keeping the property accurate lets the planner fall back to an exact,
+/// correctly ordered scan instead of requesting index-only ordering from an
+/// index that does not exist yet.
+pub async fn mark_vector_index_available(
+    client: &lakesoul_metadata::MetaDataClient,
+    table_name: &str,
+    namespace: &str,
+    available: bool,
+) -> Result<()> {
+    let Some(table_info) = client
+        .get_table_info_by_table_name(table_name, namespace)
+        .await?
+    else {
+        bail!("table '{namespace}.{table_name}' not found");
+    };
+    if vector_index_available(&table_info.properties) == available {
+        set_vector_index_available(namespace, table_name, available);
+        return Ok(());
+    }
+    bump_vector_index_epoch_and_state(client, &table_info, Some(available)).await?;
+    set_vector_index_available(namespace, table_name, available);
+    crate::catalog::metadata_cache::invalidate_table(namespace, table_name);
+    Ok(())
+}
+
 /// What a tombstone object sweep did.
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct DropGcReport {

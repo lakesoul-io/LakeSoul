@@ -12,7 +12,7 @@ use lakesoul_common::misc::SecretMap;
 use lakesoul_metadata::index_catalog::{CommitMode, IndexCatalog, IndexCommitView};
 use lakesoul_text::TextSplitEntry;
 use rootcause::{bail, report};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 use tracing::warn;
 
@@ -93,6 +93,93 @@ pub fn parse_text_index_from_table_properties(
     properties_json: &str,
 ) -> Result<Vec<TextIndexTableConfig>> {
     parse_index_from_table_properties(properties_json, TEXT_INDEX_COLUMNS_KEY)
+}
+
+fn properties_with_text_configs(
+    properties: &str,
+    configs: &[TextIndexTableConfig],
+) -> Result<String> {
+    let mut properties: serde_json::Value = if properties.trim().is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_str(properties)?
+    };
+    let Some(object) = properties.as_object_mut() else {
+        bail!("table properties are not a JSON object")
+    };
+    let existing = object.get(TEXT_INDEX_COLUMNS_KEY).map(|value| match value {
+        serde_json::Value::String(raw) => raw.clone(),
+        other => other.to_string(),
+    });
+    let existing = parse_text_index_columns(existing.as_deref())?;
+    let replace: BTreeSet<&str> = configs
+        .iter()
+        .map(|config| config.column.as_str())
+        .collect();
+    let mut merged: Vec<TextIndexTableConfig> = existing
+        .into_iter()
+        .filter(|config| !replace.contains(config.column.as_str()))
+        .collect();
+    merged.extend(configs.iter().cloned());
+    object.insert(
+        TEXT_INDEX_COLUMNS_KEY.to_string(),
+        serde_json::Value::String(text_index_columns_to_json(&merged)),
+    );
+    Ok(serde_json::to_string(&properties)?)
+}
+
+/// Re-declare text indexes after a drop or on an existing table.
+///
+/// Writes the merged `text_index_columns` property with compare-and-swap,
+/// invalidates the provider cache and lets the caller build the index.  A
+/// text index has no drop tombstone or epoch, so unlike
+/// [`crate::vector_index::declare_vector_index`] this only updates the
+/// declaration.
+pub async fn declare_text_index(
+    client: &lakesoul_metadata::MetaDataClient,
+    table_name: &str,
+    namespace: &str,
+    configs: Vec<TextIndexTableConfig>,
+) -> Result<()> {
+    if configs.is_empty() {
+        bail!("at least one text index config is required");
+    }
+    let Some(mut table_info) = client
+        .get_table_info_by_table_name(table_name, namespace)
+        .await?
+    else {
+        bail!("table '{namespace}.{table_name}' not found");
+    };
+    let table_id = table_info.table_id.clone();
+    let mut declared = false;
+    for _ in 0..3 {
+        let properties = properties_with_text_configs(&table_info.properties, &configs)?;
+        if client
+            .update_table_properties_if_unchanged(
+                &table_id,
+                &table_info.properties,
+                &properties,
+            )
+            .await?
+        {
+            declared = true;
+            break;
+        }
+        table_info = client
+            .get_table_info_by_table_id(&table_id)
+            .await?
+            .ok_or_else(|| {
+                report!("table '{table_id}' disappeared while declaring text index")
+            })?;
+    }
+    if !declared {
+        bail!(
+            "table '{table_id}' properties kept changing while declaring the \
+             text index; retry"
+        );
+    }
+    crate::catalog::metadata_cache::invalidate_table(namespace, table_name);
+    Ok(())
 }
 
 /// Validate that a table schema can support the configured text indexes.

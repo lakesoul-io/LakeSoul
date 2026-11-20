@@ -10,7 +10,8 @@ One container runs:
 
 - PostgreSQL 18 for LakeSoul metadata (`127.0.0.1:5432`, database `lakesoul`);
 - one `lakesoul-worker` (`127.0.0.1:50051`);
-- `postgres-lakesoul` on the host at `127.0.0.1:5433`.
+- `postgres-lakesoul` on the host at `127.0.0.1:5433`, with one supervised
+  index-maintenance child for `index_maintenance=deferred` tables.
 
 JWT authentication and RBAC are off by default. IVM is always installed and
 new connections start with `lakesoul.ivm.enabled = on`. This is a local,
@@ -74,6 +75,7 @@ older LakeSoul release instead of deleting it.
 | `LAKESOUL_WAREHOUSE` | `file:///warehouse` | table data prefix |
 | `LAKESOUL_PG_PORT` | `5433` | PG wire port |
 | `LAKESOUL_PG_IVM_DEFAULT` | `true` | new sessions start with IVM on |
+| `LAKESOUL_PG_INDEX_MAINTENANCE_EXECUTOR` | `local` | deferred-index builder child (`local`, `external`, `off`) |
 | `LAKESOUL_PG_JWT_AUTH` | `false` | JWT authentication |
 | `LAKESOUL_PG_RBAC` | `false` | domain enforcement (requires JWT) |
 | `WORKER_THREADS` | `4` | worker Tokio threads |

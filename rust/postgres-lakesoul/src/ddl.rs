@@ -35,7 +35,10 @@ use datafusion::sql::sqlparser::ast::{
     Value,
 };
 use datafusion_postgres::QueryHook;
-use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
+use datafusion_postgres::arrow_pg::datatypes::PG_VECTOR_KEY;
+use datafusion_postgres::datafusion_pg_catalog::sql::{
+    PostgresCompatibilityParser, is_vector_type,
+};
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_common::schema_evolution::column_names_collide;
@@ -79,6 +82,45 @@ pub(crate) const PG_JSON_KEY: &str = "pg.json";
 /// the property stores the schema's actual (lower-case) name.
 const DEFAULT_CDC_CHANGE_COLUMN: &str = "rowKinds";
 
+/// The `public` schema of the connection's database: the only schema DDL can
+/// target, matching the catalog layer's one-database/one-namespace view.
+pub(crate) fn public_schema_for(
+    context: &SessionContext,
+    database: &str,
+) -> PgWireResult<Arc<dyn SchemaProvider>> {
+    let catalog = context
+        .state()
+        .catalog_list()
+        .catalog(database)
+        .ok_or_else(|| {
+            user_error(
+                UNDEFINED_TABLE,
+                format!("database \"{database}\" does not exist"),
+            )
+        })?;
+    catalog.schema(PUBLIC_SCHEMA).ok_or_else(|| {
+        user_error(INVALID_SCHEMA_NAME, "schema \"public\" does not exist")
+    })
+}
+
+/// Resolve a PG object name to a table in the connection's `public` schema.
+pub(crate) fn target_table(_database: &str, name: &ObjectName) -> PgWireResult<String> {
+    let parts = name_parts(name)?;
+    match parts.as_slice() {
+        [table] => Ok(table.clone()),
+        [schema, table] if schema == PUBLIC_SCHEMA => Ok(table.clone()),
+        [schema, _] => Err(user_error(
+            INVALID_SCHEMA_NAME,
+            format!("schema \"{schema}\" does not exist"),
+        )),
+        _ => Err(feature_not_supported(
+            "cross-database CREATE/DROP/ALTER TABLE is not supported: a \
+             connection addresses exactly one database"
+                .to_string(),
+        )),
+    }
+}
+
 /// Answers the two data-definition statements this server supports.
 pub struct DdlStatementHook {
     client: MetaDataClientRef,
@@ -114,19 +156,7 @@ impl DdlStatementHook {
         &self,
         context: &SessionContext,
     ) -> PgWireResult<Arc<dyn SchemaProvider>> {
-        let catalog = context
-            .state()
-            .catalog_list()
-            .catalog(&self.database)
-            .ok_or_else(|| {
-                user_error(
-                    UNDEFINED_TABLE,
-                    format!("database \"{}\" does not exist", self.database),
-                )
-            })?;
-        catalog.schema(PUBLIC_SCHEMA).ok_or_else(|| {
-            user_error(INVALID_SCHEMA_NAME, "schema \"public\" does not exist")
-        })
+        public_schema_for(context, &self.database)
     }
 
     /// Table name from a PG object name.
@@ -135,20 +165,7 @@ impl DdlStatementHook {
     /// three parts would address another database, which this server refuses
     /// like the query path does.
     fn target(&self, name: &ObjectName) -> PgWireResult<String> {
-        let parts = name_parts(name)?;
-        match parts.as_slice() {
-            [table] => Ok(table.clone()),
-            [schema, table] if schema == PUBLIC_SCHEMA => Ok(table.clone()),
-            [schema, _] => Err(user_error(
-                INVALID_SCHEMA_NAME,
-                format!("schema \"{schema}\" does not exist"),
-            )),
-            _ => Err(feature_not_supported(
-                "cross-database CREATE/DROP/ALTER TABLE is not supported: a \
-                 connection addresses exactly one database"
-                    .to_string(),
-            )),
-        }
+        target_table(&self.database, name)
     }
 
     fn table_location(&self, warehouse: &str, table: &str) -> PgWireResult<String> {
@@ -179,8 +196,15 @@ impl DdlStatementHook {
         })?;
         let table = self.target(&create.name)?;
         let (schema, primary_key) = build_schema(&create.columns, &create.constraints)?;
+        let primary_keys = primary_key_names(&schema, primary_key.as_deref());
         let partition_cols = partition_columns(&create.hive_distribution, &schema)?;
-        let options = table_options(&create.table_options)?;
+        let mut options = table_options(&create.table_options)?;
+        crate::index_ddl::normalize_and_validate_index_options(
+            &table,
+            &mut options,
+            &schema,
+            &primary_keys,
+        )?;
         check_create_options(&table, &options)?;
 
         let mut location_options = options;
@@ -451,9 +475,17 @@ impl DdlStatementHook {
         };
         reject_unsupported_create(create)?;
         let table = self.target(&create.name)?;
-        let (schema, _) = build_schema(&create.columns, &create.constraints)?;
+        let (schema, primary_key) = build_schema(&create.columns, &create.constraints)?;
+        let primary_keys = primary_key_names(&schema, primary_key.as_deref());
         partition_columns(&create.hive_distribution, &schema)?;
-        check_create_options(&table, &table_options(&create.table_options)?)?;
+        let mut options = table_options(&create.table_options)?;
+        crate::index_ddl::normalize_and_validate_index_options(
+            &table,
+            &mut options,
+            &schema,
+            &primary_keys,
+        )?;
+        check_create_options(&table, &options)?;
         if self.warehouse.is_none() {
             return Err(feature_not_supported(
                 "CREATE TABLE needs a configured warehouse: start the server \
@@ -540,6 +572,22 @@ impl DdlStatementHook {
     }
 }
 
+/// Whether the statement publishes metadata that cannot be rolled back.
+/// Used by the simple-query batch guard; `CREATE INDEX` is answered by
+/// [`crate::index_ddl::IndexStatementHook`], not this hook.
+pub(crate) fn is_ddl(statement: &Statement) -> bool {
+    matches!(
+        statement,
+        Statement::CreateTable(_)
+            | Statement::CreateIndex(_)
+            | Statement::AlterTable(_)
+            | Statement::Drop {
+                object_type: ObjectType::Table,
+                ..
+            }
+    )
+}
+
 /// Verb of a statement this hook answers. `DROP` of anything but a table is
 /// left to the read-only guard, which refuses it before execution.
 fn ddl_verb(statement: &Statement) -> Option<&'static str> {
@@ -567,9 +615,9 @@ pub(crate) fn refuse_ddl_in_batch(statements: &[String]) -> PgWireResult<()> {
     }
     let parser = PostgresCompatibilityParser::new();
     let mixes_ddl = statements.iter().any(|sql| {
-        parser.parse(sql).is_ok_and(|parsed| {
-            parsed.iter().any(|statement| ddl_verb(statement).is_some())
-        })
+        parser
+            .parse(sql)
+            .is_ok_and(|parsed| parsed.iter().any(is_ddl))
     });
     if !mixes_ddl {
         return Ok(());
@@ -948,6 +996,18 @@ pub(crate) fn build_schema(
     Ok((Schema::new(fields), primary_key))
 }
 
+/// Resolve the primary-key indices of a freshly built schema to names.
+pub(crate) fn primary_key_names(
+    schema: &Schema,
+    primary_key: Option<&[usize]>,
+) -> Vec<String> {
+    primary_key
+        .unwrap_or_default()
+        .iter()
+        .map(|index| schema.field(*index).name().clone())
+        .collect()
+}
+
 /// One primary-key column: a bare identifier naming an existing column.
 fn primary_key_index(column: &IndexColumn, names: &[String]) -> PgWireResult<usize> {
     let Expr::Identifier(ident) = &column.column.expr else {
@@ -1057,12 +1117,78 @@ pub(crate) fn field_json_kind(field: &Field) -> Option<&'static str> {
     }
 }
 
+/// The Arrow type of a pgvector `vector` / `vector(n)` column.
+///
+/// `vector(n)` is a fixed-dimension vector (`FixedSizeList(Float32, n)`); a
+/// bare `vector` is variable length (`List(Float32)`). Both carry the
+/// `pg.vector` marker on the field, so the wire layer reports the pgvector
+/// type and clients decode values as vectors.
+pub(crate) fn vector_arrow_type(
+    data_type: &SqlDataType,
+) -> Option<PgWireResult<DataType>> {
+    if !is_vector_type(data_type) {
+        return None;
+    }
+    let SqlDataType::Custom(_, modifiers) = data_type else {
+        return Some(Err(feature_not_supported(
+            "vector type must be written as vector or vector(n)".to_string(),
+        )));
+    };
+    let element = Field::new_list_field(DataType::Float32, true);
+    Some(match modifiers.as_slice() {
+        [] => Ok(DataType::List(Arc::new(element))),
+        [dimension] => {
+            let dimension: i32 = match dimension.trim().parse() {
+                Ok(dimension) => dimension,
+                Err(_) => {
+                    return Some(Err(user_error(
+                        INVALID_PARAMETER_VALUE,
+                        format!(
+                            "vector dimension \"{dimension}\" is not a valid \
+                             positive integer"
+                        ),
+                    )));
+                }
+            };
+            if dimension <= 0 || dimension > 65_535 {
+                return Some(Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "vector dimension {dimension} is out of range \
+                         (expects 1..=65535)"
+                    ),
+                )));
+            }
+            Ok(DataType::FixedSizeList(Arc::new(element), dimension))
+        }
+        _ => Err(feature_not_supported(
+            "vector accepts at most one dimension, e.g. vector(8)".to_string(),
+        )),
+    })
+}
+
+/// Attach the `pg.vector` marker so the column is reported as a pgvector
+/// `vector` on the wire, keeping every other metadata entry.
+pub(crate) fn with_vector_metadata(field: Field) -> Field {
+    let mut metadata: HashMap<String, String> = field.metadata().clone();
+    metadata.insert(PG_VECTOR_KEY.to_string(), "vector".to_string());
+    field.with_metadata(metadata)
+}
+
+/// True when the SQL type is a pgvector `vector` / `vector(n)` type.
+pub(crate) fn is_vector_column(data_type: &SqlDataType) -> bool {
+    is_vector_type(data_type)
+}
+
 /// PG column type → Arrow type. The mapping is deliberately small: an
 /// unsupported type is refused with `0A000` instead of being coerced into a
 /// different storage type.
 pub(crate) fn arrow_type_legacy(data_type: &SqlDataType) -> PgWireResult<DataType> {
     if pg_json_kind(data_type).is_some() {
         return Ok(DataType::Utf8);
+    }
+    if let Some(vector) = vector_arrow_type(data_type) {
+        return vector;
     }
     let ty = match data_type {
         SqlDataType::SmallInt(_) | SqlDataType::Int2(_) => DataType::Int16,
@@ -1170,8 +1296,9 @@ pub(crate) fn invalid_type(data_type: &SqlDataType, detail: &str) -> PgWireError
 
 /// Refuse `WITH (...)` options no writer of the new table would apply, by
 /// the rule `ALTER TABLE ... SET` uses ([`crate::alter::check_option_takes_effect`]).
-/// A table created here declares no vector index column, so the Vortex block
-/// options are always refused.
+/// The Vortex block options need a vector index column; index declarations
+/// themselves are validated separately by
+/// [`crate::index_ddl::normalize_and_validate_index_options`].
 fn check_create_options(
     table: &str,
     options: &HashMap<String, String>,
@@ -1210,6 +1337,40 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
         parsed.insert(name, value);
     }
     Ok(parsed)
+}
+
+/// Normalize an index-declaration property to a JSON array string.
+///
+/// The option is written as one SQL string, so users pass either the array
+/// text (`'[{"column":"vec","dim":8}]'`) or a JSON string containing that
+/// array. A single object is accepted for parity with the Python SDK.
+fn normalize_index_property(name: &str, value: &str) -> PgWireResult<String> {
+    let parsed: serde_json::Value = serde_json::from_str(value)
+        .map_err(|error| invalid_index_property(name, &error.to_string()))?;
+    let parsed = match parsed {
+        serde_json::Value::String(inner) => serde_json::from_str(&inner)
+            .map_err(|error| invalid_index_property(name, &error.to_string()))?,
+        other => other,
+    };
+    let entries = match parsed {
+        serde_json::Value::Array(entries) => entries,
+        serde_json::Value::Object(_) => vec![parsed],
+        serde_json::Value::Null => Vec::new(),
+        other => {
+            return Err(invalid_index_property(
+                name,
+                &format!("expected a JSON array or object, got {other}"),
+            ));
+        }
+    };
+    Ok(serde_json::Value::Array(entries).to_string())
+}
+
+fn invalid_index_property(name: &str, detail: &str) -> PgWireError {
+    user_error(
+        INVALID_PARAMETER_VALUE,
+        format!("value for option \"{name}\" is not valid JSON: {detail}"),
+    )
 }
 
 /// One `key = value` table option, validated and normalized. Shared by
@@ -1289,6 +1450,22 @@ pub(crate) fn table_option(entry: &SqlOption) -> PgWireResult<(String, String)> 
             validate_name(&folded)?;
             folded
         }
+        "index_maintenance" => {
+            let normalized = value.to_ascii_lowercase();
+            if !matches!(normalized.as_str(), "inline" | "deferred") {
+                return Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value \"{value}\" for option \"index_maintenance\" is \
+                         not valid (expects inline or deferred)"
+                    ),
+                ));
+            }
+            normalized
+        }
+        "vector_index_columns" | "text_index_columns" => {
+            normalize_index_property(&name, &value)?
+        }
         "vortex_row_block_size" => {
             let rows: usize = value.parse().map_err(|_| {
                 user_error(
@@ -1334,8 +1511,9 @@ pub(crate) fn table_option(entry: &SqlOption) -> PgWireResult<(String, String)> 
             return Err(feature_not_supported(format!(
                 "table option \"{other}\" is not supported (expects \
                      hash_bucket_num, file_format, append_only, use_cdc, \
-                     lakesoul_cdc_change_column, vortex_row_block_size, \
-                     vortex_data_block_target_bytes)"
+                     lakesoul_cdc_change_column, index_maintenance, \
+                     vector_index_columns, text_index_columns, \
+                     vortex_row_block_size, vortex_data_block_target_bytes)"
             )));
         }
     };
@@ -1434,4 +1612,79 @@ pub(crate) fn user_error(code: &str, message: impl Into<String>) -> PgWireError 
 
 pub(crate) fn feature_not_supported(message: String) -> PgWireError {
     user_error(FEATURE_NOT_SUPPORTED, message)
+}
+
+#[cfg(test)]
+mod index_type_tests {
+    use super::*;
+    use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
+    use datafusion::sql::sqlparser::parser::Parser;
+
+    fn create_table(sql: &str) -> CreateTable {
+        let statement = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+            .unwrap_or_else(|error| panic!("{sql}: {error}"))
+            .remove(0);
+        match statement {
+            Statement::CreateTable(create) => create,
+            other => panic!("{sql}: expected CREATE TABLE, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vector_types_map_to_arrow_lists() {
+        let create = create_table("CREATE TABLE t (id BIGINT PRIMARY KEY, v vector(8))");
+        let (schema, _) = build_schema(&create.columns, &create.constraints).unwrap();
+        let field = schema.field_with_name("v").unwrap();
+        assert!(matches!(field.data_type(), DataType::FixedSizeList(_, 8)));
+        assert_eq!(
+            field.metadata().get(PG_VECTOR_KEY).map(String::as_str),
+            Some("vector")
+        );
+
+        let create = create_table("CREATE TABLE t (id BIGINT PRIMARY KEY, v vector)");
+        let (schema, _) = build_schema(&create.columns, &create.constraints).unwrap();
+        assert!(matches!(
+            schema.field_with_name("v").unwrap().data_type(),
+            DataType::List(_)
+        ));
+    }
+
+    #[test]
+    fn invalid_vector_dimensions_are_refused() {
+        for sql in [
+            "CREATE TABLE t (v vector(0))",
+            "CREATE TABLE t (v vector(x))",
+            "CREATE TABLE t (v vector(1, 2))",
+        ] {
+            let create = create_table(sql);
+            let error = build_schema(&create.columns, &create.constraints).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    PgWireError::UserError(ref info)
+                        if info.code == INVALID_PARAMETER_VALUE
+                            || info.code == FEATURE_NOT_SUPPORTED
+                ),
+                "{sql}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn index_options_are_normalized() {
+        use datafusion::sql::sqlparser::ast::SqlOption;
+        let option = SqlOption::KeyValue {
+            key: Ident::new("vector_index_columns"),
+            value: Expr::Value(
+                Value::SingleQuotedString(r#"[{"column":"v","dim":8}]"#.to_string())
+                    .into(),
+            ),
+        };
+        let (name, value) = table_option(&option).unwrap();
+        assert_eq!(name, "vector_index_columns");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&value).unwrap(),
+            serde_json::json!([{"column": "v", "dim": 8}])
+        );
+    }
 }

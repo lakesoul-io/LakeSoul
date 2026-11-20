@@ -48,6 +48,9 @@ CREATE TABLE orders (
 
 An unknown option is rejected with `0A000` rather than ignored.
 
+Vector/text index declarations (`vector_index_columns`, `text_index_columns`,
+`index_maintenance`) are documented in [Vector and text index DDL](index-ddl.md).
+
 `use_cdc = true` requires a change column. Declare `rowKinds`, or name another column with `lakesoul_cdc_change_column`. Without it, deletes cannot be represented, and an incremental SQL target cannot retract rows.
 
 ## Types
@@ -81,8 +84,17 @@ is rejected, as is precision above 76. `time(p)`/`timestamp(p)` accept only
 rejected (interval expressions still work). Types outside this table are
 rejected with `0A000`.
 
+The pgvector `vector(n)` / `vector` column types and the accepted vector-literal
+forms are documented in [Vector and text index DDL](index-ddl.md).
+
 See [Data types](../../reference/data-types.md) for the full mapping and the
 query-side type behaviour.
+
+## Vector and text indexes
+
+`vector(n)` columns, `vector_index_columns`, `text_index_columns`,
+`CREATE INDEX`, `REINDEX TABLE` and deferred index maintenance are documented
+in [Vector and text index DDL](index-ddl.md).
 
 ## DROP TABLE
 
@@ -106,9 +118,12 @@ The front end refuses, rather than silently ignoring:
 - `PRIMARY KEY` as a clause outside the supported column/table constraint forms
 
 Each refusal returns SQLSTATE `0A000` with a message naming the clause.
+Index-specific refusals are listed in
+[Vector and text index DDL](index-ddl.md#refused-forms).
 
 ## Next
 
+- [Vector and text index DDL](index-ddl.md)
 - [Insert and upsert](insert-and-upsert.md)
 - [Data types](../../reference/data-types.md)
 - [Physical file formats](../../operations/physical-file-formats.md)

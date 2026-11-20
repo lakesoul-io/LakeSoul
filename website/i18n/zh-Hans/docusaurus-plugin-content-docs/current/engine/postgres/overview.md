@@ -29,7 +29,7 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 | 领域 | 支持 |
 | --- | --- |
 | **连接** | PostgreSQL wire protocol、simple 与 extended query protocol、`pg_catalog`、`psql \d` |
-| **DDL** | `CREATE TABLE`、`DROP TABLE`、主键、`PARTITIONED BY`、`WITH (...)` 选项 |
+| **DDL** | `CREATE TABLE`、`DROP TABLE`、向量/文本索引的 `CREATE INDEX`、`REINDEX TABLE`、主键、`PARTITIONED BY`、`WITH (...)` 选项 |
 | **写入** | `INSERT ... VALUES`（含 `RETURNING`）、`INSERT ... SELECT`、`COPY ... FROM STDIN`、非 CDC 主键表上的 `UPDATE`、`DELETE`（CDC tombstone、分区清空和分区重写）、`TRUNCATE`（含 `PARTITION (...)`）、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | **查询** | DataFusion SQL 表面，包括 join、聚合、窗口、CTE 和集合运算 |
 | **检索** | 兼容 pgvector 的向量操作符、BM25 的 `text_score` |

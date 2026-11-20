@@ -32,6 +32,7 @@ use downcast_rs::Downcast;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::datasource::DefaultTableSource;
 use datafusion::error::Result as DFResult;
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{Cast, Expr, LogicalPlan, Operator, Sort, TableScan};
@@ -39,12 +40,16 @@ use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
 use tracing::debug;
 
+use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::udf::vector_distance_handle::{
     handle_metric, handle_query, is_handle_distance_name, resolve_query_vector,
 };
 use crate::udf::vector_search_marker::{
     LakeSoulVectorSearchConfig, RerankMode, VectorColumnQuery, is_marker_expr,
     marker_expr, multi_marker_expr,
+};
+use crate::vector_index::{
+    parse_vector_index_from_table_properties, vector_index_available,
 };
 
 /// Candidates per bucket in exact mode when the session does not say
@@ -256,6 +261,17 @@ fn detect(
                         weight,
                     });
                 }
+                // Without a usable index the provider falls back to the
+                // regular merge-on-read scan, which has no ordering.  Keep
+                // the exact sort in that case.
+                if !table_has_vector_index(ts, &columns, metric) {
+                    debug!(
+                        table = %ts.table_name,
+                        metric,
+                        "no usable vector index; keeping the exact distance sort"
+                    );
+                    return None;
+                }
                 // Index-only ordering is safe while the distances are used
                 // only as the sort key: the scan then returns rows ordered
                 // by the (fused) index distance and the vector columns drop
@@ -301,6 +317,57 @@ fn detect(
             _ => return None,
         }
     }
+}
+
+/// Whether every searched column has a declared, available vector index with
+/// the requested metric.
+///
+/// The planner must not remove the exact distance sort for a table without a
+/// usable index: the provider would fall back to a regular scan, and that
+/// scan does not promise the index's order.  In particular a
+/// `index_maintenance=deferred` declaration starts unavailable until the
+/// background runner has built its shards.
+fn table_has_vector_index(
+    scan: &TableScan,
+    columns: &[VectorSearchTerm],
+    metric: &str,
+) -> bool {
+    let Some(source) = scan.source.downcast_ref::<DefaultTableSource>() else {
+        // Unit tests and other sources do not carry LakeSoul properties; keep
+        // the rule's historical behaviour for them.
+        return true;
+    };
+    let Some(provider) = source
+        .table_provider
+        .downcast_ref::<LakeSoulTableProvider>()
+    else {
+        return true;
+    };
+    let info = provider.table_info();
+    if provider.primary_key_columns().is_empty()
+        || !vector_index_available(&info.properties)
+    {
+        return false;
+    }
+    let Ok(configs) = parse_vector_index_from_table_properties(&info.properties) else {
+        return false;
+    };
+    columns.iter().all(|term| {
+        configs.iter().any(|config| {
+            config.column == term.column
+                && vector_metric_matches(&config.params.metric, metric)
+        })
+    })
+}
+
+fn vector_metric_matches(configured: &str, requested: &str) -> bool {
+    let configured = configured.to_ascii_uppercase();
+    let configured = if configured == "INNERPRODUCT" {
+        "IP"
+    } else {
+        configured.as_str()
+    };
+    configured == requested.to_ascii_uppercase()
 }
 
 /// Evaluate a literal `LIMIT` fetch expression to a usize.

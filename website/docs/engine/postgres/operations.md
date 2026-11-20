@@ -35,6 +35,11 @@ SPDX-License-Identifier: Apache-2.0
 | `--subscription-runner` | off | Run only the subscription supervisor, without the PG wire server |
 | `--runner-id` | hostname / pid | Lease owner for the subscription runner |
 | `--runner-poll-ms` | `2000` | Subscription runner reconcile interval |
+| `--index-maintenance-executor` | `local` | `local` supervises one index-maintenance child; `external` leaves it to a Deployment; `off` disables deferred builds (`LAKESOUL_PG_INDEX_MAINTENANCE_EXECUTOR`) |
+| `--index-maintenance-runner` | off | Run only the deferred-index builder, without the PG wire server |
+| `--index-runner-id` | hostname / pid | Lease owner for the index runner (`LAKESOUL_PG_INDEX_RUNNER_ID`) |
+| `--index-maintenance-poll-ms` | `5000` | Deferred-index scan interval |
+| `--index-lease-ttl-ms` | `60000` | Lease lifetime; a heartbeat renews it while a large index builds |
 | `--distributed-workers` | — | Comma-separated worker endpoints |
 | `--distributed-fallback-to-local` | — | Run a query locally when distributed planning fails |
 | `--tls-cert` | — | PEM certificate chain for TLS (`LAKESOUL_PG_TLS_CERT`) |
@@ -53,6 +58,15 @@ per-session `lakesoul.ivm.enabled` switch; `SET` still overrides it.
 control-plane operations in metadata. A separate process must run
 `postgres-lakesoul --subscription-runner`; see
 [PostgreSQL subscriptions](subscription.md).
+
+`--index-maintenance-executor local` starts one child
+`postgres-lakesoul --index-maintenance-runner` and restarts it with backoff.
+The child builds pending indexes for tables with
+`index_maintenance = 'deferred'`; `external` leaves that process to a separate
+Deployment (the Helm chart's `indexMaintenance.mode: runner`). Runners take a
+lease in `maintenance.lease`, so only one of them works at a time. The lease
+requires the metadata schema from `script/meta_init.sql` or
+`script/metadata_migrate.py`.
 
 `--jwt-auth` and `--rbac` are covered in
 [Authentication and Permissions](authentication.md).

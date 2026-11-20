@@ -112,6 +112,16 @@ pub struct LakeSoulTableProperty {
         skip_serializing_if = "Option::is_none"
     )]
     pub vector_index_columns: Option<String>,
+    /// Whether the declared vector index is usable.  A deferred declaration
+    /// starts unavailable until the background runner has built its shards;
+    /// the planner then keeps the exact distance sort instead of requesting
+    /// index-only ordering.
+    #[serde(
+        rename = "vector_index_available",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub vector_index_available: Option<bool>,
     /// Text index configurations (JSON array of
     /// [`TextIndexTableConfig`](crate::text_index::TextIndexTableConfig)
     /// entries), matching the Python SDK's `text_index_columns` property.

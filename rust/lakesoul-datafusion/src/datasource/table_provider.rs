@@ -1039,6 +1039,21 @@ impl LakeSoulTableProvider {
             .or_else(|| cmd.options.get("append_only"))
             .cloned();
 
+        // Secondary index maintenance mode. `deferred` makes writes commit
+        // data only; the background runner builds the pending shards.
+        let index_maintenance = cmd
+            .options
+            .get("format.index_maintenance")
+            .or_else(|| cmd.options.get("index_maintenance"))
+            .cloned();
+        if let Some(value) = &index_maintenance
+            && !matches!(value.to_ascii_lowercase().as_str(), "inline" | "deferred")
+        {
+            return Err(report!(
+                "invalid index_maintenance option '{value}': expects inline or deferred"
+            ));
+        }
+
         let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
             schema_to_metadata_parts(logical_schema.as_ref());
 
@@ -1070,6 +1085,14 @@ impl LakeSoulTableProvider {
                 cdc_change_column: cdc_column,
                 use_cdc,
                 append_only,
+                index_maintenance: index_maintenance
+                    .clone()
+                    .map(|value| value.to_ascii_lowercase()),
+                vector_index_available: (index_maintenance
+                    .as_deref()
+                    .is_some_and(|mode| mode.eq_ignore_ascii_case("deferred"))
+                    && vector_index_columns.is_some())
+                .then_some(false),
                 vector_index_columns,
                 text_index_columns,
                 file_format,

@@ -387,6 +387,10 @@ OPTIONS (
 declared at once. `hashBucketNum` selects the hash bucket count; the index is
 written to `{LOCATION}/_vector_index/{column}/{partition}/{bucket}/`.
 
+The PostgreSQL endpoint additionally accepts `vector(n)` columns,
+`CREATE INDEX ... USING hnsw|ivfflat|gin`, `REINDEX TABLE` and deferred
+maintenance; see [Vector and text index DDL](../postgres/index-ddl.md).
+
 ### Distance expressions and top-k pushdown
 
 In DataFusion SQL the query vector is an `ARRAY[...]` literal and the distance
@@ -541,9 +545,11 @@ subject to the PostgreSQL connection's permissions.
 
 ## PostgreSQL (pgwire) compatibility
 
-`postgres-lakesoul` serves the pgvector SQL dialect over LakeSoul tables. It is
-read-only: create and write tables through the SDK or another engine, then query
-them over the wire.
+`postgres-lakesoul` serves the pgvector SQL dialect over LakeSoul tables.
+Tables can be created, written and indexed through the endpoint. The DDL side —
+`vector(n)`, `vector_index_columns`, `CREATE INDEX`, `ALTER TABLE` declarations,
+`REINDEX TABLE` and deferred maintenance — is collected in
+[Vector and text index DDL](../postgres/index-ddl.md).
 
 ```python
 import psycopg

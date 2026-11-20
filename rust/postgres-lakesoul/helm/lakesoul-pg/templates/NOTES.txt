@@ -17,6 +17,15 @@ are in {{ .Values.subscriptions.logDir }} inside the runner Pod.
 Subscriptions run inside the coordinator Pod. The coordinator must stay at one
 replica.
 {{- end }}
+Index maintenance: {{ .Values.indexMaintenance.mode }}
+{{- if eq .Values.indexMaintenance.mode "runner" }}
+A separate Deployment builds pending indexes for tables with
+index_maintenance=deferred.
+{{- else if eq .Values.indexMaintenance.mode "coordinator" }}
+The coordinator supervises one index-maintenance child process.
+{{- else }}
+Deferred-index builds are disabled.
+{{- end }}
 {{- if .Values.metadata.postgresql.enabled }}
 
 WARNING: the in-cluster PostgreSQL is a single-replica development shape.

@@ -30,3 +30,4 @@ delete from ivm.states;
 delete from ivm.epochs;
 delete from ivm.cursors;
 delete from ivm.views;
+delete from maintenance.lease;
