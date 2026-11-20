@@ -796,4 +796,74 @@ mod tests {
             EvolutionError::UndefinedColumn("missing".to_string())
         );
     }
+
+    fn pg_field(
+        name: &str,
+        data_type: DataType,
+        kind: &str,
+        typmod: Option<i32>,
+    ) -> Field {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("pg.type".to_string(), kind.to_string());
+        if let Some(typmod) = typmod {
+            metadata.insert("pg.typmod".to_string(), typmod.to_string());
+        }
+        Field::new(name, data_type, true).with_metadata(metadata)
+    }
+
+    #[test]
+    fn semantic_field_widening_keeps_the_declared_range() {
+        // varchar(n) may only grow, and an unbounded source may not acquire a
+        // bound: old values could be longer than the new limit.
+        let varchar = |length: Option<i32>| {
+            pg_field("v", DataType::Utf8, "varchar", length.map(|l| l + 4))
+        };
+        assert!(can_widen_field(&varchar(Some(5)), &varchar(Some(10))));
+        assert!(can_widen_field(&varchar(Some(5)), &varchar(None)));
+        assert!(!can_widen_field(&varchar(None), &varchar(Some(10))));
+        assert!(!can_widen_field(&varchar(Some(10)), &varchar(Some(5))));
+
+        // numeric(p,s) must keep every integer and fraction digit.
+        let numeric = |precision: u8, scale: i8| {
+            let data_type = if precision <= 38 {
+                DataType::Decimal128(precision, scale)
+            } else {
+                DataType::Decimal256(precision, scale)
+            };
+            pg_field(
+                "n",
+                data_type,
+                "numeric",
+                Some(((precision as i32) << 16 | scale as u16 as i32) + 4),
+            )
+        };
+        assert!(can_widen_field(&numeric(10, 2), &numeric(38, 2)));
+        assert!(can_widen_field(&numeric(38, 2), &numeric(50, 2)));
+        assert!(!can_widen_field(&numeric(50, 2), &numeric(38, 2)));
+        assert!(!can_widen_field(&numeric(10, 2), &numeric(10, 1)));
+
+        // timestamp(p) represents finer values; a coarser unit loses digits.
+        let timestamp = |precision: i32| {
+            let unit = match precision {
+                0 => arrow_schema::TimeUnit::Second,
+                3 => arrow_schema::TimeUnit::Millisecond,
+                _ => arrow_schema::TimeUnit::Microsecond,
+            };
+            pg_field(
+                "ts",
+                DataType::Timestamp(unit, None),
+                "timestamp",
+                Some(precision),
+            )
+        };
+        assert!(can_widen_field(&timestamp(0), &timestamp(3)));
+        assert!(!can_widen_field(&timestamp(3), &timestamp(0)));
+
+        // Dropping the semantic marker would change how the column reports
+        // itself even when the physical type is unchanged.
+        assert!(!can_widen_field(
+            &pg_field("u", DataType::Utf8, "uuid", None),
+            &Field::new("u", DataType::Utf8, true),
+        ));
+    }
 }
