@@ -196,7 +196,6 @@ pub fn assignment_allowed(source: &DataType, target: &DataType) -> bool {
         // converts the element type.  Equal element types take the same path.
         return true;
     }
-    }
     if is_numeric(source) {
         is_numeric(target) || is_string(target)
     } else if *source == DataType::Boolean {
@@ -291,6 +290,13 @@ pub fn pg_type_name(data_type: &DataType) -> &'static str {
         DataType::Date32 | DataType::Date64 => "date",
         DataType::Time32(_) | DataType::Time64(_) => "time",
         DataType::Interval(_) | DataType::Duration(_) => "interval",
+        DataType::FixedSizeList(inner, _)
+        | DataType::List(inner)
+        | DataType::LargeList(inner)
+            if is_vector_element(inner.data_type()) =>
+        {
+            "vector"
+        }
         DataType::List(_)
         | DataType::LargeList(_)
         | DataType::FixedSizeList(_, _)
@@ -305,13 +311,6 @@ pub fn pg_type_name(data_type: &DataType) -> &'static str {
         | DataType::LargeBinary
         | DataType::BinaryView
         | DataType::FixedSizeBinary(_) => "bytea",
-        DataType::FixedSizeList(inner, _)
-        | DataType::List(inner)
-        | DataType::LargeList(inner)
-            if is_vector_element(inner.data_type()) =>
-        {
-            "vector"
-        }
         _ => "unknown",
     }
 }

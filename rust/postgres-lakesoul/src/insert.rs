@@ -63,8 +63,8 @@ use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     Array, AssignmentTarget, ConflictTarget, Expr, FunctionArg, FunctionArgExpr,
-    FunctionArguments, Insert, ObjectNamePart, OnConflictAction, OnInsert,
-    SelectItem, SetExpr, Statement, TableObject, UnaryOperator, Value,
+    FunctionArguments, Insert, ObjectNamePart, OnConflictAction, OnInsert, SelectItem,
+    SetExpr, Statement, TableObject, UnaryOperator, Value,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::arrow_pg::datatypes::arrow_schema_to_pg_fields;
