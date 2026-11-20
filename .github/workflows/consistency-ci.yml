@@ -181,6 +181,7 @@ jobs:
           rm -rf tpch-dbgen
       - name: Verify that benchmark queries return expected results
         run: |
+          export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
           TPCH_DATA="$(realpath lakesoul/test_files/tpch/data)"
           export TPCH_DATA
           "$BENCHMARK_TEST_BIN" load_tpch_data --nocapture

@@ -211,6 +211,7 @@ jobs:
           LAKESOUL_S3_TEST: "1"
           PYTHONPATH: ${{ github.workspace }}/python/src
         run: |
+          export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
           mvn package -pl :lakesoul-spark-3.5_2.12 -am -DskipTests -Pcross-build
           cd python
           uv sync --no-install-project --python 3.11 --group dev
@@ -224,6 +225,7 @@ jobs:
           LAKESOUL_DAFT_RAY_TEST: "1"
           PYTHONPATH: ${{ github.workspace }}/python/src
         run: |
+          export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
           cd python
           .venv/bin/python -m pytest tests/embodied/test_daft_ray.py -s
   publish:

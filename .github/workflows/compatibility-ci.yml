@@ -162,6 +162,7 @@ jobs:
           MAVEN_OPTS: -Xmx4g
         working-directory: python
         run: |
+          export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
           EVENT_NAME="${{ github.event_name }}"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             MODE="${{ inputs.cases }}"
@@ -318,6 +319,7 @@ jobs:
           PYTHONPATH: tests:src
         working-directory: python
         run: |
+          export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
           EVENT_NAME="${{ github.event_name }}"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             MODE="${{ inputs.cases }}"
