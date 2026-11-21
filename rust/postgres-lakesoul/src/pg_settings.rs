@@ -46,6 +46,8 @@ use crate::session::SessionSettings;
 pub(crate) const PG_COMPAT_VERSION: &str = "14.0";
 /// `server_version_num` for [`PG_COMPAT_VERSION`].
 pub(crate) const PG_COMPAT_VERSION_NUM: &str = "140000";
+/// Session parameter that pins every local table scan to an as-of instant.
+pub(crate) const TIME_TRAVEL_PARAMETER: &str = "lakesoul.read.time_travel";
 
 /// One parameter's static metadata.
 struct ParameterSpec {
@@ -135,6 +137,13 @@ const PARAMETERS: &[ParameterSpec] = &[
         default: "on",
         description: "Shows whether the current user is a superuser.",
         settable: false,
+    },
+    ParameterSpec {
+        name: "lakesoul.read.time_travel",
+        default: "",
+        description: "Reads every LakeSoul table as of this RFC3339 timestamp; \
+                      empty means the latest commit.",
+        settable: true,
     },
     ParameterSpec {
         name: "lock_timeout",
@@ -227,30 +236,40 @@ pub(crate) struct PgParameters {
     overrides: Mutex<BTreeMap<&'static str, String>>,
 }
 
-impl PgParameters {
-    /// Build the connection's parameters from its identity and settings.
-    pub(crate) fn new(identity: &SessionIdentity, settings: &SessionSettings) -> Self {
-        let mut defaults = BTreeMap::new();
-        for spec in PARAMETERS {
-            defaults.insert(spec.name, spec.default.to_string());
-        }
-        defaults.insert(
-            "TimeZone",
-            settings.time_zone.iana_name().unwrap_or("UTC").to_string(),
-        );
-        defaults.insert("search_path", settings.search_path.join(", "));
-        defaults.insert(
-            "statement_timeout",
-            settings
-                .statement_timeout
-                .map(|timeout| format!("{}ms", timeout.as_millis()))
-                .unwrap_or_else(|| "0".to_string()),
-        );
-        defaults.insert("session_authorization", identity.user.clone());
+impl Default for PgParameters {
+    fn default() -> Self {
+        let defaults = PARAMETERS
+            .iter()
+            .map(|spec| (spec.name, spec.default.to_string()))
+            .collect();
         Self {
             defaults: Mutex::new(defaults),
             overrides: Mutex::new(BTreeMap::new()),
         }
+    }
+}
+
+impl PgParameters {
+    /// Build the connection's parameters from its identity and settings.
+    pub(crate) fn new(identity: &SessionIdentity, settings: &SessionSettings) -> Self {
+        let parameters = Self::default();
+        {
+            let mut defaults = parameters.defaults.lock();
+            defaults.insert(
+                "TimeZone",
+                settings.time_zone.iana_name().unwrap_or("UTC").to_string(),
+            );
+            defaults.insert("search_path", settings.search_path.join(", "));
+            defaults.insert(
+                "statement_timeout",
+                settings
+                    .statement_timeout
+                    .map(|timeout| format!("{}ms", timeout.as_millis()))
+                    .unwrap_or_else(|| "0".to_string()),
+            );
+            defaults.insert("session_authorization", identity.user.clone());
+        }
+        parameters
     }
 
     /// The canonical spelling of `name`, when the parameter is known.
@@ -612,16 +631,20 @@ impl QueryHook for PgSettingsHook {
 
 /// Turns a `SHOW` variable list into the canonical parameter name.
 pub(crate) fn show_name(variable: &[Ident]) -> Option<&'static str> {
-    let name = variable
+    let parts = variable
         .iter()
         .map(|ident| ident.value.as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
-    match name.as_str() {
+        .collect::<Vec<_>>();
+    // `SHOW` accepts both PostgreSQL multi-word names and dotted GUCs;
+    // sqlparser hands us the parts with the dots stripped.
+    let spaced = parts.join(" ").to_ascii_lowercase();
+    let dotted = parts.join(".").to_ascii_lowercase();
+    match spaced.as_str() {
         "transaction isolation level" => PgParameters::canonical("transaction_isolation"),
         "time zone" => PgParameters::canonical("TimeZone"),
-        other => PgParameters::canonical(other),
+        other => {
+            PgParameters::canonical(other).or_else(|| PgParameters::canonical(&dotted))
+        }
     }
 }
 
@@ -699,6 +722,12 @@ mod tests {
         assert_eq!(show_name(&[ident("TimeZone")]), Some("TimeZone"));
         assert_eq!(show_name(&[ident("datestyle")]), Some("DateStyle"));
         assert_eq!(show_name(&[ident("no_such_setting")]), None);
+        // sqlparser drops the dots from `SHOW a.b.c`; the dotted fallback
+        // resolves it to the canonical parameter.
+        assert_eq!(
+            show_name(&[ident("lakesoul"), ident("read"), ident("time_travel")]),
+            Some(TIME_TRAVEL_PARAMETER)
+        );
     }
 
     #[test]

@@ -512,6 +512,14 @@ shared snapshots are kept with a `NOTICE`. There is no standalone `DROP
 SNAPSHOT` (versions are immutable). `create_tag(..., as_of=ms)` in the Python
 catalog offers the same one-call freeze-and-tag operation.
 
+A connection can also pin every local table scan with
+`SET lakesoul.read.time_travel = '<RFC3339>'` (`RESET`/`DEFAULT` clears it).
+It needs no snapshot or tag and errors when a table has no version at or
+before the instant. The pin applies uniformly to every local table read,
+including UPDATE/DELETE targets — a row written after the instant is invisible
+to them; writes stay allowed. An explicit `lakesoul_table_scan` pin is more
+specific and wins when both are set. Foreign tables are unaffected.
+
 Covered by `tests/time_travel_contract.rs`, `tests/snapshot_tag_contract.rs`,
 the bin unit tests in `src/time_travel.rs` and `src/snapshot.rs`,
 `client-compat/test_time_travel.py`, and the RBAC contract. See

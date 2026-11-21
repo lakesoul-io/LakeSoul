@@ -19,6 +19,7 @@
 //! async metadata client; [`CatalogProviderList::catalog_names`] is a sync
 //! interface, so it reads that snapshot instead of blocking on metadata.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -29,13 +30,16 @@ use datafusion::error::{DataFusionError, Result};
 use lakesoul_datafusion::catalog::{
     CatalogSnapshot, LakeSoulNamespace, LakeSoulProviderOptions,
 };
-use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+use lakesoul_datafusion::datasource::table_provider::{
+    LakeSoulTableProvider, TableReadSnapshot,
+};
 use lakesoul_metadata::MetaDataClientRef;
 use parking_lot::RwLock;
 
 use crate::acl::AclEntry;
 use crate::auth::DomainAccess;
 use crate::federation::FederationRuntime;
+use crate::pg_settings::{PgParameters, TIME_TRAVEL_PARAMETER};
 
 /// The single user-visible schema of a PG database: `public` maps to the
 /// LakeSoul namespace named by the database connection parameter.
@@ -80,6 +84,9 @@ pub struct PgPublicSchema {
     user: String,
     access: Option<DomainAccess>,
     acl: Option<Arc<AclEntry>>,
+    /// Connection-local session parameters; `lakesoul.read.time_travel` pins
+    /// every local table scan resolved through this schema.
+    parameters: Arc<PgParameters>,
 }
 
 impl std::fmt::Debug for PgPublicSchema {
@@ -102,6 +109,7 @@ impl PgPublicSchema {
         user: &str,
         access: Option<DomainAccess>,
         acl: Option<Arc<AclEntry>>,
+        parameters: Arc<PgParameters>,
     ) -> Self {
         Self {
             local,
@@ -110,7 +118,36 @@ impl PgPublicSchema {
             user: user.to_string(),
             access,
             acl,
+            parameters,
         }
+    }
+
+    /// Pin a local table to the session's `lakesoul.read.time_travel`.
+    ///
+    /// Foreign tables are not LakeSoul providers and keep reading their
+    /// current state. An invalid value can only come from `set_config` (SET
+    /// validates it); leave the table at latest rather than failing the whole
+    /// resolution, and let the scan report the bad parameter if it matters.
+    fn pin_session_read(&self, table: Arc<dyn TableProvider>) -> Arc<dyn TableProvider> {
+        let Some(raw) = self.parameters.get(TIME_TRAVEL_PARAMETER) else {
+            return table;
+        };
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return table;
+        }
+        let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(raw) else {
+            return table;
+        };
+        let provider: &dyn Any = table.as_ref();
+        let Some(provider) = provider.downcast_ref::<LakeSoulTableProvider>() else {
+            return table;
+        };
+        Arc::new(
+            provider.snapshot_view_requiring_data(TableReadSnapshot::AsOfMs(
+                parsed.timestamp_millis(),
+            )),
+        )
     }
 
     #[cfg(test)]
@@ -195,7 +232,8 @@ impl SchemaProvider for PgPublicSchema {
             if let Some(live) = live
                 && live.privilege.can_read()
             {
-                return self.local.table(name).await;
+                let table = self.local.table(name).await?;
+                return Ok(table.map(|table| self.pin_session_read(table)));
             }
         }
         if let Some(federation) = &self.federation
@@ -229,7 +267,9 @@ impl SchemaProvider for PgPublicSchema {
             }
         }
         let table = self.local.table(name).await?;
-        Ok(table.filter(|table| self.visible_provider(table)))
+        Ok(table
+            .filter(|table| self.visible_provider(table))
+            .map(|table| self.pin_session_read(table)))
     }
 
     fn table_exist(&self, name: &str) -> bool {
@@ -468,6 +508,7 @@ pub fn pg_lakesoul_catalog(
         "",
         None,
         None,
+        Arc::new(PgParameters::default()),
     )
 }
 
@@ -480,6 +521,7 @@ pub fn pg_lakesoul_catalog_with_federation(
     user: &str,
     access: Option<DomainAccess>,
     acl: Option<Arc<AclEntry>>,
+    parameters: Arc<PgParameters>,
 ) -> Arc<PgLakeSoulCatalog> {
     let local = Arc::new(LakeSoulNamespace::with_snapshot(
         client,
@@ -488,7 +530,7 @@ pub fn pg_lakesoul_catalog_with_federation(
         snapshot,
     ));
     let public_schema = Arc::new(PgPublicSchema::new(
-        local, federation, namespace, user, access, acl,
+        local, federation, namespace, user, access, acl, parameters,
     ));
     Arc::new(PgLakeSoulCatalog::new(public_schema))
 }

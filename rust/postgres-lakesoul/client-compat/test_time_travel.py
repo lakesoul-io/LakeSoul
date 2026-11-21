@@ -68,6 +68,35 @@ def test_timestamp_pinned_scan_through_drivers(connector, table_factory):
                 assert cursor.fetchall() == [(2,)]
 
 
+def test_session_time_travel_guc(connector, table_factory):
+    table = table_factory("id BIGINT PRIMARY KEY", "compat_read_snapshot")
+    with closing(connector("psycopg2")) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"INSERT INTO {table} VALUES (1), (2)")
+
+    time.sleep(1)
+    as_of = datetime.now(timezone.utc).isoformat()
+    time.sleep(0.2)
+    with closing(connector("psycopg2")) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"INSERT INTO {table} VALUES (3), (4)")
+
+    for driver in DRIVERS:
+        with closing(connector(driver)) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"SET lakesoul.read.time_travel = '{as_of}'")
+                cursor.execute(f"SELECT id FROM {table} ORDER BY id")
+                assert cursor.fetchall() == [(1,), (2,)], driver
+
+                cursor.execute("SHOW lakesoul.read.time_travel")
+                shown = cursor.fetchone()[0]
+                assert "T" in shown, shown
+
+                cursor.execute("RESET lakesoul.read.time_travel")
+                cursor.execute(f"SELECT id FROM {table} ORDER BY id")
+                assert cursor.fetchall() == [(1,), (2,), (3,), (4,)], driver
+
+
 def test_snapshot_tag_ddl_through_drivers(connector, table_factory):
     table = table_factory("id BIGINT PRIMARY KEY", "compat_tag_ddl")
     with closing(connector("psycopg2")) as connection:

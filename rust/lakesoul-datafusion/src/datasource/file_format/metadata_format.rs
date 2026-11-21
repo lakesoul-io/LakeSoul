@@ -238,9 +238,10 @@ impl FileFormat for LakeSoulMetaDataFormat {
         conf: FileSinkConfig,
         order_requirements: Option<LexRequirement>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        // A read-modify-write statement installed the snapshot its old-row
-        // scan is bound to. Publishing against it is the statement's commit
-        // condition; the fixed snapshot never refreshes to a newer view.
+        // A read-modify-write statement installed the snapshot publication is
+        // conditioned on. The fixed snapshot never refreshes to a newer view;
+        // a session time-travel pin may change which rows the scan read, but
+        // the commit is still checked against this captured state.
         let cas = match crate::write_mode::LakeSoulFixedSnapshot::from_session(state) {
             Some(snapshot) => {
                 let target = self.table_info();

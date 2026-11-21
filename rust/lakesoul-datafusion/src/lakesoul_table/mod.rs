@@ -401,6 +401,8 @@ impl LakeSoulTable {
             format_registry,
             deferred_commit: None,
             read_snapshot: None,
+            read_snapshot_explicit: false,
+            read_snapshot_strict: false,
         }))
     }
 

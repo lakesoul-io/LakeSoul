@@ -610,6 +610,9 @@ impl PgSessionFactory {
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();
+        // Created before the catalog: the catalog pins local table scans to
+        // `lakesoul.read.time_travel`, which lives in this map.
+        let parameters = Arc::new(PgParameters::new(&identity, settings));
         let catalog = pg_lakesoul_catalog_with_federation(
             Arc::clone(&self.meta_client),
             LakeSoulProviderOptions::from_session(&state),
@@ -619,6 +622,7 @@ impl PgSessionFactory {
             &identity.user,
             identity.access.clone(),
             acl.clone(),
+            Arc::clone(&parameters),
         );
         let catalog_list: Arc<PgDatabaseCatalogList> =
             Arc::new(PgDatabaseCatalogList::new(
@@ -642,7 +646,6 @@ impl PgSessionFactory {
         )?;
         crate::pg_types::install(&context)
             .map_err(|error| report!("PostgreSQL type planner: {error}"))?;
-        let parameters = Arc::new(PgParameters::new(&identity, settings));
         // After the upstream setup: the registry is keyed by name, so the shims
         // replace the narrower upstream signatures.
         crate::pg_compat::register_pg_catalog_shims(
