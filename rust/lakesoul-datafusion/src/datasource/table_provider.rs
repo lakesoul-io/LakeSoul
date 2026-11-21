@@ -258,6 +258,10 @@ pub struct LakeSoulTableProvider {
     /// one: a block's staged rows are invisible to the index shards and to any
     /// rewrite that replays the published snapshot.
     pub(crate) deferred_commit: Option<Arc<crate::write_mode::LakeSoulDeferredCommit>>,
+    /// Whether this provider carries a transaction block's unpublished
+    /// definition. The planner must use it as-is instead of re-reading the
+    /// published metadata row.
+    pub(crate) pending_definition: bool,
 }
 impl LakeSoulTableProvider {
     /// Build a copy of this provider that reads a pinned snapshot.
@@ -282,6 +286,7 @@ impl LakeSoulTableProvider {
             text_index_configs: self.text_index_configs.clone(),
             format_registry: Arc::clone(&self.format_registry),
             deferred_commit: self.deferred_commit.clone(),
+            pending_definition: self.pending_definition,
             read_snapshot: Some(snapshot),
             read_snapshot_explicit: true,
             read_snapshot_strict: false,
@@ -311,6 +316,7 @@ impl LakeSoulTableProvider {
             text_index_configs: self.text_index_configs.clone(),
             format_registry: Arc::clone(&self.format_registry),
             deferred_commit: self.deferred_commit.clone(),
+            pending_definition: self.pending_definition,
             read_snapshot: Some(snapshot),
             read_snapshot_explicit: false,
             read_snapshot_strict: true,
@@ -788,6 +794,58 @@ impl LakeSoulTableProvider {
         .await
     }
 
+    /// Rebuild this provider from a changed `TableInfo`.
+    ///
+    /// Used by the PostgreSQL front end after `ALTER TABLE` inside a
+    /// transaction: the pending definition must be visible to later
+    /// statements without publishing metadata. The io config is rebuilt from
+    /// the new definition so writer-tuning properties also apply.
+    pub async fn with_table_info(
+        &self,
+        provider_options: LakeSoulProviderOptions,
+        table_info: Arc<TableInfo>,
+    ) -> Result<Self> {
+        let io_config =
+            crate::lakesoul_table::helpers::create_io_config_builder_from_table_info(
+                table_info.clone(),
+                lakesoul_common::misc::SecretMap::new(),
+                provider_options.object_store_options.clone(),
+            )?
+            .build();
+        Self::try_new_inner(provider_options, self.client.clone(), io_config, table_info)
+            .await
+    }
+
+    /// Rebuild this provider from a pending `ALTER TABLE` definition.
+    ///
+    /// The flag makes the physical planner use this definition instead of the
+    /// published metadata row for the lifetime of the transaction block.
+    pub async fn with_pending_table_info(
+        &self,
+        provider_options: LakeSoulProviderOptions,
+        table_info: Arc<TableInfo>,
+    ) -> Result<Self> {
+        let mut provider = self.with_table_info(provider_options, table_info).await?;
+        provider.pending_definition = true;
+        Ok(provider)
+    }
+
+    /// Mark a provider built for a staged `CREATE TABLE` as unpublished.
+    pub fn mark_pending_definition(mut self) -> Self {
+        self.pending_definition = true;
+        self
+    }
+
+    /// Whether this provider carries a transaction block's pending definition.
+    pub fn is_pending_definition(&self) -> bool {
+        self.pending_definition
+    }
+
+    /// The metadata client behind this provider.
+    pub fn metadata_client(&self) -> MetaDataClientRef {
+        Arc::clone(&self.client)
+    }
+
     /// Build a table provider without requiring a session. Object-store access
     /// is deferred until DataFusion supplies a session to `scan` or `insert_into`.
     pub async fn try_new_without_session(
@@ -905,6 +963,7 @@ impl LakeSoulTableProvider {
             text_index_configs,
             format_registry,
             deferred_commit: provider_options.deferred_commit,
+            pending_definition: false,
             read_snapshot: None,
             read_snapshot_explicit: false,
             read_snapshot_strict: false,
@@ -1272,6 +1331,7 @@ impl LakeSoulTableProvider {
             // Built from an existing provider: the handle is not the one the
             // connection installed, so no block can be tracked through it.
             deferred_commit: None,
+            pending_definition: false,
             read_snapshot: None,
             read_snapshot_explicit: false,
             read_snapshot_strict: false,
@@ -1359,6 +1419,11 @@ impl LakeSoulTableProvider {
     /// The range-partition columns of this table.
     pub fn range_partition_columns(&self) -> &[String] {
         &self.range_partitions
+    }
+
+    /// The hash bucket count this provider writes with.
+    pub fn hash_bucket_num(&self) -> usize {
+        self.io_config.hash_bucket_num()
     }
 
     /// Whether this table has a non-overwrite merge operator configured.

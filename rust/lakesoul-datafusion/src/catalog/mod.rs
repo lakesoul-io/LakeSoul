@@ -28,6 +28,7 @@ use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 pub mod lakesoul_catalog;
 pub(crate) mod metadata_cache;
 pub use lakesoul_catalog::*;
+pub use metadata_cache::invalidate_table;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;
 pub mod snapshot;

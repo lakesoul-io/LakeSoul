@@ -42,6 +42,7 @@ use datafusion_postgres::datafusion_pg_catalog::sql::{
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_common::schema_evolution::column_names_collide;
+use lakesoul_datafusion::catalog::LakeSoulProviderOptions;
 use lakesoul_datafusion::datasource::table_provider::{
     CREATOR_OPTION, DOMAIN_OPTION, LakeSoulTableProvider,
 };
@@ -52,6 +53,7 @@ use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::response::TransactionStatus;
 
 use crate::catalog::PUBLIC_SCHEMA;
+use crate::server::ConnectionSession;
 use crate::session_settings::{SessionSettingsHook, settings_generation};
 
 const FEATURE_NOT_SUPPORTED: &str = "0A000";
@@ -63,6 +65,7 @@ const INVALID_TABLE_DEFINITION: &str = "42P16";
 const SYNTAX_ERROR: &str = "42601";
 const INVALID_SCHEMA_NAME: &str = "3F000";
 const INVALID_PARAMETER_VALUE: &str = "22023";
+const INTERNAL_ERROR: &str = "XX000";
 
 /// The hash bucket count every table starts with when `WITH
 /// (hash_bucket_num = ...)` is absent; the provider uses the same default for
@@ -180,11 +183,12 @@ impl DdlStatementHook {
         ))
     }
 
-    async fn create_table(
+    /// Validate and build a new table without publishing it.
+    async fn prepare_create(
         &self,
         create: &CreateTable,
         context: &SessionContext,
-    ) -> PgWireResult<Response> {
+    ) -> PgWireResult<(String, LakeSoulTableProvider)> {
         reject_unsupported_create(create)?;
         crate::acl::require_namespace_write(context, &self.database)?;
         let warehouse = self.warehouse.as_deref().ok_or_else(|| {
@@ -262,9 +266,17 @@ impl DdlStatementHook {
         .map_err(|error| {
             user_error("XX000", format!("creating table \"{table}\": {error}"))
         })?;
+        Ok((table, provider))
+    }
 
-        let schema_provider = self.public_schema(context)?;
+    async fn create_table(
+        &self,
+        create: &CreateTable,
+        context: &SessionContext,
+    ) -> PgWireResult<Response> {
+        let (table, provider) = self.prepare_create(create, context).await?;
         let provider: Arc<dyn datafusion::catalog::TableProvider> = Arc::new(provider);
+        let schema_provider = self.public_schema(context)?;
         let existed = schema_provider
             .register_table(table.clone(), provider)
             .map_err(|error| PgWireError::ApiError(Box::new(error)))?
@@ -275,6 +287,45 @@ impl DdlStatementHook {
                 format!("relation \"{table}\" already exists"),
             ));
         }
+        Ok(Response::Execution(Tag::new("CREATE TABLE")))
+    }
+
+    /// Stage `CREATE TABLE` in the open block; nothing is published yet.
+    async fn create_table_staged(
+        &self,
+        create: &CreateTable,
+        context: &SessionContext,
+        transaction: &crate::transaction::SharedTransaction,
+    ) -> PgWireResult<Response> {
+        let (table, provider) = self.prepare_create(create, context).await?;
+        let schema_provider = self.public_schema(context)?;
+        if schema_provider.table_exist(&table) {
+            if create.if_not_exists {
+                return Ok(Response::Execution(Tag::new("CREATE TABLE")));
+            }
+            return Err(user_error(
+                DUPLICATE_TABLE,
+                format!("relation \"{table}\" already exists"),
+            ));
+        }
+        let table_info = provider.table_info().as_ref().clone();
+        let provider: Arc<dyn datafusion::catalog::TableProvider> =
+            Arc::new(provider.mark_pending_definition());
+        let mut block = transaction.lock();
+        let Some(state) = block.as_mut() else {
+            return Err(user_error(
+                INTERNAL_ERROR,
+                "the transaction block ended while CREATE TABLE was running".to_string(),
+            ));
+        };
+        // `DROP t; CREATE t` keeps the drop and creates a new table with a
+        // new table id; the old table's staged writes stay discarded.
+        state.ddl.creates.insert(
+            table.clone(),
+            crate::ddl_transaction::PendingCreate { table_info },
+        );
+        state.catalog.register(table.clone(), provider);
+        state.pending_acl.created.insert(table.clone());
         Ok(Response::Execution(Tag::new("CREATE TABLE")))
     }
 
@@ -325,6 +376,105 @@ impl DdlStatementHook {
         Ok(Response::Execution(Tag::new("DROP TABLE")))
     }
 
+    /// Stage `DROP TABLE` in the open block; metadata is untouched.
+    async fn drop_table_staged(
+        &self,
+        if_exists: bool,
+        names: &[ObjectName],
+        context: &SessionContext,
+        transaction: &crate::transaction::SharedTransaction,
+    ) -> PgWireResult<Response> {
+        struct DropTarget {
+            table: String,
+            table_info: lakesoul_metadata_proto::entity::TableInfo,
+            pending_create: bool,
+        }
+
+        let schema_provider = self.public_schema(context)?;
+        let mut targets: Vec<DropTarget> = Vec::with_capacity(names.len());
+        for name in names {
+            let table = self.target(name)?;
+            if targets.iter().any(|target| target.table == table) {
+                continue;
+            }
+            let provider = schema_provider
+                .table(&table)
+                .await
+                .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+            let Some(provider) = provider else {
+                if if_exists {
+                    continue;
+                }
+                return Err(user_error(
+                    UNDEFINED_TABLE,
+                    format!("table \"{table}\" does not exist"),
+                ));
+            };
+            let (pending_create, alter_expected) = {
+                let block = transaction.lock();
+                match block.as_ref() {
+                    Some(state) => (
+                        state.ddl.creates.contains_key(&table),
+                        state
+                            .ddl
+                            .alters
+                            .get(&table)
+                            .map(|alter| alter.expected.clone()),
+                    ),
+                    None => (false, None),
+                }
+            };
+            if !pending_create {
+                crate::acl::require_table_ddl(context, &self.database, &table)?;
+            }
+            let provider_any: &dyn std::any::Any = provider.as_ref();
+            let Some(provider) = provider_any.downcast_ref::<LakeSoulTableProvider>()
+            else {
+                return Err(feature_not_supported(format!(
+                    "DROP TABLE on \"{table}\" is not supported: it is a foreign \
+                     table, whose definition belongs to its remote server"
+                )));
+            };
+            let effective = provider.table_info().as_ref().clone();
+            let table_info = alter_expected.unwrap_or(effective);
+            targets.push(DropTarget {
+                table,
+                table_info,
+                pending_create,
+            });
+        }
+
+        let mut block = transaction.lock();
+        let Some(state) = block.as_mut() else {
+            return Err(user_error(
+                INTERNAL_ERROR,
+                "the transaction block ended while DROP TABLE was running".to_string(),
+            ));
+        };
+        for target in targets {
+            if target.pending_create {
+                state.ddl.creates.remove(&target.table);
+                state.ddl.alters.remove(&target.table);
+                state.ddl.discarded.insert(target.table_info.table_id);
+                state.catalog.remove(&target.table);
+                state.pending_acl.created.remove(&target.table);
+            } else {
+                state.ddl.alters.remove(&target.table);
+                state
+                    .ddl
+                    .discarded
+                    .insert(target.table_info.table_id.clone());
+                state
+                    .ddl
+                    .drops
+                    .insert(target.table.clone(), target.table_info);
+                state.catalog.hide(target.table.clone());
+                state.pending_acl.created.remove(&target.table);
+            }
+        }
+        Ok(Response::Execution(Tag::new("DROP TABLE")))
+    }
+
     /// Validate `ALTER TABLE` against the stored definition and publish the
     /// new one if it is still the definition that was validated.
     ///
@@ -340,6 +490,121 @@ impl DdlStatementHook {
         let applied = self.apply_alter(alter, context, client).await;
         crate::alter::record_outcome(applied.as_ref().copied());
         applied.map(|_| Response::Execution(Tag::new("ALTER TABLE")))
+    }
+
+    /// Stage `ALTER TABLE` in the open block and keep the overlay provider in
+    /// step with the pending definition.
+    async fn alter_table_staged(
+        &self,
+        alter: &AlterTable,
+        context: &SessionContext,
+        client: &mut dyn HookClient,
+        transaction: &crate::transaction::SharedTransaction,
+    ) -> PgWireResult<Response> {
+        let actions = crate::alter::validate_alter(alter)?;
+        let table = self.target(&alter.name)?;
+        let schema_provider = self.public_schema(context)?;
+        let Some(provider) = schema_provider
+            .table(&table)
+            .await
+            .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+        else {
+            if alter.if_exists {
+                crate::alter::notice(
+                    client,
+                    format!("relation \"{table}\" does not exist, skipping"),
+                )
+                .await?;
+                return Ok(Response::Execution(Tag::new("ALTER TABLE")));
+            }
+            return Err(user_error(
+                UNDEFINED_TABLE,
+                format!("relation \"{table}\" does not exist"),
+            ));
+        };
+        let (pending_create, current) = {
+            let block = transaction.lock();
+            match block.as_ref() {
+                Some(state) => (
+                    state.ddl.creates.contains_key(&table),
+                    state.ddl.table_info(&table),
+                ),
+                None => (false, None),
+            }
+        };
+        if !pending_create {
+            crate::acl::require_table_ddl(context, &self.database, &table)?;
+        }
+        let provider_any: &dyn std::any::Any = provider.as_ref();
+        let Some(provider) = provider_any.downcast_ref::<LakeSoulTableProvider>() else {
+            return Err(feature_not_supported(format!(
+                "ALTER TABLE on \"{table}\" is not supported: it is a foreign \
+                 table, whose definition belongs to its remote server"
+            )));
+        };
+        let current = match current {
+            Some(current) => current,
+            None => provider
+                .primary_table_info()
+                .await
+                .map_err(|error| crate::alter::publish_error(&table, error))?,
+        };
+        if !pending_create
+            && let Some(subscription) =
+                crate::alter::subscription_of(&self.client, &current.table_id).await?
+        {
+            return Err(feature_not_supported(format!(
+                "ALTER TABLE on \"{table}\" is not supported while subscription \
+                 \"{subscription}\" writes it: the subscription evolves the table \
+                 from its source schema"
+            )));
+        }
+        let (update, notices) = crate::alter::plan_alter(&table, &current, &actions)?;
+        let applied = !update.is_empty();
+        if applied {
+            let final_info = crate::ddl_transaction::apply_update(&current, &update);
+            let options = LakeSoulProviderOptions::from_session(&context.state());
+            let rebuilt = provider
+                .with_pending_table_info(options, Arc::new(final_info.clone()))
+                .await
+                .map_err(|error| {
+                    user_error(
+                        INTERNAL_ERROR,
+                        format!(
+                            "rebuilding table \"{table}\" after ALTER failed: {error}"
+                        ),
+                    )
+                })?;
+            let mut block = transaction.lock();
+            let Some(state) = block.as_mut() else {
+                return Err(user_error(
+                    INTERNAL_ERROR,
+                    "the transaction block ended while ALTER TABLE was running"
+                        .to_string(),
+                ));
+            };
+            if let Some(create) = state.ddl.creates.get_mut(&table) {
+                create.table_info = final_info;
+            } else if let Some(alter) = state.ddl.alters.get_mut(&table) {
+                crate::ddl_transaction::merge_update(&mut alter.update, update);
+                alter.final_info = final_info;
+            } else {
+                state.ddl.alters.insert(
+                    table.clone(),
+                    crate::ddl_transaction::PendingAlter {
+                        expected: current,
+                        update,
+                        final_info,
+                    },
+                );
+            }
+            state.catalog.register(table.clone(), Arc::new(rebuilt));
+        }
+        for message in notices {
+            crate::alter::notice(client, message).await?;
+        }
+        crate::alter::record_outcome(Ok(applied));
+        Ok(Response::Execution(Tag::new("ALTER TABLE")))
     }
 
     /// Run `alter`; `Ok(true)` when a new definition was published, `Ok(false)`
@@ -426,15 +691,14 @@ impl QueryHook for DdlStatementHook {
         &self,
         statement: &Statement,
         session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
+        _client: &(dyn ClientInfo + Send + Sync),
     ) -> Option<PgWireResult<LogicalPlan>> {
         // `Describe` has no columns to report for DDL; the statement is
         // claimed so that DataFusion's own DDL planner never sees it. The
         // parts analyzable from the AST alone are refused here, at Parse, the
         // way PostgreSQL reports them before Bind.
-        let verb = ddl_verb(statement)?;
-        let validated = reject_in_transaction(client.transaction_status(), verb)
-            .and_then(|()| self.validate(statement, session_context));
+        ddl_verb(statement)?;
+        let validated = self.validate(statement, session_context);
         if let (Statement::AlterTable(_), Err(error)) = (statement, &validated) {
             // Refused at Parse: the statement never reaches execution, where
             // every other outcome is counted.
@@ -505,14 +769,16 @@ impl DdlStatementHook {
         session_context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
-        if let Err(error) =
-            reject_in_transaction(client.transaction_status(), ddl_verb(statement)?)
-        {
-            if matches!(statement, Statement::AlterTable(_)) {
-                crate::alter::record_outcome(Err(&error));
-            }
-            return Some(Err(error));
-        }
+        // A DDL statement inside a block stages its metadata; outside one it
+        // keeps publishing immediately.
+        let block = client
+            .session_extensions()
+            .get::<ConnectionSession>()
+            .filter(|session| {
+                client.transaction_status() != TransactionStatus::Idle
+                    && session.transaction.lock().is_some()
+            })
+            .map(|session| Arc::clone(&session.transaction));
         // DROP/ALTER resolve a name that another engine may have created after
         // this session's last ACL refresh; refresh first so the ACL view and
         // the catalog agree on whether it exists and who may change it.
@@ -533,18 +799,37 @@ impl DdlStatementHook {
             )));
         }
         let result = match statement {
-            Statement::CreateTable(create) => {
-                self.create_table(create, session_context).await
-            }
+            Statement::CreateTable(create) => match &block {
+                Some(transaction) => {
+                    self.create_table_staged(create, session_context, transaction)
+                        .await
+                }
+                None => self.create_table(create, session_context).await,
+            },
             Statement::Drop {
                 object_type: ObjectType::Table,
                 if_exists,
                 names,
                 ..
-            } => self.drop_table(*if_exists, names, session_context).await,
-            Statement::AlterTable(alter) => {
-                self.alter_table(alter, session_context, client).await
-            }
+            } => match &block {
+                Some(transaction) => {
+                    self.drop_table_staged(
+                        *if_exists,
+                        names,
+                        session_context,
+                        transaction,
+                    )
+                    .await
+                }
+                None => self.drop_table(*if_exists, names, session_context).await,
+            },
+            Statement::AlterTable(alter) => match &block {
+                Some(transaction) => {
+                    self.alter_table_staged(alter, session_context, client, transaction)
+                        .await
+                }
+                None => self.alter_table(alter, session_context, client).await,
+            },
             _ => return None,
         };
         // A successful CREATE/DROP/ALTER changes the catalog objects the
@@ -552,7 +837,8 @@ impl DdlStatementHook {
         // settings generation once for the whole statement, so their next
         // `Execute` replans against the new catalog. A refused statement has
         // not touched the catalog and must leave every plan valid.
-        if result.is_ok()
+        if block.is_none()
+            && result.is_ok()
             && let Some(session) = client
                 .session_extensions()
                 .get::<crate::server::ConnectionSession>()
@@ -624,16 +910,18 @@ pub(crate) fn refuse_ddl_in_batch(statements: &[String]) -> PgWireResult<()> {
     }
     Err(feature_not_supported(
         "CREATE/DROP/ALTER TABLE cannot be combined with other statements in one \
-         simple-query message: PostgreSQL would run the batch in an implicit \
-         transaction, and LakeSoul table metadata cannot be rolled back"
+         simple-query message: implicit transaction support for multi-statement \
+         batches is not available yet; split the statements or use an explicit \
+         BEGIN block"
             .to_string(),
     ))
 }
 
-/// PostgreSQL commits DDL inside a transaction block, so `ROLLBACK` undoes it.
-/// LakeSoul table metadata is written immediately through the metadata client
-/// and cannot be rolled back; executing DDL in a block would silently break
-/// that contract, so it is refused instead.
+/// Refuse a metadata path that is not staged by the transaction block.
+///
+/// Table DDL, insert, update, delete and copy all stage their metadata; this
+/// helper remains for paths with external side effects or independent
+/// metadata transactions (users, grants, indexes, subscriptions, truncate).
 pub(crate) fn reject_in_transaction(
     transaction_status: TransactionStatus,
     verb: &str,

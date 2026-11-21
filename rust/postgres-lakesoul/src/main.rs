@@ -40,6 +40,7 @@ mod copy_in;
 mod copy_out;
 mod cursor;
 mod ddl;
+mod ddl_transaction;
 mod delete;
 mod failed_transaction;
 mod federation;

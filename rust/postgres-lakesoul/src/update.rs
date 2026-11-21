@@ -317,8 +317,8 @@ pub(crate) fn first_update_in_batch(statements: &[String]) -> Option<usize> {
 pub(crate) fn refuse_update_in_batch() -> PgWireError {
     crate::ddl::feature_not_supported(
         "UPDATE cannot be combined with other statements in one simple-query \
-         message: PostgreSQL would run the batch in an implicit transaction, \
-         and LakeSoul commits each UPDATE immediately"
+         message: implicit transaction support for multi-statement batches is not available yet; \
+         split the statements or use an explicit BEGIN block"
             .to_string(),
     )
 }

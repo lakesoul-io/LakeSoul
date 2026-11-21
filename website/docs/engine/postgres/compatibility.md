@@ -44,9 +44,9 @@ These return SQLSTATE `0A000` rather than being silently ignored:
 - `CREATE TABLE AS`, `CREATE TEMP TABLE`, `DELETE ... USING`
 - `COPY ... TO` a file or program, `COPY ... FROM` a file or program,
   `FORMAT binary` and the COPY options listed in [COPY](copy.md)
-- Writes and `COPY` inside a multi-statement simple-query batch; DDL, IVM
-  maintenance, subscriptions, savepoints, a non-CDC `DELETE` rewrite and
-  `TRUNCATE` inside an explicit transaction block
+- Writes, `COPY` and table DDL inside a multi-statement simple-query batch;
+  `CREATE INDEX`, `REINDEX`, IVM maintenance, subscriptions, a non-CDC `DELETE`
+  rewrite and `TRUNCATE` inside an explicit transaction block
 - `UPDATE` on CDC tables, tables without a primary key, append-only tables,
   `UPDATE ... FROM`, and assignments to primary-key or partition columns;
   `DELETE` on append-only tables and on CDC tables without a primary key
@@ -114,8 +114,8 @@ implemented and fail explicitly; selecting `current_user` and `session_user`
 in one projection is still limited by the compatibility parser's
 `current_user -> session_user` rewrite, and `psql \du` still needs
 `ARRAY(subquery)` support. SQLAlchemy's
-`psycopg3` dialect is not part of the baseline yet because its reflection
-starts nested transactions (`SAVEPOINT`), which LakeSoul does not support. See
+`psycopg3` dialect is not part of the baseline yet; its reflection now uses
+the supported `SAVEPOINT` path, but other reflection queries remain gaps. See
 the README in that directory for exact versions and the status of each gap.
 
 ## Version policy

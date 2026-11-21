@@ -17,8 +17,9 @@
 //!
 //! `COMMIT` and `ROLLBACK` pass through so a failed block still ends the way
 //! PostgreSQL ends it - `COMMIT` is answered with the `ROLLBACK` tag and ends
-//! the transaction - and every statement in a healthy transaction or in
-//! autocommit mode is untouched, as are errors produced by actual execution.
+//! the transaction - and `ROLLBACK TO SAVEPOINT` passes through so the
+//! transaction hook can recover it. Every statement in a healthy transaction or
+//! in autocommit mode is untouched, as are errors produced by actual execution.
 //! Entering and leaving the failed state is left to the server's error path and
 //! to those two statements.
 //!
@@ -52,8 +53,8 @@ impl FailedTransactionGuard {
     /// Whether PostgreSQL ignores `statement` in a block that already failed.
     ///
     /// The status is the one pgwire keeps for the connection and the upstream
-    /// transaction hook reads; `COMMIT` and `ROLLBACK` are the statements that
-    /// still run in such a block.
+    /// transaction hook reads; `COMMIT`, `ROLLBACK` and `ROLLBACK TO
+    /// SAVEPOINT` are the statements that still run in such a block.
     fn rejects(transaction_status: TransactionStatus, statement: &Statement) -> bool {
         transaction_status == TransactionStatus::Error
             && !matches!(

@@ -16,13 +16,22 @@ SPDX-License-Identifier: Apache-2.0
 端点支持 **autocommit** 和显式事务块，可见性为 **READ COMMITTED**。事务块内的写入会先写文件，但直到 `COMMIT` 才发布元数据；其他连接在提交前看不到任何数据。`COMMIT` 在一个元数据事务中发布所有表的 staged 写入；`ROLLBACK` 删除 staged 文件。
 
 - 支持 `BEGIN` / `COMMIT` / `ROLLBACK`。块内读取会看到已发布快照加上本块已 staged 的写入。
-- 事务块内的 DDL、IVM 维护、订阅和 savepoint 会以 `0A000` 拒绝。`COPY ... FROM STDIN`
-  是写入：它会在块内 staged，并由 `COMMIT` 发布。
+- `CREATE TABLE`、`DROP TABLE`、`ALTER TABLE` 会在块内 staged，并在 `COMMIT`
+  时与数据写入在同一个元数据事务中发布。提交前其他连接看不到；`ROLLBACK`
+  不会留下表或文件。`CREATE TABLE` 之后的同块语句可以立即使用新表。
+- 支持 `SAVEPOINT`、`RELEASE SAVEPOINT`、`ROLLBACK TO SAVEPOINT`。savepoint
+  会记录本块已 staged 的数据和表 DDL；`ROLLBACK TO SAVEPOINT` 丢弃其后的修改，
+  并可从失败事务中恢复。
+- 事务块内的 `CREATE INDEX`、`REINDEX`、`TRUNCATE`、IVM 维护、订阅、用户和
+  GRANT 仍以 `0A000` 拒绝。`COPY ... FROM STDIN` 是写入：它会在块内 staged，
+  并由 `COMMIT` 发布。
 - `REPEATABLE READ`、`SERIALIZABLE` 及其 `SET` 形式会以 `0A000` 拒绝。
-- 失败事务之后的语句返回 `25P02`，直到 `ROLLBACK`。失败块里的 `COMMIT` 会以回滚结束事务，与 PostgreSQL 一致。
+- 失败事务之后的语句返回 `25P02`，直到 `ROLLBACK` 或成功的
+  `ROLLBACK TO SAVEPOINT`。失败块里的 `COMMIT` 会以回滚结束事务，与 PostgreSQL 一致。
 - CDC `DELETE` 是 tombstone append，会在块内正常 staged；块内读取通过
-  read-your-writes 看到删除效果。多语句 simple-query batch 内的写入仍被拒绝：
-  这些语句没有运行在同一个事务中。请把写入拆成多条消息，或使用显式事务块。
+  read-your-writes 看到删除效果。多语句 simple-query batch 内的写入和表 DDL
+  仍被拒绝：这些语句还没有运行在同一个事务中。请把它们拆成多条消息，或使用
+  显式事务块。
 - `statement_timeout` 会以 `57014` 取消正在运行的查询；连接仍可继续使用。
 - 未实现 `idle_in_transaction_session_timeout`。
 

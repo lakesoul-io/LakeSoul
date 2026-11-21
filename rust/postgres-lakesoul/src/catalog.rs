@@ -87,6 +87,8 @@ pub struct PgPublicSchema {
     /// Connection-local session parameters; `lakesoul.read.time_travel` pins
     /// every local table scan resolved through this schema.
     parameters: Arc<PgParameters>,
+    /// Pending DDL of the connection's open transaction block.
+    transaction: crate::transaction::SharedTransaction,
 }
 
 impl std::fmt::Debug for PgPublicSchema {
@@ -110,6 +112,7 @@ impl PgPublicSchema {
         access: Option<DomainAccess>,
         acl: Option<Arc<AclEntry>>,
         parameters: Arc<PgParameters>,
+        transaction: crate::transaction::SharedTransaction,
     ) -> Self {
         Self {
             local,
@@ -119,6 +122,7 @@ impl PgPublicSchema {
             access,
             acl,
             parameters,
+            transaction,
         }
     }
 
@@ -148,6 +152,16 @@ impl PgPublicSchema {
                 parsed.timestamp_millis(),
             )),
         )
+    }
+
+    /// The block's pending provider or hidden marker for `name`, if any.
+    fn pending(&self, name: &str) -> Option<Option<Arc<dyn TableProvider>>> {
+        let transaction = self.transaction.lock();
+        let state = transaction.as_ref()?;
+        if let Some(table) = state.catalog.table(name) {
+            return Some(Some(table));
+        }
+        state.catalog.is_hidden(name).then_some(None)
     }
 
     #[cfg(test)]
@@ -213,10 +227,17 @@ impl SchemaProvider for PgPublicSchema {
                 }
             }
         }
-        names
+        let transaction = self.transaction.lock();
+        match transaction.as_ref() {
+            Some(state) => state.catalog.table_names(names),
+            None => names,
+        }
     }
 
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        if let Some(pending) = self.pending(name) {
+            return Ok(pending);
+        }
         if let Some(acl) = &self.acl
             && !acl.view().table_is_visible(self.local.namespace(), name)
         {
@@ -273,6 +294,9 @@ impl SchemaProvider for PgPublicSchema {
     }
 
     fn table_exist(&self, name: &str) -> bool {
+        if let Some(pending) = self.pending(name) {
+            return pending.is_some();
+        }
         if let Some(federation) = &self.federation
             && federation.is_foreign(&self.database, name)
         {
@@ -509,6 +533,7 @@ pub fn pg_lakesoul_catalog(
         None,
         None,
         Arc::new(PgParameters::default()),
+        crate::transaction::shared(),
     )
 }
 
@@ -522,6 +547,7 @@ pub fn pg_lakesoul_catalog_with_federation(
     access: Option<DomainAccess>,
     acl: Option<Arc<AclEntry>>,
     parameters: Arc<PgParameters>,
+    transaction: crate::transaction::SharedTransaction,
 ) -> Arc<PgLakeSoulCatalog> {
     let local = Arc::new(LakeSoulNamespace::with_snapshot(
         client,
@@ -530,7 +556,14 @@ pub fn pg_lakesoul_catalog_with_federation(
         snapshot,
     ));
     let public_schema = Arc::new(PgPublicSchema::new(
-        local, federation, namespace, user, access, acl, parameters,
+        local,
+        federation,
+        namespace,
+        user,
+        access,
+        acl,
+        parameters,
+        transaction,
     ));
     Arc::new(PgLakeSoulCatalog::new(public_schema))
 }

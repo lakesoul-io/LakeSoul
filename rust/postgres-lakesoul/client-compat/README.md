@@ -113,8 +113,8 @@ The remaining known gaps are:
 | SQLAlchemy DDL transactions | DDL is refused inside a transaction block; use an autocommit connection (`isolation_level="AUTOCOMMIT"`) for `CREATE TABLE`/`CREATE INDEX`. The psycopg3 SQLAlchemy dialect also issues nested transactions during type discovery and is not certified |
 
 SQLAlchemy reflection is certified through the `psycopg2` dialect. The
-`psycopg3` dialect starts a nested transaction (`SAVEPOINT`) during reflection,
-which LakeSoul does not support yet.
+`psycopg3` dialect's reflection uses `SAVEPOINT`, which is now supported, but
+the dialect is not certified yet because other reflection queries remain gaps.
 
 `version()` now returns a PostgreSQL-compatible baseline string
 (`PostgreSQL 14.0 (LakeSoul ... / DataFusion ...)`) so SQLAlchemy can

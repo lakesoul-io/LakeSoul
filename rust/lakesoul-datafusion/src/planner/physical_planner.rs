@@ -36,7 +36,6 @@ use crate::catalog::LakeSoulProviderOptions;
 use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::datasource::upsert_exec::{UpsertExec, UpsertNode};
 use crate::federation::FederationTableProvider;
-use crate::lakesoul_table::LakeSoulTable;
 
 /// The LakeSoul provider a DML statement's source was resolved to, if any.
 fn lake_soul_table_source(
@@ -188,37 +187,59 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                         .create_physical_plan(logical_plan, session_state)
                         .await;
                 }
-                let name = table_name.table();
                 // The namespace is the one the catalog resolved while planning,
                 // not the one written in the statement: a PostgreSQL front end
                 // addresses `public.t` and a bare `t` through its own catalog,
-                // and the DML node's table name keeps the SQL spelling. A
-                // LakeSoul provider in the plan is authoritative; the name is
-                // only a fallback for planners that pass a bare source.
-                let namespace = lake_soul_table_source(target)
-                    .map(|provider| provider.table_info().table_namespace.clone())
-                    .or_else(|| table_name.schema().map(str::to_owned))
-                    .unwrap_or_else(|| "default".to_string());
-                let lakesoul_table =
-                    LakeSoulTable::for_namespace_and_name(&namespace, name, None)
-                        .await
-                        .map_err(|report| {
-                            DataFusionError::External(report.into_boxed_error())
-                        })?;
-
+                // and the DML node's table name keeps the SQL spelling.
+                // Re-read the published definition at Execute so a prepared
+                // statement sees a peer's ALTER; a transaction block's pending
+                // provider is used as-is until COMMIT.
+                let source_provider =
+                    lake_soul_table_source(target).expect("checked above");
                 let provider_options =
                     LakeSoulProviderOptions::from_session(session_state);
-                match lakesoul_table
-                    .as_provider_without_session(provider_options)
+                // A statement prepared before a peer's ALTER must bind the
+                // latest published definition at Execute, as PostgreSQL
+                // replans it. A transaction block's pending definition is the
+                // exception: its provider is authoritative until COMMIT.
+                let table_info = if source_provider.is_pending_definition() {
+                    source_provider.table_info()
+                } else {
+                    let namespace = source_provider.table_info().table_namespace.clone();
+                    let name = table_name.table();
+                    match source_provider
+                        .metadata_client()
+                        .get_table_info_by_table_name(name, &namespace)
+                        .await
+                    {
+                        Ok(Some(info)) => Arc::new(info),
+                        Ok(None) => {
+                            return Err(DataFusionError::External(Box::new(
+                                lakesoul_metadata::LakeSoulMetaDataError::NotFound(
+                                    format!("Table '{name}' in '{namespace}' not found"),
+                                ),
+                            )));
+                        }
+                        Err(error) => {
+                            return Err(DataFusionError::External(Box::new(error)));
+                        }
+                    }
+                };
+                match source_provider
+                    .with_table_info(provider_options, table_info)
                     .await
                 {
                     Ok(provider) => {
+                        let primary_keys = provider.primary_key_columns().to_vec();
+                        let range_partitions =
+                            provider.range_partition_columns().to_vec();
                         let physical_input =
                             self.create_physical_plan(input, session_state).await?;
 
-                        if lakesoul_table.primary_keys().is_empty()
-                            && lakesoul_table
+                        if primary_keys.is_empty()
+                            && provider
                                 .schema()
+                                .as_ref()
                                 .logically_equivalent_names_and_types(
                                     input.schema().as_arrow(),
                                 )
@@ -233,9 +254,13 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                         // A keyed table - one with primary keys, or with range
                         // partitions - needs its input shaped before the write:
                         // rows of one key must reach a single write task.
-                        let keyed_write = !lakesoul_table.primary_keys().is_empty()
-                            || !lakesoul_table.range_partitions().is_empty();
+                        let keyed_write =
+                            !primary_keys.is_empty() || !range_partitions.is_empty();
+                        // A block's pending definition is not in the
+                        // metadata workers read, so keep its writes local
+                        // until COMMIT publishes it.
                         let distributed_write = keyed_write
+                            && !source_provider.is_pending_definition()
                             && crate::distributed::planner::distributed_writes_enabled(
                                 session_state.config(),
                             );
@@ -256,11 +281,10 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             // standard hash `RepartitionExec` is the stage boundary
                             // the distributed planner turns into a network shuffle.
                             let input_dfschema = input.as_ref().schema();
-                            let key_columns = if lakesoul_table.primary_keys().is_empty()
-                            {
-                                lakesoul_table.range_partitions()
+                            let key_columns = if primary_keys.is_empty() {
+                                range_partitions.as_slice()
                             } else {
-                                lakesoul_table.primary_keys()
+                                primary_keys.as_slice()
                             };
                             let key_expr = column_names_to_physical_expr(
                                 key_columns,
@@ -280,12 +304,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             let _input_schema = physical_input.schema();
                             let input_dfschema = input.as_ref().schema();
                             let sort_expr = column_names_to_physical_sort_expr(
-                                [
-                                    lakesoul_table.range_partitions().clone(),
-                                    lakesoul_table.primary_keys().clone(),
-                                ]
-                                .concat()
-                                .as_slice(),
+                                [range_partitions.clone(), primary_keys.clone()]
+                                    .concat()
+                                    .as_slice(),
                                 input_dfschema,
                                 session_state,
                             )
@@ -293,7 +314,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                 DataFusionError::External(report.into_boxed_error())
                             })?;
                             let hash_partitioning_expr = column_names_to_physical_expr(
-                                lakesoul_table.primary_keys(),
+                                primary_keys.as_slice(),
                                 input_dfschema,
                                 session_state,
                             )
@@ -303,12 +324,10 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
 
                             let hash_partitioning = Partitioning::Hash(
                                 hash_partitioning_expr,
-                                lakesoul_table.hash_bucket_num().map_err(|report| {
-                                    DataFusionError::External(report.into_boxed_error())
-                                })?,
+                                provider.hash_bucket_num(),
                             );
                             let range_partitioning_expr = column_names_to_physical_expr(
-                                lakesoul_table.range_partitions(),
+                                range_partitions.as_slice(),
                                 input_dfschema,
                                 session_state,
                             )
