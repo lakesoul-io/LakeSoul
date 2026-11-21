@@ -60,6 +60,7 @@ class DaoType:
     DropSnapshot = DAO_TYPE_QUERY_LIST_OFFSET + 23
     DropTagByTableIdAndTag = DAO_TYPE_QUERY_LIST_OFFSET + 24
     CreateTag = DAO_TYPE_QUERY_LIST_OFFSET + 25
+    CreateSnapshotAsOf = DAO_TYPE_QUERY_LIST_OFFSET + 26
 
     # // ==== Insert One ====
     InsertNamespace = DAO_TYPE_INSERT_ONE_OFFSET

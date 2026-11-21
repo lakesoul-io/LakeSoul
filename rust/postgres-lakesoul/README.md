@@ -476,6 +476,47 @@ explicit transaction block (their publication is not staged yet); `MERGE` is not
 implemented. The rewrite cost is the affected partition size, not the deleted
 row count; a key-targeted file rewrite is the planned optimization.
 
+### Time travel: `lakesoul_table_scan(table, mode, value)`
+
+The SQL entry point for the provider's `snapshot_view()`. The three arguments
+are string literals; `mode` is `timestamp` (RFC3339 with an explicit offset,
+`<=` semantics per partition), `tag`, or `snapshot_id` (alias `version`):
+
+```sql
+SELECT * FROM lakesoul_table_scan('events', 'timestamp', '2026-11-20T10:00:00+08:00');
+SELECT * FROM lakesoul_table_scan('events', 'tag', 'release-2026-11');
+SELECT * FROM lakesoul_table_scan('events', 'snapshot_id', '42');
+```
+
+The function resolves the table through the session catalog (so ACL/RBAC
+visibility applies), wraps the provider with `snapshot_view()`, and returns a
+per-query pinned scan. It stores nothing in the session: a plain `SELECT` still
+sees the latest commit, and reading an old version to write another table or
+partition is an ordinary query. Pinned scans skip vector/text index pushdown
+and use the historical partition versions through merge-on-read.
+
+Snapshots and tags are also managed from SQL (module `src/snapshot.rs`). A
+snapshot is an immutable table-wide freeze; a tag is its readable name. One
+statement freezes and names it, with an optional `AS OF` source:
+
+```sql
+ALTER TABLE events CREATE TAG `EOW-01`;
+ALTER TABLE events CREATE TAG `v1` AS OF timestamp '2026-11-20T10:00:00+08:00';
+ALTER TABLE events CREATE TAG `copy` AS OF VERSION 7;
+SHOW TAGS events;                       -- all-text columns, via lakesoul_tags('events')
+ALTER TABLE events DROP TAG `v1`;
+```
+
+`DROP TAG` cascades to its snapshot only when nothing else references it;
+shared snapshots are kept with a `NOTICE`. There is no standalone `DROP
+SNAPSHOT` (versions are immutable). `create_tag(..., as_of=ms)` in the Python
+catalog offers the same one-call freeze-and-tag operation.
+
+Covered by `tests/time_travel_contract.rs`, `tests/snapshot_tag_contract.rs`,
+the bin unit tests in `src/time_travel.rs` and `src/snapshot.rs`,
+`client-compat/test_time_travel.py`, and the RBAC contract. See
+`website/docs/engine/postgres/time-travel.md` for the user-facing semantics.
+
 ### Transport security: TLS
 
 The listener can terminate TLS itself. `--tls-cert` (PEM chain) and `--tls-key`

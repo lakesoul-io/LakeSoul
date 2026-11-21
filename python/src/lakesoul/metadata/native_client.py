@@ -289,15 +289,34 @@ class NativeMetadataClient:
         table_name: str,
         description: str = "",
         namespace: str = "default",
+        as_of_ms: int | None = None,
     ) -> SnapshotInfo:
-        """Freeze the current per-partition versions into a new snapshot."""
+        """Freeze per-partition versions into a new snapshot.
+
+        With ``as_of_ms`` (Unix milliseconds) the frozen version of each
+        partition is the latest one committed at or before that instant;
+        otherwise the current versions are frozen.
+        """
         table_info = self.get_table_info_by_name(table_name, namespace)
-        partitions = self.get_all_partition_info(table_info.table_id)
-        if not any(partition.snapshot for partition in partitions):
-            raise ValueError(f"cannot create a snapshot of empty table {table_name!r}")
-        wrapper = self._query(
-            DaoType.CreateSnapshot, [table_info.table_id, description]
-        )
+        if as_of_ms is None:
+            partitions = self.get_all_partition_info(table_info.table_id)
+            if not any(partition.snapshot for partition in partitions):
+                raise ValueError(
+                    f"cannot create a snapshot of empty table {table_name!r}"
+                )
+            dao_type = DaoType.CreateSnapshot
+            params = [table_info.table_id, description]
+        else:
+            partitions = self.get_all_partition_info_as_of(
+                table_info.table_id, int(as_of_ms)
+            )
+            if not partitions:
+                raise ValueError(
+                    f"no data was committed at or before {as_of_ms} in {table_name!r}"
+                )
+            dao_type = DaoType.CreateSnapshotAsOf
+            params = [table_info.table_id, description, str(int(as_of_ms))]
+        wrapper = self._query(dao_type, params)
         if not wrapper or not wrapper.snapshot_info:
             raise MetadataError("failed to create snapshot")
         return wrapper.snapshot_info[0]

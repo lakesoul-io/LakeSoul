@@ -16,6 +16,11 @@ that ordinary PostgreSQL driver workflows can execute.
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
 
+Time travel (`lakesoul_table_scan(table, mode, value)`) is also covered through
+both drivers: `test_time_travel.py` pins a scan to a `timestamp` between two
+commits and checks that a `WHERE` clause applies to the pinned rows; the Rust
+contract covers `tag` and `snapshot_id`.
+
 The suite asserts **explicit refusal** for currently unsupported paths:
 
 - `COPY ... TO` a file or program and `COPY ... FROM` a file: `0A000`
