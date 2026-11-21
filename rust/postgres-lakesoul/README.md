@@ -85,7 +85,7 @@ INSERT INTO target ...;
 
 ## Supported matrix
 
-`tests/sql_compat.rs` runs phase one base cases, `sql_compat/semantics.rs` runs phase two additions, and the projection scalar subquery cardinality normal gate; `tests/session_contract.rs` runs sessions, write refusals, and commit visibility; `tests/storage_contract.rs` runs phase three · 3.1 storage contracts; `tests/catalog_contract.rs` runs phase three · 3.2 database/public mapping; `tests/vector_contract.rs` runs phase three · 3.3 vector protocol, exact fallback, and ANN; `tests/tpch_contract.rs` runs phase four strict q01–q22 and the failure-exit contract; `tests/insert_contract.rs` runs phase eight INSERT and the existing restricted upsert; `tests/update_contract.rs` runs phase nine UPDATE; `tests/upsert_contract.rs` runs the general UPSERT PG differential matrix (see "General UPSERT"); `tests/delete_truncate_contract.rs` runs DELETE/TRUNCATE (coordinator and two-worker). Case IDs appear in `--nocapture` output and failure reports.
+`tests/contracts/sql_compat.rs` runs phase one base cases, `sql_compat/semantics.rs` runs phase two additions, and the projection scalar subquery cardinality normal gate; `tests/contracts/session_contract.rs` runs sessions, write refusals, and commit visibility; `tests/contracts/storage_contract.rs` runs phase three · 3.1 storage contracts; `tests/contracts/catalog_contract.rs` runs phase three · 3.2 database/public mapping; `tests/contracts/vector_contract.rs` runs phase three · 3.3 vector protocol, exact fallback, and ANN; `tests/contracts/tpch_contract.rs` runs phase four strict q01–q22 and the failure-exit contract; `tests/contracts/insert_contract.rs` runs phase eight INSERT and the existing restricted upsert; `tests/contracts/update_contract.rs` runs phase nine UPDATE; `tests/contracts/upsert_contract.rs` runs the general UPSERT PG differential matrix (see "General UPSERT"); `tests/contracts/delete_truncate_contract.rs` runs DELETE/TRUNCATE (coordinator and two-worker). Case IDs appear in `--nocapture` output and failure reports.
 
 | Contract | Verified scope | Specific cases |
 | --- | --- | --- |
@@ -327,7 +327,7 @@ Semantic boundaries (LakeSoul-specific; PG equivalence is not claimed):
 
 #### General UPSERT
 
-The general form of `ON CONFLICT ... DO UPDATE` is planned by `lakesoul-datafusion::planner::upsert` and shares the fixed primary-database snapshot and exact-version publication with UPDATE; `insert.rs` only analyzes and infers parameter types at Parse, then re-checks the target identity, binds this execution's parameters, and captures the snapshot at Execute. `tests/upsert_contract.rs` and the native `tests::sql_upsert_tests` are this section's regressions; legacy/v2, simple/extended, local and real dual-Flight-worker (fallback disabled), and vector/text index scenarios have all been exercised, with evidence and the matrix in [UPSERT_CONTRACTS.md](UPSERT_CONTRACTS.md). Unlisted shapes are still rejected with `0A000` or an existing SQLSTATE.
+The general form of `ON CONFLICT ... DO UPDATE` is planned by `lakesoul-datafusion::planner::upsert` and shares the fixed primary-database snapshot and exact-version publication with UPDATE; `insert.rs` only analyzes and infers parameter types at Parse, then re-checks the target identity, binds this execution's parameters, and captures the snapshot at Execute. `tests/contracts/upsert_contract.rs` and the native `tests::sql_upsert_tests` are this section's regressions; legacy/v2, simple/extended, local and real dual-Flight-worker (fallback disabled), and vector/text index scenarios have all been exercised, with evidence and the matrix in [UPSERT_CONTRACTS.md](UPSERT_CONTRACTS.md). Unlisted shapes are still rejected with `0A000` or an existing SQLSTATE.
 
 First-delivery boundaries (code facts; the regressions are this section's matrix and the native `tests::sql_upsert_tests`):
 
@@ -341,12 +341,12 @@ First-delivery boundaries (code facts; the regressions are this section's matrix
 - Known limitation: `$n` in `VALUES`/`SELECT` gets its parameter type from the target column's PostgreSQL type spelling. UUID, varchar/char, money, time and numeric parameters are covered by the semantic type metadata; interval and other columns without a spelling still report an `unknown` parameter type at Parse. Plain INSERT infers these types through DataFusion's INSERT planning; general UPSERT does not reuse that path (it rejects the existing shape where a derived `VALUES` has more columns than the target).
 - Deliberate differences: modifying the conflict key is `0A000` (PG allows it); a non-primary-key conflict target is `0A000` (PG `42P10`); range-partitioned tables with `ON CONFLICT` are `0A000`; CDC tables keep only the existing "all columns `EXCLUDED`" form, and the general old-value form is `0A000`; `RETURNING`, `appendOnly`, and multi-statement write batches remain rejected. A general UPSERT inside a `BEGIN` block is refused with `0A000` (its executor publishes through its own path and does not stage into the block).
 - Concurrency granularity is the range-partition version (the table's single partition when there is no range): a concurrent writer advancing the version returns `40001`, and the client must retry the whole statement; PG row locks are not promised. An empty source, or one where every conflict `WHERE` skips, is `INSERT 0 0` and produces no files or metadata publication.
-- Index maintenance follows INSERT's post-commit policy; `indexed_upsert_contract` in `tests/upsert_contract.rs` covers the vector/text scenarios, and the native `tests::sql_upsert_tests` cover concurrency and memory scenarios.
+- Index maintenance follows INSERT's post-commit policy; `indexed_upsert_contract` in `tests/contracts/upsert_contract.rs` covers the vector/text scenarios, and the native `tests::sql_upsert_tests` cover concurrency and memory scenarios.
 
 C7 acceptance entry point (already executed; set `LAKESOUL_IO_USE_V2_MERGE` per legacy/v2):
 
 ```sh
-cargo test --profile test-fast -p postgres-lakesoul --bins --test upsert_contract --jobs 4 -- --nocapture
+cargo test --profile test-fast -p postgres-lakesoul --bins --test contracts upsert_contract:: --jobs 4 -- --nocapture
 cargo test --profile test-fast -p lakesoul-datafusion --lib tests::sql_upsert_tests --jobs 4
 ```
 
@@ -386,7 +386,7 @@ WHERE id = 1;
 - CAS publication and single-table DROP share/exclusive-lock the same `table_info` row; single-table cascading metadata deletion completes in one transaction. This guarantee does not extend to global serialization of generic commit_data writes, multi-table DROP, or GC/read leases.
 - File generation precedes publication, and only files explicitly known to be unpublished may be cleaned up. Index maintenance follows INSERT's post-commit policy: a maintenance error does not mean data rollback, and data files must not be deleted when publication succeeded or the commit result is unknown.
 
-`tests/update_contract.rs` contains a protocol behavior matrix shared between local and dual-Flight-worker runs, plus retrieval contracts for UPDATE after real vector/text indexes are pre-built. Default exact reranking must not return old versions; index-only mode still follows the existing approximate-retrieval semantics and does not promise immediate deletion of historical index entries. There is also a real index-write failure case: the client receives a maintenance error, but the new value is committed and other rows and committed data files are retained. `tests/session_contract/readonly.rs` keeps the no-primary-key rejection and verifies that supported UPDATE is no longer blocked by the blanket guard.
+`tests/contracts/update_contract.rs` contains a protocol behavior matrix shared between local and dual-Flight-worker runs, plus retrieval contracts for UPDATE after real vector/text indexes are pre-built. Default exact reranking must not return old versions; index-only mode still follows the existing approximate-retrieval semantics and does not promise immediate deletion of historical index entries. There is also a real index-write failure case: the client receives a maintenance error, but the new value is committed and other rows and committed data files are retained. `tests/contracts/session_contract/readonly.rs` keeps the no-primary-key rejection and verifies that supported UPDATE is no longer blocked by the blanket guard.
 
 Lower-level concurrency acceptance must use a **dedicated test metadata database** (`libtest`'s existing initialization wipes it) and must not point at development data. PG tests may share that dedicated database but must not run in parallel with `libtest`:
 
@@ -452,7 +452,7 @@ tables, one transaction), both `DeleteCommit`, version + 1. `PARTITION
 column. Multiple tables are published in one metadata transaction. `ONLY`,
 `CASCADE`, `RESTART IDENTITY` are no-ops; `IF EXISTS` skips a missing table.
 
-Contracts (`tests/delete_truncate_contract.rs`, coordinator and two-worker):
+Contracts (`tests/contracts/delete_truncate_contract.rs`, coordinator and two-worker):
 
 | Contract | Verified scope |
 | --- | --- |
@@ -520,7 +520,7 @@ including UPDATE/DELETE targets — a row written after the instant is invisible
 to them; writes stay allowed. An explicit `lakesoul_table_scan` pin is more
 specific and wins when both are set. Foreign tables are unaffected.
 
-Covered by `tests/time_travel_contract.rs`, `tests/snapshot_tag_contract.rs`,
+Covered by `tests/contracts/time_travel_contract.rs`, `tests/contracts/snapshot_tag_contract.rs`,
 the bin unit tests in `src/time_travel.rs` and `src/snapshot.rs`,
 `client-compat/test_time_travel.py`, and the RBAC contract. See
 `website/docs/engine/postgres/time-travel.md` for the user-facing semantics.
@@ -551,7 +551,7 @@ when no certificate is configured. Clients use `sslmode=require` (encrypt) or
 `sslmode=verify-full` (validate the chain and host name); JDBC takes the same
 values in the URL. Certificates are loaded once at start-up.
 
-Covered by `tests/tls_contract.rs` (broken certificate and mismatched key stop
+Covered by `tests/contracts/tls_contract.rs` (broken certificate and mismatched key stop
 the process; a plaintext client is `28000` with `--require-tls`) and
 `client-compat/run.sh`, which starts the server with a generated self-signed
 certificate and `--require-tls`, runs the full psycopg/pgjdbc baseline with
@@ -573,7 +573,7 @@ psql "host=127.0.0.1 port=5432 user=alice dbname=default"
 - An empty, malformed, expired (`exp` plus the validator's 60 s leeway), wrongly signed, or other-user token is `FATAL 28P01` and the connection closes. The client is not told why; the server logs `token authentication failed` with a `reason` (`missing_token`, `invalid_token`, `expired`, `user_mismatch`, `unknown_user`) and the peer address. No session is built and no connection slot is taken before the token is accepted. Refusals are counted in `lakesoul_auth_failures_total{reason}`.
 - The token travels in clear like any cleartext password. Configure `--tls-cert`/`--tls-key` with `--require-tls` (recommended) or terminate TLS in front of the server. Tokens are short-lived by design; there is no revocation list, so `exp` is the only way a token stops working.
 - Rotating the metadata password rotates the signing secret and invalidates every token for every LakeSoul service at once.
-- Covered by `auth::tests` (verification branches, TTL parsing), `server::tests::jwt_*` and `startup_without_jwt_completes_on_the_startup_message` (the handshake, message by message), and `tests/rbac_contract.rs`: `token_command_requires_metadata_directory` verifies that minting refuses when the user directory cannot be read; against a real `--jwt-auth` child, each bad password above is `28P01` with a message that does not name the cause, a client without a password cannot connect, a valid token for any user connects, and authentication alone hides no namespace (a namespace in a domain the token does not carry is listed in `pg_database` and connectable).
+- Covered by `auth::tests` (verification branches, TTL parsing), `server::tests::jwt_*` and `startup_without_jwt_completes_on_the_startup_message` (the handshake, message by message), and `tests/contracts/rbac_contract.rs`: `token_command_requires_metadata_directory` verifies that minting refuses when the user directory cannot be read; against a real `--jwt-auth` child, each bad password above is `28P01` with a message that does not name the cause, a client without a password cannot connect, a valid token for any user connects, and authentication alone hides no namespace (a namespace in a domain the token does not carry is listed in `pg_database` and connectable).
 
 #### Domain enforcement (`--rbac`)
 
@@ -609,7 +609,7 @@ The server also accepts a table-level subset of PostgreSQL `GRANT` / `REVOKE` on
 
 - Queries resolve a table's domain and ACL live when a miss is not in the session's ACL view, so a table another engine has just created is usable at once by its creator/domain and never by an ungranted user. The ACL view is refreshed every 5 s and after DDL; new connections refresh it immediately. Because the view can be stale, `DROP` authorizes again on the exact row it deletes (resolved once, deleted by `table_id`): a name dropped and recreated in another domain since the last refresh is reported as absent and left alone (`rbac_contract`, `rbac-stale-drop`).
 - `CREATE TABLE` of a name another domain already uses in the namespace is `42P07`, as in PostgreSQL: names are unique per namespace across domains.
-- A token carries one group. A user who needs several domains connects with one token per domain. Table ACLs are covered by `tests/acl_contract.rs` and `lakesoul-metadata/tests/acl_resolution.rs`; atomic mutations and the SQL GRANT/REVOKE subset by `lakesoul-metadata/tests/acl_mutation.rs` and `src/grant.rs` unit tests.
+- A token carries one group. A user who needs several domains connects with one token per domain. Table ACLs are covered by `tests/contracts/acl_contract.rs` and `lakesoul-metadata/tests/acl_resolution.rs`; atomic mutations and the SQL GRANT/REVOKE subset by `lakesoul-metadata/tests/acl_mutation.rs` and `src/grant.rs` unit tests.
 - Covered by `auth::domain_tests`, `server::tests::rbac_*`, `catalog::snapshot::tests` (lakesoul-datafusion) and `rbac_contract::rbac_domain_enforcement_contract`, against a real `--jwt-auth --rbac` child with one namespace per team plus the public fixtures: database visibility and the hidden-equals-missing startup error, `create-sets-domain` read back from the metadata database, every statement above refused for another team and for a `public` token while the authoritative snapshot (metadata rows and warehouse bytes) stays unchanged, extended Parse, detached jobs (including the same `sub` under another group: its jobs, results and `job_key`s stay apart), the `42501` refusals, and a table inserted straight into the metadata database (resolved at once by its team, listed after the refresh, never visible to the other team).
 
 ```sh
@@ -659,6 +659,6 @@ After these fixes, TPC-H SF 0.1/PK single-node legacy/v2 and SF 0.1/nopk/v2 dual
 
 CI's PostgreSQL service version and the test-fast profile are configured by the workflow; local acceptance does not pretend that GitHub Actions has been run.
 
-For the production binary and the eight targets, `cargo -q clippy --no-deps ... -- -D warnings` passes on `postgres-lakesoul`/`lakesoul-io`; `lakesoul-datafusion` retains only pre-existing lints (`needless_borrows_for_generic_args` in `distributed/resolver.rs` and `field_reassign_with_default` in `src/tests/vector_search_tests.rs`), and this round did not modify those unrelated files. Changed Rust files (including `src/ddl.rs`, `src/insert.rs`, `src/write_mode.rs`, `tests/ddl_contract.rs`, `tests/insert_contract.rs`) were formatted with `cargo fmt -p ...` and pass `--check`. `datafusion-pg-catalog` comes from the `lakesoul-shared-static-tables` branch of the `datafusion-postgres` fork (commit `03441f8`, with `RemoveSubqueryFromProjection` removed); this repository only pins its `rev`, keeps no crate copy, and has no vendored catalog code needing separate formatting. The existing `fetch_update` deprecation warning at `topk/mod.rs:290` is retained; warnings were not suppressed and that operator was not modified just to pass checks. Workflows are unchanged, and this round did not rerun actionlint, the physical executor row-count regression, or the Python unit tests.
+For the production binary and the eight targets, `cargo -q clippy --no-deps ... -- -D warnings` passes on `postgres-lakesoul`/`lakesoul-io`; `lakesoul-datafusion` retains only pre-existing lints (`needless_borrows_for_generic_args` in `distributed/resolver.rs` and `field_reassign_with_default` in `src/tests/vector_search_tests.rs`), and this round did not modify those unrelated files. Changed Rust files (including `src/ddl.rs`, `src/insert.rs`, `src/write_mode.rs`, `tests/contracts/ddl_contract.rs`, `tests/contracts/insert_contract.rs`) were formatted with `cargo fmt -p ...` and pass `--check`. `datafusion-pg-catalog` comes from the `lakesoul-shared-static-tables` branch of the `datafusion-postgres` fork (commit `03441f8`, with `RemoveSubqueryFromProjection` removed); this repository only pins its `rev`, keeps no crate copy, and has no vendored catalog code needing separate formatting. The existing `fetch_update` deprecation warning at `topk/mod.rs:290` is retained; warnings were not suppressed and that operator was not modified just to pass checks. Workflows are unchanged, and this round did not rerun actionlint, the physical executor row-count regression, or the Python unit tests.
 
 In this round's normal entry, the coordinator/Python subprocesses have been reclaimed, the dual worker tasks have been joined, and PG/metrics/Flight ports are released. Final counts for `table_info`/`table_name_id`/`table_path_id`/`partition_info`/`data_commit_info`/`index_shard`/`index_commit`/`index_lease`, the `sqlcompat_ref_%` reference schemas, and extra client connections—10 items in total—are all zero; `namespace` retains only the `default` row created by `meta_init.sql`. The self-built PostgreSQL has been stopped normally and its data directory and logs deleted.
