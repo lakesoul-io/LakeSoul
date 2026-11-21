@@ -177,6 +177,9 @@ jobs:
           ./script/meta_init_for_local_test.sh -j 1
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
+      # The merged contracts binary runs every PG-wire suite in one process;
+      # cap libtest threads so the shared metadata PG server is not exhausted
+      # on runners with many cores.
       - name: Test legacy merge
         if: matrix.suite == 'legacy'
         env:
@@ -188,13 +191,13 @@ jobs:
           LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
           LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
-          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
+          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4 -- --test-threads=4
       - name: PostgreSQL SQL compatibility (legacy merge)
         if: matrix.suite == 'legacy'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_BACKTRACE: full
-        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test copy_contract --test bi_contract --test acl_contract --test update_contract --test upsert_contract --jobs 4 -- --nocapture
+        run: cargo test --profile test-fast $TEST_PKGS --lib --bins --test contracts --jobs 4 -- --nocapture --test-threads=4
       - name: Test v2 merge
         if: matrix.suite == 'v2'
         env:
@@ -206,13 +209,13 @@ jobs:
           LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
           LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
-          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
+          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4 -- --test-threads=4
       - name: PostgreSQL SQL compatibility (v2 merge)
         if: matrix.suite == 'v2'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
-        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test copy_contract --test bi_contract --test acl_contract --test update_contract --test upsert_contract --jobs 4 -- --nocapture
+        run: cargo test --profile test-fast $TEST_PKGS --lib --bins --test contracts --jobs 4 -- --nocapture --test-threads=4
 
       # IVM tests use their own package selection but must reuse the shared
       # dependency build of the main test steps.  The script builds the core

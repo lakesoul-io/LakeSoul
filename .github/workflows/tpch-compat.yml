@@ -96,4 +96,4 @@ jobs:
       - name: Initialize metadata
         run: ./script/meta_init_for_local_test.sh -j 1
       - name: Strict q01-q22 over both wire protocols
-        run: cargo test --profile test-fast -p postgres-lakesoul --test tpch_contract --jobs 4 -- --nocapture
+        run: cargo test --profile test-fast -p postgres-lakesoul --test contracts tpch_contract --jobs 4 -- --nocapture --test-threads=4
