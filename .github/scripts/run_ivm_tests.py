@@ -45,22 +45,13 @@ CORE = [
 ]
 CORE_ARGS = {name: args for _label, _package, name, args in CORE}
 
-# Integration test targets of the main "PostgreSQL SQL compatibility" step.
-# Selecting the same targets activates the same dev-dependency features as the
-# main steps (tokio/test-util and rust_decimal/db-tokio-postgres come from
+# Integration test target of the main "PostgreSQL SQL compatibility" step.
+# Building it activates the same dev-dependency features as the main steps
+# (tokio/test-util and rust_decimal/db-tokio-postgres come from
 # postgres-lakesoul's dev-dependencies) without linking every lakesoul-ivm
-# integration test binary on every pull request.
-MAIN_TESTS = [
-    "sql_compat",
-    "session_contract",
-    "storage_contract",
-    "catalog_contract",
-    "vector_contract",
-    "tpch_contract",
-    "ddl_contract",
-    "insert_contract",
-    "update_contract",
-]
+# integration test binary on every pull request. All PG wire contracts live in
+# this one binary now.
+MAIN_TESTS = ["contracts"]
 IVM_TESTS = [
     target
     for _label, _package, target, _args in CORE

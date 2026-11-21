@@ -105,7 +105,7 @@ tie rules above remain **TPC-H-derived workload rules only**. They do not prove
 general PostgreSQL equality or change the core SQL comparator.
 
 For an automatically generated, isolated dataset and real service lifecycle,
-run `cargo -q test -p postgres-lakesoul --test tpch_contract -- --nocapture`
+run `cargo -q test -p postgres-lakesoul --test contracts tpch_contract -- --nocapture`
 from the repository root after initializing metadata PostgreSQL. See
 `../../README.md` for the daily and scheduled/manual layout matrix.
 
