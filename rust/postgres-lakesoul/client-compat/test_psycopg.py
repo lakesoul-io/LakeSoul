@@ -24,13 +24,6 @@ import pytest
 
 from conftest import sqlstate
 
-DRIVERS = ["psycopg2", "psycopg3"]
-
-
-@pytest.fixture(params=DRIVERS, ids=DRIVERS)
-def driver(request):
-    return request.param
-
 
 def rows(cursor):
     return cursor.fetchall()

@@ -5,3 +5,4 @@ pytest>=8,<10
 psycopg2-binary>=2.9,<3
 psycopg[binary]>=3.2,<4
 SQLAlchemy>=2.0,<2.1
+pgvector>=0.4,<0.6

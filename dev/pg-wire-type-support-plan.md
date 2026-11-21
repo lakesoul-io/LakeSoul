@@ -592,3 +592,25 @@ differential harness read the same values.
   wire mapping and encoding.
 - `datafusion-postgres/datafusion-pg-catalog/src/pg_catalog/pg_attribute.rs`,
   `format_type.rs` - catalog introspection.
+
+## 11. Real-client compatibility expansion
+
+The Rust contract suites use `tokio-postgres`; the `client-compat` suite now
+also certifies the new types with ordinary drivers:
+
+- `client-compat/test_types.py` - psycopg2/psycopg3 round trips for UUID,
+  arrays, money, Decimal256 numerics, length-constrained characters, temporal
+  precisions and catalog metadata, plus explicit refusals.
+- `client-compat/test_pgvector.py` - pgvector type discovery, typed parameters,
+  distance operators, column round trips and SQLAlchemy `Vector` reflection.
+- `client-compat/jdbc/.../JdbcTypeSmoke.java`, `JdbcVectorSmoke.java` - pgjdbc
+  parameter/result metadata for semantic types and `com.pgvector:pgvector`
+  round trips.
+
+`vector` columns are created through `lakesoul-console` with
+`vector_index_columns` (PostgreSQL `CREATE TABLE` cannot declare them), and the
+fork reports `format_type` = `vector`, OID-shaped `typinput`, and resolves
+qualified `regproc` casts so both `pgvector-python` and `pgvector-java` can
+register themselves. Known driver limitations (psycopg2 vector arrays, bare
+standalone Decimal predicates, money[] loader, array subscripts) are recorded
+in `client-compat/README.md` rather than hidden.
