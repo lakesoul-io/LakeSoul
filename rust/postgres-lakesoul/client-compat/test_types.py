@@ -34,12 +34,8 @@ def test_uuid_scalar_round_trip(driver, connector, table_factory):
     value = uuid.UUID("11111111-2222-3333-4444-555555555555")
     with closing(connector(driver)) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO {table} (id, u) VALUES (%s, %s)", (1, value)
-            )
-            cursor.execute(
-                f"SELECT u, u::text AS u_text FROM {table} WHERE id = 1"
-            )
+            cursor.execute(f"INSERT INTO {table} (id, u) VALUES (%s, %s)", (1, value))
+            cursor.execute(f"SELECT u, u::text AS u_text FROM {table} WHERE id = 1")
             stored, text = cursor.fetchone()
             assert stored == value
             assert text == str(value)
@@ -52,19 +48,15 @@ def test_uuid_array_round_trip(driver, connector, table_factory):
     values = [uuid.UUID(int=1), uuid.UUID(int=2)]
     with closing(connector(driver)) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO {table} (id, ua) VALUES (%s, %s)", (1, values)
-            )
-            cursor.execute(
-                f"SELECT ua, ua[1]::text AS first FROM {table} WHERE id = 1"
-            )
+            cursor.execute(f"INSERT INTO {table} (id, ua) VALUES (%s, %s)", (1, values))
+            cursor.execute(f"SELECT ua, ua[1]::text AS first FROM {table} WHERE id = 1")
             stored, first = cursor.fetchone()
             assert stored == values
             assert first == str(values[0])
             assert dict(description(cursor))["ua"] == 2951  # UUID[] OID
-            assert one(
-                cursor, f"SELECT id FROM {table} WHERE ua = %s", (values,)
-            ) == (1,)
+            assert one(cursor, f"SELECT id FROM {table} WHERE ua = %s", (values,)) == (
+                1,
+            )
 
             cursor.execute(
                 f"INSERT INTO {table} (id, ua) VALUES (%s, %s)",
@@ -86,9 +78,7 @@ def test_money_round_trip(driver, connector, table_factory):
             cursor.execute(
                 f"INSERT INTO {table} (id, m) VALUES (2, '$1,234.56'::money)"
             )
-            cursor.execute(
-                f"SELECT m, m::text AS m_text FROM {table} WHERE id = 1"
-            )
+            cursor.execute(f"SELECT m, m::text AS m_text FROM {table} WHERE id = 1")
             stored, text = cursor.fetchone()
             assert stored == "$123.45"  # drivers have no built-in money loader
             assert text == "123.45"
@@ -138,9 +128,7 @@ def test_char_varchar_length_metadata(driver, connector, table_factory):
     )
     with closing(connector(driver)) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO {table} (id, v, c) VALUES (1, 'abcd', 'ab')"
-            )
+            cursor.execute(f"INSERT INTO {table} (id, v, c) VALUES (1, 'abcd', 'ab')")
             assert one(cursor, f"SELECT v, c FROM {table} WHERE id = 1") == (
                 "abcd",
                 "ab",
@@ -155,9 +143,7 @@ def test_char_varchar_length_metadata(driver, connector, table_factory):
                 ("v", 8, "character varying(4)"),
             ]
             try:
-                cursor.execute(
-                    f"INSERT INTO {table} (id, v) VALUES (2, 'abcde')"
-                )
+                cursor.execute(f"INSERT INTO {table} (id, v) VALUES (2, 'abcde')")
                 raise AssertionError("over-length varchar must be refused")
             except Exception as error:
                 assert_sqlstate("22001", error)
@@ -221,7 +207,13 @@ def test_array_types_and_metadata(driver, connector, table_factory):
             # psycopg2 has no money[] loader and returns PostgreSQL's array
             # text form; psycopg3 decodes the array into strings.
             assert row[4] == (["$3.25"] if driver == "psycopg3" else "{$3.25}")
-            assert [oid for _, oid in description(cursor)] == [1007, 1009, 1231, 1015, 791]
+            assert [oid for _, oid in description(cursor)] == [
+                1007,
+                1009,
+                1231,
+                1015,
+                791,
+            ]
 
             cursor.execute(
                 "SELECT attname, attndims, format_type(atttypid, atttypmod) "
@@ -241,9 +233,7 @@ def test_array_types_and_metadata(driver, connector, table_factory):
                 [1, 2],
             )
 
-            cursor.execute(
-                f"INSERT INTO {table} (id, v) VALUES (2, ARRAY['abcd'])"
-            )
+            cursor.execute(f"INSERT INTO {table} (id, v) VALUES (2, ARRAY['abcd'])")
             assert one(cursor, f"SELECT v FROM {table} WHERE id = 2") == (["abcd"],)
 
 

@@ -93,9 +93,9 @@ def test_vector_literal_and_index_session(connector):
     with closing(connector("psycopg3")) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SET ivfflat.probes = 4")
-            assert one(cursor, "SELECT '[1,2,3]'::vector(3) <-> '[1,2,3]'::vector(3)") == (
-                0.0,
-            )
+            assert one(
+                cursor, "SELECT '[1,2,3]'::vector(3) <-> '[1,2,3]'::vector(3)"
+            ) == (0.0,)
             cursor.execute(
                 "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
                 f"WHERE attrelid = '{VECTOR_TABLE}'::regclass AND attname = 'vec'"

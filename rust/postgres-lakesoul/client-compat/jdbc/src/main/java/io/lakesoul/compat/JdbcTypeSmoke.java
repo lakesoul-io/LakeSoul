@@ -88,9 +88,7 @@ public final class JdbcTypeSmoke {
                     check(result.next(), "semantic types row");
                     check(uuid.equals(result.getObject(1, UUID.class)), "uuid value");
                     Array array = result.getArray(2);
-                    check(
-                            ((UUID[]) array.getArray())[0].equals(uuid),
-                            "uuid[] first element");
+                    check(((UUID[]) array.getArray())[0].equals(uuid), "uuid[] first element");
                     check("$123.45".equals(result.getString(3)), "money value");
                     check(big.compareTo(result.getBigDecimal(4)) == 0, "large numeric value");
                     check("abcd".equals(result.getString(5)), "varchar value");
