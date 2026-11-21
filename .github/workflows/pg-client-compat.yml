@@ -10,6 +10,7 @@ on:
       - ".github/workflows/pg-client-compat.yml"
       - "rust/postgres-lakesoul/**"
       - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-console/**"
       - "rust/lakesoul-metadata/**"
       - "rust/lakesoul-io/**"
       - "script/meta_init.sql"
@@ -24,6 +25,7 @@ on:
       - ".github/workflows/pg-client-compat.yml"
       - "rust/postgres-lakesoul/**"
       - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-console/**"
       - "rust/lakesoul-metadata/**"
       - "rust/lakesoul-io/**"
       - "script/meta_init.sql"
@@ -104,9 +106,9 @@ jobs:
           shared-key: "rust-test-fast"
           cache-workspace-crates: true
           save-if: false
-      - name: Build postgres-lakesoul
-        run: cargo build --profile test-fast -p postgres-lakesoul
-      - name: Run psycopg and pgjdbc baseline
+      - name: Build postgres-lakesoul and lakesoul-console
+        run: cargo build --profile test-fast -p postgres-lakesoul -p lakesoul-console
+      - name: Run psycopg, pgjdbc and pgvector baselines
         env:
           POSTGRES_LAKESOUL_BIN: rust/target/test-fast/postgres-lakesoul
         run: ./rust/postgres-lakesoul/client-compat/run.sh

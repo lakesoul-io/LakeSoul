@@ -62,6 +62,33 @@ def sqlstate(error: BaseException) -> str | None:
     return getattr(error, "pgcode", None) or getattr(error, "sqlstate", None)
 
 
+def description(cursor):
+    """Driver-neutral column (name, type OID) pairs."""
+    if not cursor.description:
+        return []
+    if hasattr(cursor.description[0], "type_code"):
+        return [(column.name, column.type_code) for column in cursor.description]
+    return [(column[0], column[1]) for column in cursor.description]
+
+
+def one(cursor, sql, params=None):
+    cursor.execute(sql, params or ())
+    return cursor.fetchone()
+
+
+def assert_sqlstate(expected, error):
+    actual = sqlstate(error)
+    assert actual == expected, f"expected SQLSTATE {expected}, got {actual}: {error}"
+
+
+DRIVERS = ["psycopg2", "psycopg3"]
+
+
+@pytest.fixture(params=DRIVERS, ids=DRIVERS)
+def driver(request):
+    return request.param
+
+
 def unique_table(prefix: str = "client_compat") -> str:
     # PostgreSQL folds unquoted identifiers to lower case; the generated name
     # is already lower case and stays well below the 63-byte limit.
@@ -136,5 +163,11 @@ def pytest_sessionstart(session):
         versions.append(f"sqlalchemy={sqlalchemy.__version__}")
     except Exception as error:  # pragma: no cover - dependency check
         versions.append(f"sqlalchemy=<missing: {error}>")
+    try:
+        from importlib.metadata import version
+
+        versions.append(f"pgvector={version('pgvector')}")
+    except Exception as error:  # pragma: no cover - dependency check
+        versions.append(f"pgvector=<missing: {error}>")
     print("\nclient versions: " + " ".join(versions))
     print(f"server dsn: postgresql://{HOST}:{PORT}/{DATABASE}")

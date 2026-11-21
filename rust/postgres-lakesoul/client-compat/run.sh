@@ -3,9 +3,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Start a real postgres-lakesoul process and run the psycopg and pgjdbc
-# baseline against it. The metadata database and warehouse are disposable;
-# set LAKESOUL_PG_* for a local metadata PostgreSQL.
+# Start a real postgres-lakesoul process and run the psycopg, pgjdbc and
+# pgvector baselines against it. lakesoul-console creates the vector-index
+# fixture table. The metadata database and warehouse are disposable; set
+# LAKESOUL_PG_* for a local metadata PostgreSQL.
 set -euo pipefail
 
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -78,6 +79,42 @@ openssl req -new -x509 -key "$TLS_KEY" -out "$TLS_CERT" -days 2 \
 # so every driver must negotiate it. pg_isready and psql read the same env.
 export PGSSLMODE=require
 
+# pgvector columns are only reported as the `vector` wire type when the table
+# declares a vector index column. PostgreSQL CREATE TABLE cannot do that here,
+# so create the fixture the same way the Python SDK and DataFusion do: through
+# lakesoul-console, against the same metadata database and warehouse.
+CONSOLE_BIN=${POSTGRES_LAKESOUL_CONSOLE_BIN:-"$ROOT/rust/target/test-fast/lakesoul-console"}
+if [[ ! -x "$CONSOLE_BIN" ]]; then
+  CONSOLE_BIN="$ROOT/rust/target/debug/lakesoul-console"
+fi
+if [[ ! -x "$CONSOLE_BIN" ]]; then
+  echo "lakesoul-console binary not found; build it with" >&2
+  echo "  cargo build --profile test-fast -p lakesoul-console" >&2
+  exit 1
+fi
+export CLIENT_COMPAT_VECTOR_TABLE=client_compat_vector
+cat > "$WAREHOUSE/client_vector.sql" <<SQL
+CREATE EXTERNAL TABLE $CLIENT_COMPAT_VECTOR_TABLE (
+    id BIGINT NOT NULL PRIMARY KEY,
+    vec FLOAT[] NOT NULL
+) STORED AS LAKESOUL
+LOCATION 'file://$WAREHOUSE/$CLIENT_COMPAT_VECTOR_TABLE'
+OPTIONS (
+    'vector_index_columns' '[{"column":"vec","dim":3,"nlist":4,"total_bits":7,"metric":"L2"}]',
+    'hashBucketNum' '4'
+);
+INSERT INTO $CLIENT_COMPAT_VECTOR_TABLE VALUES (1, ARRAY[1.0, 2.0, 3.0]), (2, ARRAY[4.0, 5.0, 6.0]);
+SQL
+echo "== create pgvector fixture =="
+if ! "$CONSOLE_BIN" \
+  --warehouse-prefix "file://$WAREHOUSE" \
+  --log-dir "$WAREHOUSE" \
+  -f "$WAREHOUSE/client_vector.sql" >"$WAREHOUSE/console.log" 2>&1; then
+  echo "failed to create the pgvector fixture table" >&2
+  tail -100 "$WAREHOUSE/console.log" >&2 || true
+  exit 1
+fi
+
 "$BIN" \
   --bind "$HOST" \
   --port "$PORT" \
@@ -138,7 +175,17 @@ import uuid
 print(uuid.uuid4().hex[:16])
 PY
 )"
+JDBC_ARGS="$HOST $PORT $DATABASE $USER $PASSWORD $JDBC_TABLE"
 mvn -q -f "$DIR/jdbc/pom.xml" compile exec:java \
-  -Dexec.args="$HOST $PORT $DATABASE $USER $PASSWORD $JDBC_TABLE require"
+  -Dexec.mainClass=io.lakesoul.compat.JdbcSmoke \
+  -Dexec.args="$JDBC_ARGS require"
+
+echo "== pgjdbc semantic types and pgvector baseline =="
+mvn -q -f "$DIR/jdbc/pom.xml" exec:java \
+  -Dexec.mainClass=io.lakesoul.compat.JdbcTypeSmoke \
+  -Dexec.args="$JDBC_ARGS require"
+mvn -q -f "$DIR/jdbc/pom.xml" exec:java \
+  -Dexec.mainClass=io.lakesoul.compat.JdbcVectorSmoke \
+  -Dexec.args="$JDBC_ARGS require"
 
 echo "client compatibility baseline passed"

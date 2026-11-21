@@ -13,6 +13,7 @@
     <maven.compiler.release>11</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <postgresql.version>42.7.7</postgresql.version>
+    <pgvector.version>0.1.6</pgvector.version>
     <exec-maven-plugin.version>3.5.0</exec-maven-plugin.version>
   </properties>
 
@@ -22,6 +23,11 @@
       <artifactId>postgresql</artifactId>
       <version>${postgresql.version}</version>
     </dependency>
+    <dependency>
+      <groupId>com.pgvector</groupId>
+      <artifactId>pgvector</artifactId>
+      <version>${pgvector.version}</version>
+    </dependency>
   </dependencies>
 
   <build>
@@ -30,9 +36,6 @@
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>${exec-maven-plugin.version}</version>
-        <configuration>
-          <mainClass>io.lakesoul.compat.JdbcSmoke</mainClass>
-        </configuration>
       </plugin>
     </plugins>
   </build>
