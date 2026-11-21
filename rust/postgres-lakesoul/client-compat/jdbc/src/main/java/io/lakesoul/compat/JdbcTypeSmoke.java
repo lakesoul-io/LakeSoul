@@ -20,10 +20,12 @@ public final class JdbcTypeSmoke {
     private JdbcTypeSmoke() {}
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 6) {
+        if (args.length != 6 && args.length != 7) {
             throw new IllegalArgumentException(
-                    "usage: JdbcTypeSmoke <host> <port> <database> <user> <password> <table>");
+                    "usage: JdbcTypeSmoke <host> <port> <database> <user> <password> <table>"
+                            + " [sslmode]");
         }
+        String sslmode = args.length == 7 ? args[6] : "disable";
         String url =
                 "jdbc:postgresql://"
                         + args[0]
@@ -31,7 +33,9 @@ public final class JdbcTypeSmoke {
                         + args[1]
                         + "/"
                         + args[2]
-                        + "?sslmode=disable&ApplicationName=lakesoul-jdbc-types-compat";
+                        + "?sslmode="
+                        + sslmode
+                        + "&ApplicationName=lakesoul-jdbc-types-compat";
         String table = args[5] + "_types";
         try (Connection connection = DriverManager.getConnection(url, args[3], args[4])) {
             try (Statement statement = connection.createStatement()) {

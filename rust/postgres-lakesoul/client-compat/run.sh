@@ -183,9 +183,9 @@ mvn -q -f "$DIR/jdbc/pom.xml" compile exec:java \
 echo "== pgjdbc semantic types and pgvector baseline =="
 mvn -q -f "$DIR/jdbc/pom.xml" exec:java \
   -Dexec.mainClass=io.lakesoul.compat.JdbcTypeSmoke \
-  -Dexec.args="$JDBC_ARGS"
+  -Dexec.args="$JDBC_ARGS require"
 mvn -q -f "$DIR/jdbc/pom.xml" exec:java \
   -Dexec.mainClass=io.lakesoul.compat.JdbcVectorSmoke \
-  -Dexec.args="$JDBC_ARGS"
+  -Dexec.args="$JDBC_ARGS require"
 
 echo "client compatibility baseline passed"

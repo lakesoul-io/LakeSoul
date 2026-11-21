@@ -19,10 +19,12 @@ public final class JdbcVectorSmoke {
     private JdbcVectorSmoke() {}
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 6) {
+        if (args.length != 6 && args.length != 7) {
             throw new IllegalArgumentException(
-                    "usage: JdbcVectorSmoke <host> <port> <database> <user> <password> <table>");
+                    "usage: JdbcVectorSmoke <host> <port> <database> <user> <password> <table>"
+                            + " [sslmode]");
         }
+        String sslmode = args.length == 7 ? args[6] : "disable";
         String url =
                 "jdbc:postgresql://"
                         + args[0]
@@ -30,7 +32,9 @@ public final class JdbcVectorSmoke {
                         + args[1]
                         + "/"
                         + args[2]
-                        + "?sslmode=disable&ApplicationName=lakesoul-jdbc-pgvector-compat";
+                        + "?sslmode="
+                        + sslmode
+                        + "&ApplicationName=lakesoul-jdbc-pgvector-compat";
         String vectorTable =
                 System.getenv().getOrDefault("CLIENT_COMPAT_VECTOR_TABLE", "client_compat_vector");
         try (Connection connection = DriverManager.getConnection(url, args[3], args[4])) {
