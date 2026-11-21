@@ -80,7 +80,7 @@ jobs:
   run-pytest:
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_DIR: ${{ runner.temp }}/sccache
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
@@ -181,10 +181,10 @@ jobs:
       - name: Restore sccache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-${{ github.sha }}
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
           restore-keys: |
-            sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-
+            sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-
             sccache-gnu217-testfast-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -243,8 +243,8 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-${{ github.sha }}
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
   publish:
     runs-on: ubuntu-24.04
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/py-v')

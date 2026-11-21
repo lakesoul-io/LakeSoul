@@ -103,7 +103,7 @@ jobs:
     needs: validate-release
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_DIR: ${{ runner.temp }}/sccache
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
@@ -161,10 +161,10 @@ jobs:
       - name: Restore sccache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-${{ github.sha }}
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
           restore-keys: |
-            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-
+            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
             sccache-host-testfast-${{ runner.os }}-
 
       - uses: mozilla-actions/sccache-action@v0.0.11
