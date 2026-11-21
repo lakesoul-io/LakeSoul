@@ -79,37 +79,6 @@ openssl req -new -x509 -key "$TLS_KEY" -out "$TLS_CERT" -days 2 \
 # so every driver must negotiate it. pg_isready and psql read the same env.
 export PGSSLMODE=require
 
-"$BIN" \
-  --bind "$HOST" \
-  --port "$PORT" \
-  --warehouse-prefix "file://$WAREHOUSE" \
-  --discovery none \
-  --no-metrics \
-  --worker-threads 2 \
-  --max-connections 32 \
-  --max-queries-per-user 32 \
-  --max-result-rows 0 \
-  --max-result-bytes 0 \
-  --memory-limit 0 \
-  --vortex-decode-budget 0 \
-  --tls-cert "$TLS_CERT" \
-  --tls-key "$TLS_KEY" \
-  --require-tls \
-  >"$LOG" 2>&1 &
-SERVER_PID=$!
-
-for _ in $(seq 1 120); do
-  if pg_isready -h "$HOST" -p "$PORT" -d "$DATABASE" -U "$USER" >/dev/null 2>&1; then
-    break
-  fi
-  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "postgres-lakesoul exited before becoming ready" >&2
-    exit 1
-  fi
-  sleep 1
-done
-pg_isready -h "$HOST" -p "$PORT" -d "$DATABASE" -U "$USER" >/dev/null
-
 # pgvector columns are only reported as the `vector` wire type when the table
 # declares a vector index column. PostgreSQL CREATE TABLE cannot do that here,
 # so create the fixture the same way the Python SDK and DataFusion do: through
@@ -145,6 +114,37 @@ if ! "$CONSOLE_BIN" \
   tail -100 "$WAREHOUSE/console.log" >&2 || true
   exit 1
 fi
+
+"$BIN" \
+  --bind "$HOST" \
+  --port "$PORT" \
+  --warehouse-prefix "file://$WAREHOUSE" \
+  --discovery none \
+  --no-metrics \
+  --worker-threads 2 \
+  --max-connections 32 \
+  --max-queries-per-user 32 \
+  --max-result-rows 0 \
+  --max-result-bytes 0 \
+  --memory-limit 0 \
+  --vortex-decode-budget 0 \
+  --tls-cert "$TLS_CERT" \
+  --tls-key "$TLS_KEY" \
+  --require-tls \
+  >"$LOG" 2>&1 &
+SERVER_PID=$!
+
+for _ in $(seq 1 120); do
+  if pg_isready -h "$HOST" -p "$PORT" -d "$DATABASE" -U "$USER" >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo "postgres-lakesoul exited before becoming ready" >&2
+    exit 1
+  fi
+  sleep 1
+done
+pg_isready -h "$HOST" -p "$PORT" -d "$DATABASE" -U "$USER" >/dev/null
 
 export PGHOST=$HOST
 export PGPORT=$PORT
