@@ -81,6 +81,34 @@ public final class JdbcVectorSmoke {
                     check(!result.next(), "only two nearest rows");
                 }
             }
+            String ddlTable = vectorTable + "_ddl";
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("DROP TABLE IF EXISTS " + ddlTable);
+                statement.executeUpdate(
+                        "CREATE TABLE "
+                                + ddlTable
+                                + " (id bigint primary key, embedding vector(3))");
+                statement.executeUpdate(
+                        "INSERT INTO " + ddlTable + " VALUES (1, '[1,2,3]'), (2, '[4,5,6]')");
+                statement.executeUpdate(
+                        "CREATE INDEX "
+                                + ddlTable
+                                + "_idx ON "
+                                + ddlTable
+                                + " USING hnsw (embedding) WITH (m = 16, ef_construction = 64)");
+            }
+            try (PreparedStatement nearest =
+                    connection.prepareStatement(
+                            "SELECT id FROM " + ddlTable + " ORDER BY embedding <-> ? LIMIT 2")) {
+                nearest.setObject(1, new PGvector(new float[] {1.0f, 2.0f, 3.0f}));
+                try (ResultSet result = nearest.executeQuery()) {
+                    check(result.next() && result.getLong(1) == 1, "DDL table nearest id");
+                    check(result.next() && result.getLong(1) == 2, "DDL table second id");
+                }
+            }
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("DROP TABLE IF EXISTS " + ddlTable);
+            }
         }
         System.out.println("JDBC PGvector PASS table=" + vectorTable);
     }

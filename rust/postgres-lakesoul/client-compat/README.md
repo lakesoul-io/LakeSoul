@@ -15,8 +15,8 @@ that ordinary PostgreSQL driver workflows can execute.
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | `test_types.py` | psycopg2 + psycopg3 semantic types: `uuid`, `uuid[]`, `money`, `numeric(60,10)`/`numeric(76,0)`, `varchar(n)`/`char(n)`, `time`/`timestamp(p)`/`timestamptz`, arrays of int/text/numeric/varchar/money, OIDs and `pg_attribute` metadata, plus explicit refusals |
-| `test_pgvector.py` | pgvector type discovery, `Vector` parameters and `<->`/`<#>`/`<=>` distance, vector column round trip, `format_type`, SQLAlchemy `Vector` reflection/select |
-| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT; semantic types and `ParameterMetaData` in `JdbcTypeSmoke`, pgvector via `com.pgvector:pgvector` in `JdbcVectorSmoke` |
+| `test_pgvector.py` | pgvector type discovery, `Vector` parameters and `<->`/`<#>`/`<=>` distance, vector column round trip, `format_type`, SQLAlchemy `Vector` reflection/select, and `CREATE TABLE`/`CREATE INDEX` DDL (including `vector_index_columns` declarations, refused index forms and SQLAlchemy index creation) |
+| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT; semantic types and `ParameterMetaData` in `JdbcTypeSmoke`, pgvector type/query and `CREATE TABLE`/`CREATE INDEX` DDL via `com.pgvector:pgvector` in `JdbcVectorSmoke` |
 
 Time travel (`lakesoul_table_scan(table, mode, value)`) is also covered through
 both drivers: `test_time_travel.py` pins a scan to a `timestamp` between two
@@ -110,7 +110,7 @@ The remaining known gaps are:
 | `money[]` in psycopg2 | no built-in array loader; the driver returns PostgreSQL's array text form (`{$3.25}`) instead of a Python list |
 | array subscript results | `arr[1]` is reported as text by the wire layer; cast with `::text` when comparing across both drivers |
 | binary array parameters | an over-long `varchar(n)` element sent as a bound binary array is not rejected; only SQL array literals are checked element by element |
-| `vector(n)` in SQL DDL | a vector column must be declared through `lakesoul-console`/the SDK with `vector_index_columns`; PostgreSQL `CREATE TABLE` cannot declare it |
+| SQLAlchemy DDL transactions | DDL is refused inside a transaction block; use an autocommit connection (`isolation_level="AUTOCOMMIT"`) for `CREATE TABLE`/`CREATE INDEX`. The psycopg3 SQLAlchemy dialect also issues nested transactions during type discovery and is not certified |
 
 SQLAlchemy reflection is certified through the `psycopg2` dialect. The
 `psycopg3` dialect starts a nested transaction (`SAVEPOINT`) during reflection,
