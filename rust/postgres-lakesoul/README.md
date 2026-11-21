@@ -17,8 +17,8 @@ export TZ=UTC
 # Prepare the dedicated test database on first use; this script wipes the test database, do not use it on production databases.
 ./script/meta_init_for_local_test.sh -j 1
 
-LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract -- --nocapture
-LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test contracts -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test contracts -- --nocapture
 ```
 
 This requires a reachable, initialized, and migrated PostgreSQL, plus the repository's native build dependencies such as `protoc`, the Vortex `flatc`, and Clang/libclang; the TPC-H targets additionally require Python 3.11+ and use only the standard library. No separate PG wire service or hand-made fixtures are needed; these targets use a local warehouse, do not depend on S3/RustFS, and do not require pgvector in a reference PostgreSQL.
@@ -28,7 +28,7 @@ The physical executor uses the `datafusion-physical-plan` patch pinned by Git `r
 In addition to the existing legacy/v2 default member tests, CI explicitly runs:
 
 ```sh
-cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
+cargo -q test --profile test-fast -p postgres-lakesoul --test contracts --jobs 4 -- --nocapture
 ```
 
 The workspace `default-members` is unchanged. The default result includes two **named, explicitly marked strict reproductions of known defects** (see below); they are not part of the passing compatibility claim, and the remaining tests must not be skipped for lack of a service. Projection scalar subquery multi-row and `SET TIME ZONE`/connection reset have been fixed and promoted to normal gates; they are no longer counted as defects.
@@ -216,7 +216,7 @@ Two workers means two real Flight gRPC services using the same owned warehouse; 
 # Reproduce one expanded combination locally; the harness still creates, commits, and cleans up the data itself.
 LAKESOUL_TPCH_SCALE=1 LAKESOUL_TPCH_LAYOUT=nopk LAKESOUL_TPCH_WORKERS=2 \
   LAKESOUL_IO_USE_V2_MERGE=true \
-  cargo -q test -p postgres-lakesoul --test tpch_contract -- --nocapture
+  cargo -q test -p postgres-lakesoul --test contracts tpch_contract -- --nocapture
 ```
 
 For the standalone CLI's usage and report contract against existing data from the same source, see the [driver README](benchmark/driver/README.md#strict-tpc-h-regression-gate). The CLI's `--layout` is a data label; only the automatic fixture provides metadata/physical proof of the actual storage layout.
@@ -614,7 +614,7 @@ The server also accepts a table-level subset of PostgreSQL `GRANT` / `REVOKE` on
 - Covered by `auth::domain_tests`, `server::tests::rbac_*`, `catalog::snapshot::tests` (lakesoul-datafusion) and `rbac_contract::rbac_domain_enforcement_contract`, against a real `--jwt-auth --rbac` child with one namespace per team plus the public fixtures: database visibility and the hidden-equals-missing startup error, `create-sets-domain` read back from the metadata database, every statement above refused for another team and for a `public` token while the authoritative snapshot (metadata rows and warehouse bytes) stays unchanged, extended Parse, detached jobs (including the same `sub` under another group: its jobs, results and `job_key`s stay apart), the `42501` refusals, and a table inserted straight into the metadata database (resolved at once by its team, listed after the refresh, never visible to the other team).
 
 ```sh
-cargo -q test -p postgres-lakesoul --test rbac_contract -- --nocapture
+cargo -q test -p postgres-lakesoul --test contracts rbac_contract:: -- --nocapture
 ```
 
 ## Failure acceptance
@@ -622,15 +622,15 @@ cargo -q test -p postgres-lakesoul --test rbac_contract -- --nocapture
 The commands below **should exit non-zero**; they are not normal passing commands. `expectation` deliberately corrupts an expectation (merge uses an old value, catalog uses the peer database identity, vector uses a wrong ID, TPC-H uses a wrong q06 numeric answer), and `startup` passes invalid startup arguments to the real binary; both must print cleanup proof. The storage, catalog, vector, and TPC-H target faults occur after all fixtures are created, additionally verifying that new tables/the second namespace/committed index metadata and files are reclaimed; the TPC-H dual-worker startup fault also verifies RPC port and worker task reclamation.
 
 ```sh
-LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test sql_compat -- sql_compat_phase_one --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test sql_compat -- sql_compat_phase_one --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test storage_contract -- storage_contract_phase_three_one --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test catalog_contract -- catalog_contract_phase_three_two --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test catalog_contract -- catalog_contract_phase_three_two --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test vector_contract -- vector_contract_phase_three_three --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test vector_contract -- vector_contract_phase_three_three --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test tpch_contract -- tpch_q01_to_q22_and_strict_failures --exact --nocapture
-LAKESOUL_SQL_COMPAT_FAULT=startup LAKESOUL_TPCH_LAYOUT=nopk LAKESOUL_TPCH_WORKERS=2 cargo -q test -p postgres-lakesoul --test tpch_contract -- tpch_q01_to_q22_and_strict_failures --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test contracts sql_compat::sql_compat_phase_one --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test contracts sql_compat::sql_compat_phase_one --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test contracts storage_contract::storage_contract_phase_three_one --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test contracts catalog_contract::catalog_contract_phase_three_two --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test contracts catalog_contract::catalog_contract_phase_three_two --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test contracts vector_contract::vector_contract_phase_three_three --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=startup cargo -q test -p postgres-lakesoul --test contracts vector_contract::vector_contract_phase_three_three --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test contracts tpch_contract::tpch_q01_to_q22_and_strict_failures --exact --nocapture
+LAKESOUL_SQL_COMPAT_FAULT=startup LAKESOUL_TPCH_LAYOUT=nopk LAKESOUL_TPCH_WORKERS=2 cargo -q test -p postgres-lakesoul --test contracts tpch_contract::tpch_q01_to_q22_and_strict_failures --exact --nocapture
 ```
 
 Projection scalar subquery multi-row has been fixed, verified through the real protocol to return PostgreSQL `21000`, and promoted to the normal gate `projection_scalar_subquery_cardinality`; it is no longer listed as a defect. The connection semantics of `SET TIME ZONE` and `RESET`/`DISCARD ALL` have been fixed, and the strict case `time_zone_changes_query_and_is_connection_local` has had its `ignored` removed and become a normal gate. `SHOW`'s extended Describe metadata has been fixed: the hook declares at Parse the columns Execute actually returns, so `SHOW TimeZone`/`SHOW timezone` and `SHOW ivfflat.probes` Describe as `TimeZone`/`ivfflat.probes` with type `text` (PG's SHOW result type, OID 25), and `vector_probes_show_describe_matches_query` has had its `ignored` removed and become a normal gate. NUMERIC zero binary scale has also been fixed: `src/pg_numeric.rs` re-encodes zero DECIMAL units from `(mantissa, scale)` per PostgreSQL `numeric_send`, while non-zero units keep the upstream encoded bytes; `decimal_zero_binary_scale_matches_postgres` has had its `ignored` removed, with the diff covering `0`, `0.00`, `1e-20` (written as `0.00000000000000000001` in decimal text), and `-0.00`. At this point no strict defect reproduction remains under default `ignored`.
