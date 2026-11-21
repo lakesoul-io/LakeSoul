@@ -54,7 +54,6 @@ jobs:
         with:
           java-version: "11"
           distribution: temurin
-          cache: maven
       - name: Validate synchronized versions
         run: python script/release.py check
       - name: Validate effective Maven coordinates
@@ -160,6 +159,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-test-fast"
+          cache-workspace-crates: true
           save-if: false
       - name: Install PostgreSQL client
         run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
@@ -359,7 +359,6 @@ jobs:
         with:
           java-version: "11"
           distribution: temurin
-          cache: maven
       - name: Install Gluten Maven dependencies
         run: |
           archive="$RUNNER_TEMP/gluten-maven-deps-1.6.0-spark35.tar.gz"
@@ -539,7 +538,6 @@ jobs:
         with:
           java-version: "11"
           distribution: temurin
-          cache: maven
       - name: Build Spark and Flink E2E artifacts
         run: >-
           mvn -q -B install -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12
@@ -582,7 +580,7 @@ jobs:
             pyspark==3.3.1 pyarrow==20.0.0
           curl --fail --location --retry 3 \
             --output /tmp/lakesoul-spark-3.3-3.0.0.jar \
-            https://repo1.maven.org/maven2/com/dmetasoul/lakesoul-spark/3.3-3.0.0/lakesoul-spark-3.3-3.0.0.jar
+            https://maven-central-asia.storage-download.googleapis.com/maven2/com/dmetasoul/lakesoul-spark/3.3-3.0.0/lakesoul-spark-3.3-3.0.0.jar
       - name: Verify legacy formats and consistent pre-upgrade recovery
         env:
           CURRENT_PYTHON: ${{ github.workspace }}/python/.venv/bin/python
@@ -728,7 +726,6 @@ jobs:
         with:
           java-version: "11"
           distribution: temurin
-          cache: maven
           server-id: central
           server-username: MAVEN_USERNAME
           server-password: MAVEN_PASSWORD

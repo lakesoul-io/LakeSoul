@@ -97,7 +97,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -178,7 +177,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -245,7 +243,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -311,7 +308,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -382,7 +378,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -459,7 +454,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -526,7 +520,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -593,7 +586,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -660,7 +652,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install psql and gdb
         run: |
           sudo apt-get update

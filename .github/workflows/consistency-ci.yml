@@ -75,7 +75,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Set up Python 3.9
         uses: actions/setup-python@v5
         with:
@@ -117,12 +116,15 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           unset HADOOP_HOME HDFS_LIB_DIR
+          sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
+          export JAVA_HOME=/opt/lakesoul-jdk
           # One invocation builds the JNI libraries and the lakesoul-datafusion test
           # binary, so the datafusion graph is compiled once instead of twice.
           cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17 \
             --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-datafusion \
-            --features=lakesoul-datafusion/ci --lib --tests \
-            --message-format=json > /tmp/cargo-build.json
+            --features=lakesoul-datafusion/ci,lakesoul-io-c/hdfs --lib --tests \
+            --message-format=json > /tmp/cargo-build.json \
+            || { cat /tmp/cargo-build.json; exit 1; }
           python3 - <<'PY' >> "$GITHUB_ENV"
           import json
           for line in open("/tmp/cargo-build.json"):
@@ -179,6 +181,7 @@ jobs:
           rm -rf tpch-dbgen
       - name: Verify that benchmark queries return expected results
         run: |
+          export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
           TPCH_DATA="$(realpath lakesoul/test_files/tpch/data)"
           export TPCH_DATA
           "$BENCHMARK_TEST_BIN" load_tpch_data --nocapture

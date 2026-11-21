@@ -100,7 +100,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
       - uses: dtolnay/rust-toolchain@stable
@@ -131,10 +130,10 @@ jobs:
             download https://mirrors.aliyun.com/apache/hadoop/common/hadoop-3.3.6/hadoop-3.3.6.tar.gz "$hadoop_tar"
           tar xf "$hadoop_tar" -C "$HOME"
           echo "HADOOP_HOME=$HOME/hadoop-3.3.6" >> "$GITHUB_ENV"
-          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.5/flink-s3-fs-hadoop-1.20.5.jar -O "$HOME/flink-s3-fs-hadoop-1.20.5.jar"
-          wget -q https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O "$HOME/parquet-hadoop-bundle-1.13.1.jar"
-          wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.20.5/flink-parquet-1.20.5.jar -O "$HOME/flink-parquet-1.20.5.jar"
-          wget -q https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
+          wget -q https://maven-central-asia.storage-download.googleapis.com/maven2/org/apache/flink/flink-s3-fs-hadoop/1.20.5/flink-s3-fs-hadoop-1.20.5.jar -O "$HOME/flink-s3-fs-hadoop-1.20.5.jar"
+          wget -q https://maven-central-asia.storage-download.googleapis.com/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar -O "$HOME/parquet-hadoop-bundle-1.13.1.jar"
+          wget -q https://maven-central-asia.storage-download.googleapis.com/maven2/org/apache/flink/flink-parquet/1.20.5/flink-parquet-1.20.5.jar -O "$HOME/flink-parquet-1.20.5.jar"
+          wget -q https://maven-central-asia.storage-download.googleapis.com/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar -O "$HOME/mysql-connector-j-8.0.33.jar"
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:

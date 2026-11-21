@@ -86,7 +86,6 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
-          cache: maven
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -102,6 +101,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-test-fast"
+          cache-workspace-crates: true
           save-if: false
       - name: Build postgres-lakesoul
         run: cargo build --profile test-fast -p postgres-lakesoul

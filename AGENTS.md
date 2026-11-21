@@ -261,6 +261,20 @@ When searching the repository, exclude generated or lock files where possible: `
 | `python-ci.yml` | Push/PR to `python/**` | Python build + pytest |
 | `native-build.yml` | Push/PR | Linux x64 native library builds |
 
+### Rust build cache
+
+`rust-test-fast` is produced only by the `legacy` leg of the `rust-ci` test
+matrix; the `v2` and `ivm` legs, Clippy, TPC-H, and the release gates restore
+it. The cache includes the workspace crates as well as dependencies, so
+unchanged LakeSoul crates are reused across runs. `native-glibc217-v2` is
+produced by `native-build`; `maven-test`, `compatibility-ci`, `consistency-ci`,
+the CDC suites, and `python-ci` only restore it, so Python keeps no cache key
+of its own.
+
+The Maven local repository is not cached: Maven resolves through the Google
+Central mirror configured in `.mvn/settings.xml`, and the freed cache budget
+belongs to the Rust workspace cache.
+
 ---
 
 ## Contribution Guidelines

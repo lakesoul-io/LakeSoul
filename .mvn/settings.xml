@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0
+                      https://maven.apache.org/xsd/settings-1.2.0.xsd">
+  <mirrors>
+    <!-- repo.maven.apache.org is frequently unreachable from CI; this mirror
+         serves the same Maven Central artifacts. -->
+    <mirror>
+      <id>google-maven-central</id>
+      <name>Google Maven Central mirror</name>
+      <url>https://maven-central-asia.storage-download.googleapis.com/maven2/</url>
+      <mirrorOf>central</mirrorOf>
+    </mirror>
+  </mirrors>
+</settings>

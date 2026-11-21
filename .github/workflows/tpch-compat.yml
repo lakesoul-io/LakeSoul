@@ -74,6 +74,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: rust-test-fast
+          cache-workspace-crates: true
           save-if: false
       - name: Install native requirements
         run: |
