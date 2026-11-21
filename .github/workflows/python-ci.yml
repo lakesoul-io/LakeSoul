@@ -80,12 +80,10 @@ jobs:
   run-pytest:
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: ${{ runner.temp }}/sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
-      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
-      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       # Match the other zigbuild jobs so they share the same sccache stream.
       RUSTFLAGS: "-Awarnings"
     services:
@@ -180,6 +178,15 @@ jobs:
         uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+      - name: Restore sccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-${{ github.sha }}
+          restore-keys: |
+            sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-
+            sccache-gnu217-testfast-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: "v0.19.0"
@@ -232,6 +239,12 @@ jobs:
           export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
           cd python
           .venv/bin/python -m pytest tests/embodied/test_daft_ray.py -s
+      - name: Save sccache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ matrix.suite || '' }}-${{ github.sha }}
   publish:
     runs-on: ubuntu-24.04
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/py-v')
