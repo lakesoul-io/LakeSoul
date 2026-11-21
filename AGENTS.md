@@ -271,6 +271,10 @@ produced by `native-build`; `maven-test`, `compatibility-ci`, `consistency-ci`,
 the CDC suites, and `python-ci` only restore it, so Python keeps no cache key
 of its own.
 
+The `v1-rust-workspace` prefix is deliberate: GitHub caches are immutable, so
+enabling workspace crates under the old `v0-rust` key would keep restoring the
+dependency-only cache. Bump the prefix again if the cache layout changes.
+
 The Maven local repository is not cached: Maven resolves through the Google
 Central mirror configured in `.mvn/settings.xml`, and the freed cache budget
 belongs to the Rust workspace cache.
