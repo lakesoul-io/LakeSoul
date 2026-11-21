@@ -156,6 +156,7 @@ jobs:
           sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
           export JAVA_HOME=/opt/lakesoul-jdk
           cargo -q zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
+          mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/release/
           cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so rust/target/release/
           cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
