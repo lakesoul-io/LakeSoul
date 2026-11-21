@@ -150,6 +150,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
+          prefix-key: "v1-rust-workspace"
           shared-key: "rust-test-fast"
           cache-workspace-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'legacy' }}
@@ -250,6 +251,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
+          prefix-key: "v1-rust-workspace"
           shared-key: "rust-test-fast"
           cache-workspace-crates: true
           save-if: false
