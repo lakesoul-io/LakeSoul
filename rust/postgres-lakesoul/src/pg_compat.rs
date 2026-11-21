@@ -74,7 +74,8 @@ use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::types::format::FormatOptions;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 
-use crate::pg_settings::PgParameters;
+use crate::pg_settings::{PgParameters, TIME_TRAVEL_PARAMETER};
+use crate::session_settings::canonical_time_travel;
 
 /// The PostgreSQL-compatible identity reported by `version()`.
 ///
@@ -336,6 +337,27 @@ impl ScalarUDFImpl for PgSetConfig {
             }
             let name = names.value(index);
             let value = values.value(index);
+            // `set_config` is a second entry point for the time-travel GUC;
+            // validate it here so a bad value fails at the call, not at the
+            // next scan.
+            let canonical;
+            let value = if name.eq_ignore_ascii_case(TIME_TRAVEL_PARAMETER) {
+                match canonical_time_travel(value) {
+                    Ok(Some(normalized)) => {
+                        canonical = normalized;
+                        canonical.as_str()
+                    }
+                    Ok(None) => "",
+                    Err(detail) => {
+                        return Err(DataFusionError::Execution(format!(
+                            "invalid value for parameter \"{TIME_TRAVEL_PARAMETER}\": \
+                             \"{value}\" ({detail})"
+                        )));
+                    }
+                }
+            } else {
+                value
+            };
             match self.parameters.set(name, value) {
                 Some(_) => result.append_value(value),
                 None => result.append_null(),

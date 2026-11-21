@@ -56,6 +56,27 @@ GROUP BY user_id;
 - **可见性不变。** 表通过连接所属的 catalog 解析，因此 RBAC 域和 ACL 规则对 `lakesoul_table_scan` 与普通 `SELECT` 完全一致。不支持外部表。
 - **注意保留策略。** 固定读需要历史的 `partition_info` 行和 commit 文件仍然存在。tag 通过 `pinned` 标记让 clean job 保留对应 commit；没有 tag 的 snapshot 在足够旧之后可能被回收。
 
+## 会话级默认值
+
+一条设置即可固定整个连接的所有本地表扫描：
+
+```sql
+SET lakesoul.read.time_travel = '2026-11-20T10:00:00+08:00';
+SELECT * FROM events;          -- 读取该时刻的状态
+SELECT * FROM lakesoul_table_scan('events', 'timestamp', '2026-11-21T00:00:00Z');  -- 显式 pin 优先
+
+RESET lakesoul.read.time_travel;   -- 或 SET … = DEFAULT
+```
+
+- **不需要预先创建 snapshot 或 tag**。每个分区取该时刻或之前提交的最新版本，语义与 `lakesoul_table_scan` 的 `timestamp` 模式一致。
+- 如果某张表在该时刻或之前**没有任何版本**，扫描直接报错 `table "…" has no version committed at or before …`，而不是返回 0 行。该时刻之后才创建的分区会被省略。
+- 表里有旧版本、只是查询的过滤条件没有命中，属于正常的空结果，不报错。
+- **快照语义统一**：`UPDATE` / `DELETE` 的目标表读取的是同一个固定视图，而不是最新提交——该时刻之后写入的行对它们不可见；`INSERT … SELECT` 也照常从固定视图拷贝到别的表。注意新提交是在当前状态之上发布的，如果某行的“后续改动”和固定视图里的行同时命中，写回去会覆盖那个后续改动，必要时请收窄 `WHERE`。
+- 显式的 `lakesoul_table_scan` pin 优先于会话默认值。
+- 只作用于本地 LakeSoul 表；联邦外部表没有 time travel，继续读当前状态。
+- 值必须是带显式偏移的 RFC3339；`SHOW` 会显示为规范化后的 UTC。`SET LOCAL` 被拒绝（该设置是连接级、不会随 `COMMIT`/`ROLLBACK` 回滚）。`RESET ALL` 和 `DISCARD ALL` 会清除它。
+- 设置按连接生效，连接池需要在需要的连接上分别设置。
+
 ## 管理 snapshot 与 tag
 
 **snapshot** 是对整张表在某个时刻的分区版本和 commit 的不可变冻结，它的数字 `snapshot_id` 就是 `lakesoul_table_scan` 里的“version”。**tag** 是给 snapshot 起的可读名字。创建时一步完成冻结和命名：

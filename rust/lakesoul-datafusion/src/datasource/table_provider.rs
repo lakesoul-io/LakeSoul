@@ -244,6 +244,16 @@ pub struct LakeSoulTableProvider {
     pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
     /// `Some` for a pinned read view (snapshot / tag / as-of timestamp).
     pub(crate) read_snapshot: Option<TableReadSnapshot>,
+    /// Whether `read_snapshot` is an explicit per-query pin (the
+    /// `lakesoul_table_scan` table function) rather than the session-wide
+    /// `lakesoul.read.time_travel` default. An explicit pin wins over a
+    /// read-modify-write target snapshot: `INSERT INTO t SELECT … FROM
+    /// lakesoul_table_scan('t', …)` must still read the pinned rows.
+    pub(crate) read_snapshot_explicit: bool,
+    /// Error instead of returning zero rows when a session-wide pinned view
+    /// resolves no partition at all. Explicit per-query pins keep their
+    /// existing empty-result behaviour.
+    pub(crate) read_snapshot_strict: bool,
     /// The connection's deferred-commit handle, when the front end installs
     /// one: a block's staged rows are invisible to the index shards and to any
     /// rewrite that replays the published snapshot.
@@ -273,6 +283,37 @@ impl LakeSoulTableProvider {
             format_registry: Arc::clone(&self.format_registry),
             deferred_commit: self.deferred_commit.clone(),
             read_snapshot: Some(snapshot),
+            read_snapshot_explicit: true,
+            read_snapshot_strict: false,
+        }
+    }
+
+    /// Build a copy of this provider that reads a session-wide pinned view.
+    ///
+    /// Unlike [`Self::snapshot_view`], this view yields to a read-modify-write
+    /// target snapshot (so UPDATE/DELETE still plan against current rows) and
+    /// fails a scan when the pinned view resolves no partition at all. Only
+    /// `lakesoul.read.time_travel` uses it.
+    pub fn snapshot_view_requiring_data(&self, snapshot: TableReadSnapshot) -> Self {
+        Self {
+            listing_options: self.listing_options.clone(),
+            listing_table_paths: self.listing_table_paths.clone(),
+            client: Arc::clone(&self.client),
+            table_info: Arc::clone(&self.table_info),
+            logical_schema: Arc::clone(&self.logical_schema),
+            scan_schema: Arc::clone(&self.scan_schema),
+            file_schema: Arc::clone(&self.file_schema),
+            primary_keys: self.primary_keys.clone(),
+            range_partitions: self.range_partitions.clone(),
+            pushdown_filters: self.pushdown_filters,
+            io_config: self.io_config.clone(),
+            vector_index_configs: self.vector_index_configs.clone(),
+            text_index_configs: self.text_index_configs.clone(),
+            format_registry: Arc::clone(&self.format_registry),
+            deferred_commit: self.deferred_commit.clone(),
+            read_snapshot: Some(snapshot),
+            read_snapshot_explicit: false,
+            read_snapshot_strict: true,
         }
     }
 
@@ -427,15 +468,29 @@ impl LakeSoulTableProvider {
         partition_filters: &[Expr],
         snapshot: Option<Arc<Vec<PartitionInfo>>>,
     ) -> Result<Vec<(PartitionInfo, Vec<DataFileInfo>)>> {
-        // A pinned read view resolves its partition versions from the primary
-        // metadata too; the read-only replica may lag behind the snapshot.
-        let snapshot = match &self.read_snapshot {
-            Some(_) => Some(
+        // Precedence: every pinned read wins over the read-modify-write
+        // snapshot, so the session-wide as-of applies uniformly to *all*
+        // local table reads — including the old-row scan of UPDATE/DELETE
+        // targets. An explicit per-query pin (`lakesoul_table_scan`) and the
+        // session default differ only in strictness and in which one is
+        // returned when both exist: the explicit one is more specific.
+        //
+        // The fixed snapshot is still used by the writer as the commit's CAS
+        // condition (`CommitSnapshot::Update`); choosing different rows for
+        // the scan does not weaken that check.
+        let fixed_snapshot = snapshot;
+        let uses_session_pin =
+            !self.read_snapshot_explicit && self.read_snapshot.is_some();
+        let snapshot = if self.read_snapshot.is_some() {
+            // A pinned read view resolves its partition versions from the
+            // primary metadata too; the read-only replica may lag.
+            Some(
                 self.read_partition_info()
                     .await
                     .map_err(|error| report!(error))?,
-            ),
-            None => snapshot,
+            )
+        } else {
+            fixed_snapshot
         };
         // A fixed snapshot came from the primary. Its commit descriptors must
         // come from the same authority: a lagging replica could silently omit
@@ -455,6 +510,25 @@ impl LakeSoulTableProvider {
                 .await
                 .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?,
         };
+        // The session-wide as-of must fail rather than silently return zero
+        // rows when the timestamp excludes every version of the table. The
+        // check is before partition pruning: a query filter matching nothing
+        // is an ordinary empty result.
+        if self.read_snapshot_strict
+            && uses_session_pin
+            && all_partition_info.is_empty()
+            && let Some(TableReadSnapshot::AsOfMs(as_of_ms)) = &self.read_snapshot
+        {
+            let at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*as_of_ms)
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| as_of_ms.to_string());
+            return Err(report!(
+                "table \"{}\" has no version committed at or before {}; \
+                 lakesoul.read.time_travel excludes every version",
+                self.table_info().table_name,
+                at
+            ));
+        }
         let prune_partition_info = prune_partitions(
             all_partition_info,
             partition_filters,
@@ -832,6 +906,8 @@ impl LakeSoulTableProvider {
             format_registry,
             deferred_commit: provider_options.deferred_commit,
             read_snapshot: None,
+            read_snapshot_explicit: false,
+            read_snapshot_strict: false,
         })
     }
 
@@ -1197,6 +1273,8 @@ impl LakeSoulTableProvider {
             // connection installed, so no block can be tracked through it.
             deferred_commit: None,
             read_snapshot: None,
+            read_snapshot_explicit: false,
+            read_snapshot_strict: false,
         })
     }
 

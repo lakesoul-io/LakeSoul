@@ -64,6 +64,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use chrono::{DateTime, SecondsFormat, Utc};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::config::ConfigField;
 use datafusion::common::{DFSchema, ParamValues, ToDFSchema};
@@ -90,7 +91,7 @@ use pgwire::messages::data::DataRow;
 use pgwire::messages::startup::ParameterStatus;
 
 use crate::cancel::STATEMENT_TIMEOUT_KEY;
-use crate::pg_settings::{PgParameters, description, show_name};
+use crate::pg_settings::{PgParameters, TIME_TRAVEL_PARAMETER, description, show_name};
 use crate::server::{ConnectionSession, session_not_initialized};
 use crate::session::PgSession;
 
@@ -273,6 +274,9 @@ impl SessionDefaults {
                 self.restore_metadata_key(metadata, &name);
                 return Ok(false);
             }
+            // Stored in `PgParameters`, not in the session config; the
+            // caller already reset the override.
+            TIME_TRAVEL_PARAMETER => return Ok(false),
             // pgvector spells the vector-search probe count as
             // `ivfflat.probes`; both names address the same option.
             "ivfflat.probes" => {
@@ -453,6 +457,17 @@ impl SessionSettingsHook {
                 hivevar,
                 variable,
                 values,
+            } if !*hivevar
+                && normalized_parameter(variable)
+                    .eq_ignore_ascii_case(TIME_TRAVEL_PARAMETER) =>
+            {
+                Some(assign_time_travel(scope, values, client))
+            }
+            Set::SingleAssignment {
+                scope,
+                hivevar,
+                variable,
+                values,
             } if !*hivevar && is_timezone_variable(variable) => {
                 match scope {
                     None | Some(ContextModifier::Session) => {}
@@ -548,6 +563,13 @@ impl SessionSettingsHook {
     ) -> PgWireResult<Response> {
         match object_type {
             DiscardObject::ALL => {
+                if let Some(session) =
+                    client.session_extensions().get::<ConnectionSession>()
+                {
+                    // DISCARD ALL resets every parameter, including the
+                    // connection-local overrides `SET`/`set_config` wrote.
+                    session.session.parameters.reset_all();
+                }
                 let defaults = session_defaults(client)?;
                 defaults.restore_all(context, client.metadata_mut())?;
                 crate::cursor::clear_with_portals(client);
@@ -724,6 +746,117 @@ async fn assign_time_zone(
             Some("only IANA time zone names are supported"),
         )),
     }
+}
+
+/// `SET lakesoul.read.time_travel = '<RFC3339>' | DEFAULT`.
+fn assign_time_travel(
+    scope: &Option<ContextModifier>,
+    values: &[Expr],
+    client: &mut dyn HookClient,
+) -> PgWireResult<Response> {
+    match scope {
+        None | Some(ContextModifier::Session) => {}
+        Some(ContextModifier::Local) => {
+            return Err(feature_not_supported(format!(
+                "SET LOCAL {TIME_TRAVEL_PARAMETER} is not supported: a \
+                 transaction-scoped value would have to revert on \
+                 COMMIT/ROLLBACK; use SET"
+            )));
+        }
+        Some(ContextModifier::Global) => {
+            return Err(feature_not_supported(
+                "SET GLOBAL is not supported: use SET or SET SESSION".to_string(),
+            ));
+        }
+    }
+    if values.len() != 1 {
+        return Err(invalid_time_travel_value(
+            &values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            Some("expected a single RFC3339 timestamp"),
+        ));
+    }
+    let value = match &values[0] {
+        Expr::Identifier(ident) if ident.value.eq_ignore_ascii_case("default") => None,
+        Expr::Value(literal) => {
+            let Some(raw) = literal.clone().into_string() else {
+                return Err(invalid_time_travel_value(
+                    &expr_text(&values[0]),
+                    Some("expected an RFC3339 string literal or DEFAULT"),
+                ));
+            };
+            canonical_time_travel(&raw)
+                .map_err(|detail| invalid_time_travel_value(&raw, Some(&detail)))?
+        }
+        other => {
+            return Err(invalid_time_travel_value(
+                &expr_text(other),
+                Some("expected an RFC3339 string literal or DEFAULT"),
+            ));
+        }
+    };
+    let session = client
+        .session_extensions()
+        .get::<ConnectionSession>()
+        .ok_or_else(session_not_initialized)?;
+    match value {
+        Some(value) => {
+            session
+                .session
+                .parameters
+                .set(TIME_TRAVEL_PARAMETER, &value);
+        }
+        None => {
+            session.session.parameters.reset(TIME_TRAVEL_PARAMETER);
+        }
+    }
+    Ok(Response::Execution(Tag::new("SET")))
+}
+
+/// Validate an RFC3339 timestamp and normalize it to UTC with milliseconds.
+///
+/// Empty means "off". The error is the human-readable detail; callers wrap it
+/// in their own parameter-name message.
+pub(crate) fn canonical_time_travel(raw: &str) -> Result<Option<String>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let parsed = DateTime::parse_from_rfc3339(raw).map_err(|error| {
+        format!(
+            "not an RFC3339 timestamp with an explicit offset (e.g. \
+             2026-11-20T10:00:00+08:00): {error}"
+        )
+    })?;
+    Ok(Some(
+        parsed
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Millis, true),
+    ))
+}
+
+fn expr_text(expr: &Expr) -> String {
+    expr.to_string()
+}
+
+fn invalid_time_travel_value(value: &str, detail: Option<&str>) -> PgWireError {
+    let message = match detail {
+        Some(detail) => format!(
+            "invalid value for parameter \"{TIME_TRAVEL_PARAMETER}\": \
+             \"{value}\" ({detail})"
+        ),
+        None => format!(
+            "invalid value for parameter \"{TIME_TRAVEL_PARAMETER}\": \"{value}\""
+        ),
+    };
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        INVALID_PARAMETER_VALUE.to_string(),
+        message,
+    )))
 }
 
 /// Record a value in the connection's session parameters.
@@ -1183,6 +1316,22 @@ mod tests {
         };
         assert!(info.message.contains("TimeZone"), "{}", info.message);
         assert!(info.message.contains("Not/AZone"), "{}", info.message);
+    }
+
+    #[test]
+    fn time_travel_values_are_normalized_and_validated() {
+        assert_eq!(
+            canonical_time_travel("2026-11-20T10:00:00+08:00")
+                .expect("a timestamp with an offset")
+                .as_deref(),
+            Some("2026-11-20T02:00:00.000Z")
+        );
+        assert_eq!(canonical_time_travel("  ").expect("empty means off"), None);
+        assert!(
+            canonical_time_travel("2026-11-20T10:00:00").is_err(),
+            "a naive timestamp must be refused"
+        );
+        assert!(canonical_time_travel("not-a-time").is_err());
     }
 
     #[test]

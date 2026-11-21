@@ -78,6 +78,43 @@ GROUP BY user_id;
   the `pinned` flag; an untagged snapshot may be reclaimed once it is old
   enough.
 
+## Session-wide default
+
+A connection can pin every local table scan with one setting:
+
+```sql
+SET lakesoul.read.time_travel = '2026-11-20T10:00:00+08:00';
+SELECT * FROM events;          -- as of that instant
+SELECT * FROM lakesoul_table_scan('events', 'timestamp', '2026-11-21T00:00:00Z');  -- explicit pin wins
+
+RESET lakesoul.read.time_travel;   -- or SET … = DEFAULT
+```
+
+- **No snapshot or tag is needed.** Each partition resolves to its latest
+  version committed at or before the instant, exactly like the `timestamp`
+  mode of `lakesoul_table_scan`.
+- If a table has **no** version at or before the instant, the scan fails with
+  `table "…" has no version committed at or before …` instead of returning
+  zero rows. Partitions created after the instant are simply omitted.
+- A table that does have older versions but whose query filter matches nothing
+  is an ordinary empty result, not an error.
+- The snapshot is uniform: `UPDATE` and `DELETE` targets read the same pinned
+  rows a `SELECT` sees, not the latest commit. A row written after the instant
+  is invisible to them. Writes remain available — `INSERT … SELECT` can copy
+  pinned rows elsewhere. Because a new commit is published on top of current
+  state, writing a row that also changed after the instant can overwrite that
+  later change; use a narrow `WHERE` when that matters.
+- An explicit `lakesoul_table_scan` pin takes precedence over the session
+  default.
+- Only local LakeSoul tables are pinned; federated foreign tables have no time
+  travel and keep reading their current state.
+- The value must be an RFC3339 string with an explicit offset; `SHOW` reports
+  it normalized to UTC. `SET LOCAL` is refused (the setting is
+  connection-local and not reverted by `COMMIT`/`ROLLBACK`). `RESET ALL` and
+  `DISCARD ALL` clear it.
+- The setting is per connection, so a pool must set it on the connections that
+  need it.
+
 ## Managing snapshots and tags
 
 A **snapshot** is an immutable, table-wide freeze of the partition versions

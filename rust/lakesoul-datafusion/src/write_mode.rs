@@ -318,8 +318,10 @@ pub fn same_table_definition(
         && left.table_schema_arrow_ipc_json_hash == right.table_schema_arrow_ipc_json_hash
 }
 
-/// Per-statement handle to the snapshot a read-modify-write statement must
-/// use for every scan of its target table.
+/// Per-statement handle to the snapshot a read-modify-write statement uses
+/// for its target scans and, always, as the commit's CAS condition. A
+/// session-wide `lakesoul.read.time_travel` pin overrides it for the scan
+/// (so DML reads the same rows a SELECT sees) but not for the commit check.
 ///
 /// A session installs one handle in its config. It is connection-local: a
 /// front end creates a fresh handle for each connection, and the handle is
