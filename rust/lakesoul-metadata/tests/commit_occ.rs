@@ -931,3 +931,82 @@ async fn table_without_name_row_commits() -> Result<()> {
     client.delete_table_by_table_info_cascade(&table).await?;
     Ok(())
 }
+
+/// Staged and published `data_commit_info` rows carry their table's domain,
+/// never the caller's string, so the RBAC row-level security policies keep
+/// every commit visible to the owning domain's roles.
+///
+/// Both staging paths are covered: the batch publication the pg-wire writer
+/// uses (which leaves the proto default empty domain) and the single-row
+/// insert (whose callers have hard-coded `public` in the past).
+#[tokio::test]
+async fn data_commit_info_stored_with_table_domain() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("commit_domain");
+    let domain = format!("occ_domain_{}", uuid::Uuid::new_v4().simple());
+    let table_id = format!("table_{}", uuid::Uuid::new_v4());
+    client
+        .create_table(TableInfo {
+            table_id: table_id.clone(),
+            table_name: name.clone(),
+            table_namespace: NAMESPACE.to_string(),
+            table_path: format!("file:///tmp/{name}"),
+            table_schema: "[]".to_string(),
+            properties: "{}".to_string(),
+            partitions: ";".to_string(),
+            domain: domain.clone(),
+            ..Default::default()
+        })
+        .await?;
+
+    // The batch path: the caller leaves the proto default empty domain.
+    let (_, batch_commit) = new_uuid();
+    client
+        .commit_data_commit_infos(vec![DataCommitInfo {
+            table_id: table_id.clone(),
+            partition_desc: "p1".to_string(),
+            pinned: false,
+            commit_id: Some(batch_commit),
+            file_ops: Vec::new(),
+            commit_op: CommitOp::AppendCommit.into(),
+            timestamp: 1_000,
+            committed: false,
+            domain: String::new(),
+        }])
+        .await?;
+    let batch_commit_str =
+        uuid::Uuid::from_u64_pair(batch_commit.high, batch_commit.low).to_string();
+    let staged = client
+        .get_single_data_commit_info(&table_id, "p1", &batch_commit_str)
+        .await?
+        .expect("batch commit row missing");
+    assert_eq!(staged.domain, domain);
+    let head = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(head.domain, domain);
+
+    // The single-row path: a wrong value must not reach the database either.
+    let (_, single_commit) = new_uuid();
+    client
+        .insert_data_commit_info(&DataCommitInfo {
+            table_id: table_id.clone(),
+            partition_desc: "p2".to_string(),
+            pinned: false,
+            commit_id: Some(single_commit),
+            file_ops: Vec::new(),
+            commit_op: CommitOp::AppendCommit.into(),
+            timestamp: 1_000,
+            committed: false,
+            domain: "public".to_string(),
+        })
+        .await?;
+    let single_commit_str =
+        uuid::Uuid::from_u64_pair(single_commit.high, single_commit.low).to_string();
+    let staged = client
+        .get_single_data_commit_info(&table_id, "p2", &single_commit_str)
+        .await?
+        .expect("single commit row missing");
+    assert_eq!(staged.domain, domain);
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
