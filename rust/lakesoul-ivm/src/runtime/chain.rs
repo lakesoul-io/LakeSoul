@@ -154,48 +154,74 @@ fn topological_order(
         Black,
     }
 
-    fn visit<'a>(
-        node: &'a str,
-        edges: &'a BTreeMap<String, Vec<String>>,
-        marks: &mut HashMap<&'a str, Mark>,
-        path: &mut Vec<&'a str>,
-        order: &mut Vec<String>,
-    ) -> Result<()> {
-        match marks.get(node) {
-            Some(Mark::Black) => return Ok(()),
-            Some(Mark::Gray) => {
-                let start = path.iter().position(|entry| *entry == node).unwrap_or(0);
-                let mut cycle = path[start..].to_vec();
-                cycle.push(node);
-                return Err(report!("view chain cycle: {}", cycle.join(" -> ")));
-            }
-            None => {}
+    // One action at a time so the stack borrow ends before we push or pop:
+    // `last_mut` cannot coexist with a mutation of `stack` in the same scope.
+    enum Step<'a> {
+        Descend(&'a str),
+        Finish(&'a str),
+    }
+
+    let mut marks: HashMap<&str, Mark> = HashMap::new();
+    let mut path: Vec<&str> = Vec::new();
+    let mut order: Vec<String> = Vec::new();
+    // Explicit DFS stack of (node, index of the next source to visit).  An
+    // explicit stack keeps the recursion depth off the call stack: a long
+    // cascade of views cannot overflow it, and the heap frames grow only with
+    // the number of views actually registered.
+    let mut stack: Vec<(&str, usize)> = Vec::new();
+
+    // Roots first (their dependency order decides the output), then every
+    // remaining view by id, matching the previous recursive traversal.
+    for start in roots.iter().chain(edges.keys()) {
+        let start = start.as_str();
+        if !edges.contains_key(start) || marks.contains_key(start) {
+            continue;
         }
-        marks.insert(node, Mark::Gray);
-        path.push(node);
-        if let Some(sources) = edges.get(node) {
-            for source in sources {
-                if edges.contains_key(source) {
-                    visit(source, edges, marks, path, order)?;
+        marks.insert(start, Mark::Gray);
+        path.push(start);
+        stack.push((start, 0));
+        while !stack.is_empty() {
+            let step = {
+                let (node, next) = stack.last_mut().expect("non-empty stack");
+                let sources = edges.get(*node).map(Vec::as_slice).unwrap_or(&[]);
+                if *next < sources.len() {
+                    let source = sources[*next].as_str();
+                    *next += 1;
+                    if !edges.contains_key(source) {
+                        continue;
+                    }
+                    match marks.get(source) {
+                        Some(Mark::Black) => continue,
+                        Some(Mark::Gray) => {
+                            let begin =
+                                path.iter().position(|p| *p == source).unwrap_or(0);
+                            let mut cycle = path[begin..].to_vec();
+                            cycle.push(source);
+                            return Err(report!(
+                                "view chain cycle: {}",
+                                cycle.join(" -> ")
+                            ));
+                        }
+                        None => Step::Descend(source),
+                    }
+                } else {
+                    Step::Finish(node)
+                }
+            };
+            match step {
+                Step::Descend(source) => {
+                    marks.insert(source, Mark::Gray);
+                    path.push(source);
+                    stack.push((source, 0));
+                }
+                Step::Finish(node) => {
+                    stack.pop();
+                    path.pop();
+                    marks.insert(node, Mark::Black);
+                    order.push(node.to_string());
                 }
             }
         }
-        path.pop();
-        marks.insert(node, Mark::Black);
-        order.push(node.to_string());
-        Ok(())
-    }
-
-    let mut marks = HashMap::new();
-    let mut path = Vec::new();
-    let mut order = Vec::new();
-    for node in roots {
-        if edges.contains_key(node) {
-            visit(node, edges, &mut marks, &mut path, &mut order)?;
-        }
-    }
-    for node in edges.keys() {
-        visit(node, edges, &mut marks, &mut path, &mut order)?;
     }
     Ok(order)
 }
@@ -447,6 +473,27 @@ mod tests {
             topological_order(&graph, &roots(&["a"])).unwrap(),
             ["b", "a"]
         );
+    }
+
+    #[test]
+    fn orders_a_deep_chain_without_recursion() {
+        // A long cascade used to be a recursive DFS whose stack depth followed
+        // the chain length. Keep it deep enough that a call-stack version
+        // cannot rely on the test thread's stack, while the explicit-stack
+        // version grows only the heap.
+        let depth = 20_000usize;
+        let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for level in 0..depth {
+            let view = format!("v{level:05}");
+            let source = level.checked_sub(1).map(|parent| format!("v{parent:05}"));
+            graph.insert(view, source.into_iter().collect());
+        }
+        let root = format!("v{:05}", depth - 1);
+        let order = topological_order(&graph, &[root.clone()]).unwrap();
+        assert_eq!(order.len(), depth);
+        for (level, view) in order.iter().enumerate() {
+            assert_eq!(view, &format!("v{level:05}"));
+        }
     }
 
     #[test]
