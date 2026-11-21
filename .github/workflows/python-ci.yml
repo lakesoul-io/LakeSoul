@@ -80,7 +80,13 @@ jobs:
   run-pytest:
     runs-on: ubuntu-24.04
     env:
-      # Match native-build so this job restores its zigbuild release cache.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # Match the other zigbuild jobs so they share the same sccache stream.
       RUSTFLAGS: "-Awarnings"
     services:
       # Label used to access the service container
@@ -174,6 +180,9 @@ jobs:
         uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -183,13 +192,8 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@0.18.3
-      # Build the same zigbuild release graph as native-build and compatibility-ci
-      # so Python restores their cache instead of owning a second target cache.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> rust/target"
-          shared-key: "native-glibc217-v2"
-          save-if: false
+      # Build the same zigbuild test-fast graph as the other CI jobs so they
+      # share sccache entries instead of each owning a target cache.
 
       - name: Build native libraries
         env:
@@ -197,14 +201,14 @@ jobs:
         run: |
           sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
           export JAVA_HOME=/opt/lakesoul-jdk
-          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 \
+          cargo -q zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 \
             --package lakesoul-io-c --package lakesoul-metadata-c \
             --package lakesoul-console --package lakesoul-python \
             --features lakesoul-io-c/hdfs,lakesoul-python/ci-unify
           mkdir -p rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release/
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release/
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/release/
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so rust/target/release/
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
       - name: pytest
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
@@ -216,8 +220,8 @@ jobs:
           cd python
           uv sync --no-install-project --python 3.11 --group dev
           export LAKESOUL_IO_USE_V2_MERGE=true
-          ../rust/target/x86_64-unknown-linux-gnu/release/lakesoul-console tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
-          ../rust/target/x86_64-unknown-linux-gnu/release/lakesoul-console -f test.sql
+          ../rust/target/x86_64-unknown-linux-gnu/test-fast/lakesoul-console tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
+          ../rust/target/x86_64-unknown-linux-gnu/test-fast/lakesoul-console -f test.sql
           .venv/bin/python -m pytest ./tests/ -s
       - name: pytest (Daft Ray runner)
         env:

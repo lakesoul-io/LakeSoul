@@ -38,14 +38,20 @@ concurrency:
 jobs:
   rust_test:
     runs-on: ubuntu-24.04
-    # The three suites share the rust-test-fast cache but run in parallel.
-    # Only the legacy leg writes it, so a push to main produces one cache
-    # generation; the other legs only restore.
+    # The three suites run in parallel and share the sccache GHA stream.
+    # The stream is read-only outside main, so PRs restore main's entries
+    # without writing their own.
     strategy:
       fail-fast: false
       matrix:
         suite: [legacy, v2, ivm]
     env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-host-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-host-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       # Metadata PostgreSQL used by the postgres-lakesoul contract tests.
       LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
@@ -145,15 +151,11 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
-      # Canonical producer for rust-test-fast. Clippy, TPC-H, and release gates
-      # only restore it; the v2 and ivm legs of this matrix restore it too.
-      - uses: Swatinem/rust-cache@v2
+      # sccache caches rustc units in GitHub's cache service. Main writes;
+      # every other ref is read-only via SCCACHE_GHA_RW_MODE.
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          prefix-key: "v1-rust-workspace"
-          shared-key: "rust-test-fast"
-          cache-workspace-crates: true
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'legacy' }}
+          version: "v0.19.0"
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
@@ -230,9 +232,15 @@ jobs:
   clippy_check:
     runs-on: ubuntu-24.04
     env:
-      # Match the test job's compiler flags so both jobs share rust-test-fast.
-      # Warnings are denied on the clippy command line instead of RUSTFLAGS,
-      # because RUSTFLAGS participates in the cache key and dependency fingerprints.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-host-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-host-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # Match the test job's compiler flags so both jobs read the same sccache
+      # entries. Warnings are denied on the clippy command line instead of
+      # RUSTFLAGS, because RUSTFLAGS participates in the sccache key.
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v5
@@ -248,13 +256,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
           command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          prefix-key: "v1-rust-workspace"
-          shared-key: "rust-test-fast"
-          cache-workspace-crates: true
-          save-if: false
+          version: "v0.19.0"
       - name: Run Clippy
         # Keep every cargo invocation in this workflow on `test-fast` so all
         # artifacts stay in a single profile directory (rust/target/test-fast).

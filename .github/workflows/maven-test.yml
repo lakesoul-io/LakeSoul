@@ -89,6 +89,12 @@ jobs:
   build-rust-linux-x86_64:
     runs-on: ubuntu-24.04
     env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       RUSTFLAGS: "-Awarnings"
     steps:
       - uses: actions/checkout@v5
@@ -104,11 +110,9 @@ jobs:
 
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "native-glibc217-v2"
-          save-if: false
+          version: "v0.19.0"
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -125,10 +129,10 @@ jobs:
           unset HADOOP_HOME HDFS_LIB_DIR
           sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
           export JAVA_HOME=/opt/lakesoul-jdk
-          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
+          cargo -q zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --all-features
       - name: Verify glibc compatibility
         run: |
-          for lib in rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so; do
+          for lib in rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so; do
             max="$(LANG=C readelf -W --version-info --dyn-syms "$lib" | grep -o 'GLIBC_[0-9.]*' | sort -t_ -k2V | uniq | tail -1)"
             echo "$lib -> $max"
             if [ "$(printf '%s\n' "$max" "GLIBC_2.17" | sort -V | tail -1)" != "GLIBC_2.17" ]; then
@@ -139,11 +143,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
+          path: ./rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so
       - uses: actions/upload-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
-          path: ./rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so
+          path: ./rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so
 
   spark-test-1:
     runs-on: ubuntu-24.04
