@@ -286,7 +286,11 @@ To keep the cache total small, only these two entries are written per run.
 `native-glibc217-v2` cache because they produce shipped artifacts.
 
 sccache cannot cache `bin`/`dylib`/`cdylib`/proc-macro crates (they invoke the
-system linker), so those still compile on every run.
+system linker), so those still compile on every run. To keep the non-cacheable
+part small, `postgres-lakesoul` puts all server logic in its lib target
+(`src/lib.rs`) and leaves `src/main.rs` as a thin `run()` shim, and the PG wire
+contracts are modules of one integration-test binary (`tests/contracts.rs`)
+instead of 24 separate targets that each recompiled the `support` harness.
 
 The Maven local repository is not cached: Maven resolves through the Google
 Central mirror configured in `.mvn/settings.xml`.
