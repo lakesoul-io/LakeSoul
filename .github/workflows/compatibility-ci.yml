@@ -82,6 +82,13 @@ jobs:
   compatibility-file:
     name: File Storage Compatibility
     runs-on: ubuntu-24.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.storage == 'file' || inputs.storage == 'all' }}
     services:
       postgres:
@@ -118,11 +125,9 @@ jobs:
         uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "native-glibc217-v2"
-          save-if: false
+          version: "v0.19.0"
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -144,16 +149,16 @@ jobs:
           unset HADOOP_HOME HDFS_LIB_DIR
           sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
           export JAVA_HOME=/opt/lakesoul-jdk
-          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
+          cargo -q zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
           mkdir -p rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so rust/target/release
       - name: Build Spark and Flink test artifacts
         run: mvn -q -B package -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12 -am -Pcross-build -DskipTests --file pom.xml
       - name: Build Python package
         working-directory: python
         run: |
-          cp ../rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
+          cp ../rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_python.so src/lakesoul/_lib.abi3.so
           uv sync --no-install-project --python 3.11 --extra pandas --extra ray --extra daft --extra pyspark
       - name: Run compatibility matrix
         env:
@@ -198,6 +203,13 @@ jobs:
   compatibility-rustfs:
     name: RustFS Compatibility
     runs-on: ubuntu-24.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.storage == 'rustfs' || inputs.storage == 'all')) }}
     services:
       postgres:
@@ -272,11 +284,9 @@ jobs:
         uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "native-glibc217-v2"
-          save-if: false
+          version: "v0.19.0"
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -298,16 +308,16 @@ jobs:
           unset HADOOP_HOME HDFS_LIB_DIR
           sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
           export JAVA_HOME=/opt/lakesoul-jdk
-          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
+          cargo -q zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
           mkdir -p rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so rust/target/release
       - name: Build Spark and Flink test artifacts
         run: mvn -q -B package -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12 -am -Pcross-build -DskipTests --file pom.xml
       - name: Build Python package
         working-directory: python
         run: |
-          cp ../rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
+          cp ../rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_python.so src/lakesoul/_lib.abi3.so
           uv sync --no-install-project --python 3.11 --extra pandas --extra ray --extra daft --extra pyspark
       - name: Run RustFS compatibility matrix
         env:

@@ -41,6 +41,13 @@ defaults:
 jobs:
   verify-hash-consistency:
     runs-on: ubuntu-24.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     services:
       # Label used to access the service container
       postgres:
@@ -96,11 +103,9 @@ jobs:
         with:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "native-glibc217-v2"
-          save-if: false
+          version: "v0.19.0"
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -120,7 +125,7 @@ jobs:
           export JAVA_HOME=/opt/lakesoul-jdk
           # One invocation builds the JNI libraries and the lakesoul-datafusion test
           # binary, so the datafusion graph is compiled once instead of twice.
-          cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17 \
+          cargo zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 \
             --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-datafusion \
             --features=lakesoul-datafusion/ci,lakesoul-io-c/hdfs --lib --tests \
             --message-format=json > /tmp/cargo-build.json \
@@ -141,8 +146,8 @@ jobs:
                   print(f"BENCHMARK_TEST_BIN={executable}")
           PY
           mkdir -p rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so rust/target/release
       - name: Build with Maven
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -B install -f pom.xml -pl "!:lakesoul-presto-0.296" -Pcross-build -DskipTests

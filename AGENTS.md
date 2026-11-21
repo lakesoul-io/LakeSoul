@@ -259,25 +259,32 @@ When searching the repository, exclude generated or lock files where possible: `
 | `maven-test.yml` | Push/PR (non-rust paths) | Builds Rust `.so`, then runs Spark + Flink Maven tests |
 | `flink-cdc-test.yml` | Scheduled/PR | End-to-end Flink CDC tests |
 | `python-ci.yml` | Push/PR to `python/**` | Python build + pytest |
-| `native-build.yml` | Push/PR | Linux x64 native library builds |
+| `native-build.yml` | Push to main / dispatch | Linux x64 release native library builds |
 
 ### Rust build cache
 
-`rust-test-fast` is produced only by the `legacy` leg of the `rust-ci` test
-matrix; the `v2` and `ivm` legs, Clippy, TPC-H, and the release gates restore
-it. The cache includes the workspace crates as well as dependencies, so
-unchanged LakeSoul crates are reused across runs. `native-glibc217-v2` is
-produced by `native-build`; `maven-test`, `compatibility-ci`, `consistency-ci`,
-the CDC suites, and `python-ci` only restore it, so Python keeps no cache key
-of its own.
+Rust jobs use `mozilla-actions/sccache-action` with the GitHub Actions cache
+backend. There are two streams:
 
-The `v1-rust-workspace` prefix is deliberate: GitHub caches are immutable, so
-enabling workspace crates under the old `v0-rust` key would keep restoring the
-dependency-only cache. Bump the prefix again if the cache layout changes.
+- `sccache-host-testfast-main`: host `test-fast` builds (`rust-ci`,
+  `pg-client-compat`, `tpch-compat`, `ivm-bench`, release Rust gates)
+- `sccache-gnu217-testfast-main`: `cargo zigbuild --profile test-fast --target
+  x86_64-unknown-linux-gnu.2.17` builds (`maven-test`, `compatibility-ci`,
+  `consistency-ci`, `compaction-clean-e2e`, `python-ci`, CDC suites)
+
+Host and cross builds do not share entries because `--target` is part of the
+sccache key. Both streams are `READ_WRITE` only on `main`; other refs are
+`READ_ONLY`, so pull requests restore `main`'s entries without writing.
+`CARGO_INCREMENTAL=0` is required by sccache.
+
+`native-build` and the release jobs keep the release profile and the Swatinem
+`native-glibc217-v2` cache because they produce shipped artifacts.
+
+sccache cannot cache `bin`/`dylib`/`cdylib`/proc-macro crates (they invoke the
+system linker), so those still compile on every run.
 
 The Maven local repository is not cached: Maven resolves through the Google
-Central mirror configured in `.mvn/settings.xml`, and the freed cache budget
-belongs to the Rust workspace cache.
+Central mirror configured in `.mvn/settings.xml`.
 
 ---
 

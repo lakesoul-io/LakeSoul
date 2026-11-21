@@ -50,6 +50,12 @@ jobs:
   client-compat:
     runs-on: ubuntu-24.04
     env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-host-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-host-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
       LAKESOUL_PG_USERNAME: lakesoul_test
@@ -99,13 +105,9 @@ jobs:
       # Share rust-ci's test cache: rust-ci already builds and tests
       # postgres-lakesoul with the same test-fast profile and RUSTFLAGS.
       # Only main's rust-ci job updates this cache.
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          prefix-key: "v1-rust-workspace"
-          shared-key: "rust-test-fast"
-          cache-workspace-crates: true
-          save-if: false
+          version: "v0.19.0"
       - name: Build postgres-lakesoul and lakesoul-console
         run: cargo build --profile test-fast -p postgres-lakesoul -p lakesoul-console
       - name: Run psycopg, pgjdbc and pgvector baselines

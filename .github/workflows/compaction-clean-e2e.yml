@@ -88,6 +88,12 @@ jobs:
   compaction-clean-e2e:
     runs-on: ubuntu-24.04
     env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
+      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       RUSTFLAGS: "-Awarnings"
       LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
       LAKESOUL_PG_USERNAME: lakesoul_test
@@ -104,11 +110,9 @@ jobs:
         uses: ./.github/actions/setup-protoc
       - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/setup-flatc
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          workspaces: ". -> rust/target"
-          shared-key: "native-glibc217-v2"
-          save-if: false
+          version: "v0.19.0"
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - name: Download Flink / Hadoop dependencies
@@ -151,10 +155,10 @@ jobs:
           unset HADOOP_HOME HDFS_LIB_DIR
           sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
           export JAVA_HOME=/opt/lakesoul-jdk
-          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release/
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release/
-          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
+          cargo -q zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-python --features lakesoul-io-c/hdfs
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/release/
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so rust/target/release/
+          cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
       - name: Build Maven modules
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -q -B -pl :lakesoul-flink-1.20_2.12,:lakesoul-spark-3.5_2.12 -am package -f pom.xml -Pcross-build -DskipTests
