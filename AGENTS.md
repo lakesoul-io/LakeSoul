@@ -263,8 +263,13 @@ When searching the repository, exclude generated or lock files where possible: `
 
 ### Rust build cache
 
-Rust jobs use `mozilla-actions/sccache-action` with the GitHub Actions cache
-backend. There are two streams:
+Rust jobs use `mozilla-actions/sccache-action` for the sccache binary, but the
+cache itself is a local disk directory (`SCCACHE_DIR`) persisted with
+`actions/cache/restore` + `actions/cache/save`. One cache entry per job per
+stream, so the 200 uploads/minute GitHub cache API limit is not hit. Only
+`main` runs save; other refs only restore. `SCCACHE_IDLE_TIMEOUT=0` keeps the
+server alive so the post-step stats are accurate, and `CARGO_INCREMENTAL=0`
+is required by sccache.
 
 - `sccache-host-testfast-main`: host `test-fast` builds (`rust-ci`,
   `pg-client-compat`, `tpch-compat`, `ivm-bench`, release Rust gates)
@@ -273,9 +278,9 @@ backend. There are two streams:
   `consistency-ci`, `compaction-clean-e2e`, `python-ci`, CDC suites)
 
 Host and cross builds do not share entries because `--target` is part of the
-sccache key. Both streams are `READ_WRITE` only on `main`; other refs are
-`READ_ONLY`, so pull requests restore `main`'s entries without writing.
-`CARGO_INCREMENTAL=0` is required by sccache.
+sccache key. Each stream has one producer on `main`: `rust_test (legacy)` for
+host, `python-ci` for cross-target. Other jobs only restore; PRs never save.
+To keep the cache total small, only these two entries are written per run.
 
 `native-build` and the release jobs keep the release profile and the Swatinem
 `native-glibc217-v2` cache because they produce shipped artifacts.

@@ -103,12 +103,10 @@ jobs:
     needs: validate-release
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
-      SCCACHE_GHA_CACHE_TO: sccache-host-testfast-main
-      SCCACHE_GHA_CACHE_FROM: sccache-host-testfast-main
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       # Match the main Rust CI test cache. Release workflows only restore it.
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     services:
@@ -160,6 +158,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
           command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
+      - name: Restore sccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+          restore-keys: |
+            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
+            sccache-host-testfast-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: "v0.19.0"

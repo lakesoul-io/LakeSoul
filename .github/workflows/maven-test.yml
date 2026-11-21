@@ -89,12 +89,10 @@ jobs:
   build-rust-linux-x86_64:
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
-      SCCACHE_GHA_CACHE_TO: sccache-gnu217-testfast-main
-      SCCACHE_GHA_CACHE_FROM: sccache-gnu217-testfast-main
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       RUSTFLAGS: "-Awarnings"
     steps:
       - uses: actions/checkout@v5
@@ -110,6 +108,15 @@ jobs:
 
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
+      - name: Restore sccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+          restore-keys: |
+            sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-
+            sccache-gnu217-testfast-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: "v0.19.0"

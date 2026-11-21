@@ -39,12 +39,10 @@ jobs:
           - { layout: nopk, workers: "2" }
           - { layout: pkmonth, workers: "2" }
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
       RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
-      SCCACHE_GHA_CACHE_TO: sccache-host-testfast-main
-      SCCACHE_GHA_CACHE_FROM: sccache-host-testfast-main
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       RUST_BACKTRACE: full
       LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
@@ -76,6 +74,15 @@ jobs:
         with:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
+      - name: Restore sccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+          restore-keys: |
+            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
+            sccache-host-testfast-${{ runner.os }}-
+
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: "v0.19.0"
