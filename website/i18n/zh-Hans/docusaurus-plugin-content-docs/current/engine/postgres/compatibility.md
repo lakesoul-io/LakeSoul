@@ -43,8 +43,8 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 - `CREATE TABLE AS`、`CREATE TEMP TABLE`、`DELETE ... USING`
 - `COPY ... TO` 文件或程序、`COPY ... FROM` 文件或程序、`FORMAT binary`，以及
   [COPY](copy.md) 中列出的选项
-- 多语句 simple-query batch 内的写入和 `COPY`；显式事务块内的 DDL、IVM 维护、
-  订阅、savepoint、非 CDC `DELETE` 重写和 `TRUNCATE`
+- 多语句 simple-query batch 内的写入、`COPY` 和表 DDL；显式事务块内的
+  `CREATE INDEX`、`REINDEX`、IVM 维护、订阅、非 CDC `DELETE` 重写和 `TRUNCATE`
 - CDC 表、无主键表、append-only 表上的 `UPDATE`，`UPDATE ... FROM`，以及更新
   主键或分区列；append-only 表和无主键 CDC 表上的 `DELETE`
 - 分区表上的 `ON CONFLICT`；CDC 表的通用 `DO UPDATE`；修改冲突键
@@ -103,8 +103,8 @@ forward-only、非 holdable；`WITH HOLD`、`SCROLL` 和 backward fetch 会显�
 pattern 未实现，会显式报错；在同一个 projection 里同时选择 `current_user` 和
 `session_user` 仍受兼容 parser 的 `current_user -> session_user` 重写限制；
 `psql \du` 仍需要 `ARRAY(subquery)` 支持。SQLAlchemy
-的 `psycopg3` dialect 尚未纳入基线，因为它的 reflection 会开启嵌套事务
-（`SAVEPOINT`），而 LakeSoul 暂不支持。具体版本和每个缺口的状态见该目录的
+的 `psycopg3` dialect 尚未纳入基线；它的 reflection 现在走已支持的 `SAVEPOINT`
+路径，但其余 reflection 查询仍有缺口。具体版本和每个缺口的状态见该目录的
 README。
 
 ## 版本策略

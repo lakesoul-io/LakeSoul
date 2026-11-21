@@ -24,7 +24,17 @@ async fn transaction_block_contract() -> Result<()> {
     support::run_suite(|h| {
         Box::pin(async move {
             nested_begin_keeps_one_block(h).await?;
-            savepoints_and_chains_are_refused(h).await?;
+            savepoints_are_transactional(h).await?;
+            savepoint_recovers_a_failed_block(h).await?;
+            create_table_is_staged(h).await?;
+            create_table_rolls_back(h).await?;
+            alter_table_is_staged(h).await?;
+            drop_table_rolls_back(h).await?;
+            drop_table_commits(h).await?;
+            create_and_drop_is_a_noop(h).await?;
+            drop_then_create_replaces_the_table(h).await?;
+            insert_then_alter_commits(h).await?;
+            concurrent_create_conflicts(h).await?;
             discard_all_cannot_run_inside_a_block(h).await?;
             commit_ends_a_failed_block(h).await?;
             extended_protocol_commit(h).await?;
@@ -58,36 +68,394 @@ async fn nested_begin_keeps_one_block(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// Savepoints and the `AND CHAIN` forms do not exist here: they are refused
-/// with `0A000`, which fails the block the way any statement error does.
-async fn savepoints_and_chains_are_refused(h: &Harness) -> Result<()> {
-    for sql in [
-        "SAVEPOINT s",
-        "RELEASE SAVEPOINT s",
-        "ROLLBACK TO SAVEPOINT s",
-        "COMMIT AND CHAIN",
-        "ROLLBACK AND CHAIN",
-    ] {
-        let lake = h.connect_lake().await?;
-        lake.simple_query("BEGIN").await.context("BEGIN")?;
-        let error = lake
-            .simple_query(sql)
+/// Savepoints stage and truncate data and table DDL independently.
+async fn savepoints_are_transactional(h: &Harness) -> Result<()> {
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.execute(
+        "INSERT INTO pk_items (id, val, label) VALUES (7401, 1, 'first')",
+        &[],
+    )
+    .await
+    .context("stage the first row")?;
+    lake.simple_query("SAVEPOINT s")
+        .await
+        .context("SAVEPOINT")?;
+    lake.execute(
+        "INSERT INTO pk_items (id, val, label) VALUES (7402, 2, 'second')",
+        &[],
+    )
+    .await
+    .context("stage the second row")?;
+    lake.simple_query("CREATE TABLE sp_ddl (id BIGINT PRIMARY KEY, val BIGINT)")
+        .await
+        .context("stage a table")?;
+    lake.simple_query("ROLLBACK TO SAVEPOINT s")
+        .await
+        .context("ROLLBACK TO")?;
+    lake.simple_query("COMMIT").await.context("COMMIT")?;
+
+    let rows: i64 = h
+        .lake
+        .query_one(
+            "SELECT count(*) FROM pk_items WHERE id IN (7401, 7402)",
+            &[],
+        )
+        .await
+        .context("count rows after savepoint commit")?
+        .get(0);
+    assert_eq!(rows, 1, "only the write before the savepoint committed");
+    assert!(
+        h.lake
+            .query_one("SELECT count(*) FROM sp_ddl", &[])
             .await
-            .err()
-            .with_context(|| format!("{sql} must be refused inside a block"))?;
-        common::ensure_sqlstate(&error, "0A000", sql)?;
-        // PostgreSQL aborts the block on any statement error.
-        let aborted = lake
-            .simple_query("SELECT 1")
+            .is_err(),
+        "the table created after the savepoint was rolled back"
+    );
+    // A savepoint also restores catalog visibility after a staged DROP.
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.simple_query("SAVEPOINT s")
+        .await
+        .context("SAVEPOINT")?;
+    lake.simple_query("DROP TABLE empty_items")
+        .await
+        .context("stage DROP TABLE")?;
+    assert!(
+        lake.query_one("SELECT count(*) FROM empty_items", &[])
             .await
-            .err()
-            .with_context(|| format!("{sql} leaves the block failed"))?;
-        common::ensure_sqlstate(&aborted, "25P02", sql)?;
-        lake.simple_query("ROLLBACK").await.context("ROLLBACK")?;
-        eprintln!(
-            "sql-compat case=transaction-refusal sql={sql} sqlstate=0A000 outcome=ok"
-        );
-    }
+            .is_err(),
+        "the staged drop hides the table"
+    );
+    lake.simple_query("ROLLBACK TO SAVEPOINT s")
+        .await
+        .context("ROLLBACK TO")?;
+    lake.query_one("SELECT count(*) FROM empty_items", &[])
+        .await
+        .context("ROLLBACK TO restores the dropped table")?;
+    lake.simple_query("COMMIT").await.context("COMMIT")?;
+    eprintln!("sql-compat case=savepoint-truncation outcome=ok");
+    Ok(())
+}
+
+/// `DROP TABLE` at `COMMIT` removes the table for every connection.
+async fn drop_table_commits(h: &Harness) -> Result<()> {
+    h.lake
+        .simple_query("CREATE TABLE tx_drop_commit (id BIGINT PRIMARY KEY, val BIGINT)")
+        .await
+        .context("create the table to drop")?;
+    h.lake
+        .execute("INSERT INTO tx_drop_commit VALUES (1, 10)", &[])
+        .await
+        .context("insert the row to drop")?;
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.simple_query("DROP TABLE tx_drop_commit")
+        .await
+        .context("DROP TABLE inside a block")?;
+    assert!(
+        h.lake
+            .query_one("SELECT count(*) FROM tx_drop_commit", &[])
+            .await
+            .is_ok(),
+        "a peer still sees the table before COMMIT"
+    );
+    lake.simple_query("COMMIT").await.context("COMMIT")?;
+    assert!(
+        h.lake
+            .query_one("SELECT count(*) FROM tx_drop_commit", &[])
+            .await
+            .is_err(),
+        "COMMIT removes the table for peers"
+    );
+    eprintln!("sql-compat case=drop-table-commit outcome=removed");
+    Ok(())
+}
+
+/// `CREATE` followed by `DROP` in one block leaves neither table nor files.
+async fn create_and_drop_is_a_noop(h: &Harness) -> Result<()> {
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.simple_query("CREATE TABLE tx_noop (id BIGINT PRIMARY KEY, val BIGINT)")
+        .await
+        .context("CREATE TABLE")?;
+    lake.execute("INSERT INTO tx_noop VALUES (1, 10)", &[])
+        .await
+        .context("INSERT")?;
+    lake.simple_query("DROP TABLE tx_noop")
+        .await
+        .context("DROP TABLE")?;
+    lake.simple_query("COMMIT").await.context("COMMIT")?;
+    assert!(
+        h.lake
+            .query_one("SELECT count(*) FROM tx_noop", &[])
+            .await
+            .is_err(),
+        "the table created and dropped in the block does not exist"
+    );
+    eprintln!("sql-compat case=create-drop-noop outcome=ok");
+    Ok(())
+}
+
+/// `DROP` then `CREATE` with the same name publishes a fresh empty table.
+async fn drop_then_create_replaces_the_table(h: &Harness) -> Result<()> {
+    h.lake
+        .simple_query("CREATE TABLE tx_swap (id BIGINT PRIMARY KEY, val BIGINT)")
+        .await
+        .context("create the original table")?;
+    h.lake
+        .execute("INSERT INTO tx_swap VALUES (1, 10)", &[])
+        .await
+        .context("insert the original row")?;
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.simple_query("DROP TABLE tx_swap")
+        .await
+        .context("DROP TABLE")?;
+    lake.simple_query("CREATE TABLE tx_swap (id BIGINT PRIMARY KEY, val BIGINT)")
+        .await
+        .context("CREATE TABLE the replacement")?;
+    lake.execute("INSERT INTO tx_swap VALUES (2, 20)", &[])
+        .await
+        .context("insert the replacement row")?;
+    lake.simple_query("COMMIT").await.context("COMMIT")?;
+    let rows: Vec<(i64, i64)> = h
+        .lake
+        .query("SELECT id, val FROM tx_swap ORDER BY id", &[])
+        .await?
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(rows, vec![(2, 20)], "only the replacement table remains");
+    eprintln!("sql-compat case=drop-create-swap outcome=replaced");
+    Ok(())
+}
+
+/// A write before `ALTER TABLE` uses the final definition at `COMMIT`.
+async fn insert_then_alter_commits(h: &Harness) -> Result<()> {
+    h.lake
+        .simple_query("CREATE TABLE tx_alter (id BIGINT PRIMARY KEY, label TEXT)")
+        .await
+        .context("create the table to alter")?;
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.execute("INSERT INTO tx_alter VALUES (1, 'old')", &[])
+        .await
+        .context("stage the row before ALTER")?;
+    lake.simple_query("ALTER TABLE tx_alter ADD COLUMN extra TEXT")
+        .await
+        .context("ALTER TABLE after the write")?;
+    lake.execute("INSERT INTO tx_alter VALUES (2, 'new', 'x')", &[])
+        .await
+        .context("stage the row after ALTER")?;
+    lake.simple_query("COMMIT").await.context("COMMIT")?;
+    let rows: Vec<(i64, Option<String>)> = h
+        .lake
+        .query("SELECT id, extra FROM tx_alter ORDER BY id", &[])
+        .await?
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(rows, vec![(1, None), (2, Some("x".to_string()))]);
+    eprintln!("sql-compat case=insert-alter outcome=committed");
+    Ok(())
+}
+
+/// A concurrent creator wins; the loser's `COMMIT` is `40001` and publishes
+/// neither the table nor its rows.
+async fn concurrent_create_conflicts(h: &Harness) -> Result<()> {
+    let first = h.connect_lake().await?;
+    let second = h.connect_lake().await?;
+    first.simple_query("BEGIN").await.context("BEGIN")?;
+    second.simple_query("BEGIN").await.context("BEGIN")?;
+    first
+        .simple_query("CREATE TABLE tx_race (id BIGINT PRIMARY KEY)")
+        .await
+        .context("first CREATE")?;
+    second
+        .simple_query("CREATE TABLE tx_race (id BIGINT PRIMARY KEY)")
+        .await
+        .context("second CREATE")?;
+    first.simple_query("COMMIT").await.context("first COMMIT")?;
+    let error = second
+        .simple_query("COMMIT")
+        .await
+        .err()
+        .context("the second COMMIT must lose the create race")?;
+    common::ensure_sqlstate(&error, "40001", "concurrent CREATE")?;
+    let count: i64 = h
+        .lake
+        .query_one("SELECT count(*) FROM tx_race", &[])
+        .await?
+        .get(0);
+    assert_eq!(count, 0, "the winning table is empty");
+    eprintln!("sql-compat case=concurrent-create sqlstate=40001 outcome=ok");
+    Ok(())
+}
+
+/// `ROLLBACK TO SAVEPOINT` recovers a block whose statement failed.
+async fn savepoint_recovers_a_failed_block(h: &Harness) -> Result<()> {
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.simple_query("SAVEPOINT s")
+        .await
+        .context("SAVEPOINT")?;
+    lake.simple_query("SELECT 1/0")
+        .await
+        .err()
+        .context("the statement fails")?;
+    common::ensure_sqlstate(
+        &lake.simple_query("SELECT 1").await.unwrap_err(),
+        "25P02",
+        "failed block",
+    )?;
+    lake.simple_query("ROLLBACK TO SAVEPOINT s")
+        .await
+        .context("ROLLBACK TO recovers")?;
+    lake.simple_query("SELECT 1")
+        .await
+        .context("the block is usable again")?;
+    lake.simple_query("ROLLBACK").await.context("ROLLBACK")?;
+    eprintln!("sql-compat case=savepoint-recovery outcome=ok");
+    Ok(())
+}
+
+/// `CREATE TABLE` and its rows become visible only at `COMMIT`.
+async fn create_table_is_staged(h: &Harness) -> Result<()> {
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    // Extended protocol, like JDBC/Flyway.
+    lake.execute(
+        "CREATE TABLE tx_created (id BIGINT PRIMARY KEY, val BIGINT)",
+        &[],
+    )
+    .await
+    .context("CREATE TABLE inside a block")?;
+    let catalog_rows: i64 = lake
+        .query_one(
+            "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'tx_created'",
+            &[],
+        )
+        .await
+        .context("the pending table is visible in pg_class")?
+        .get(0);
+    assert_eq!(catalog_rows, 1);
+    let empty: i64 = lake
+        .query_one("SELECT count(*) FROM tx_created", &[])
+        .await
+        .context("the pending table is readable before any write")?
+        .get(0);
+    assert_eq!(empty, 0);
+    lake.simple_query("ALTER TABLE tx_created ADD COLUMN extra TEXT")
+        .await
+        .context("ALTER the pending table")?;
+    lake.execute("INSERT INTO tx_created VALUES (1, 10, 'x')", &[])
+        .await
+        .context("INSERT into the pending table")?;
+    let staged: i64 = lake
+        .query_one("SELECT count(*) FROM tx_created", &[])
+        .await
+        .context("the block reads its staged row in the pending table")?
+        .get(0);
+    assert_eq!(staged, 1);
+    assert!(
+        h.lake
+            .query_one("SELECT count(*) FROM tx_created", &[])
+            .await
+            .is_err(),
+        "a peer does not see the pending table"
+    );
+    lake.execute("COMMIT", &[]).await.context("COMMIT")?;
+    let extra: String = h
+        .lake
+        .query_one("SELECT extra FROM tx_created", &[])
+        .await
+        .context("read the pending table after commit")?
+        .get(0);
+    assert_eq!(extra, "x", "COMMIT publishes the table and its rows");
+    eprintln!("sql-compat case=create-table-staged outcome=committed");
+    Ok(())
+}
+
+/// `ROLLBACK` removes a staged table and its files.
+async fn create_table_rolls_back(h: &Harness) -> Result<()> {
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.simple_query("CREATE TABLE tx_rolled_back (id BIGINT PRIMARY KEY, val BIGINT)")
+        .await
+        .context("CREATE TABLE inside a block")?;
+    lake.execute("INSERT INTO tx_rolled_back VALUES (1, 10)", &[])
+        .await
+        .context("INSERT into the pending table")?;
+    lake.simple_query("ROLLBACK").await.context("ROLLBACK")?;
+    assert!(
+        h.lake
+            .query_one("SELECT count(*) FROM tx_rolled_back", &[])
+            .await
+            .is_err(),
+        "the rolled-back table does not exist"
+    );
+    eprintln!("sql-compat case=create-table-rollback outcome=gone");
+    Ok(())
+}
+
+/// `ALTER TABLE` changes the pending definition later statements and the
+/// committed metadata see.
+async fn alter_table_is_staged(h: &Harness) -> Result<()> {
+    h.lake
+        .execute(
+            "INSERT INTO pk_items (id, val, label) VALUES (7410, 10, 'old')",
+            &[],
+        )
+        .await
+        .context("publish the row to alter")?;
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.execute("ALTER TABLE pk_items ADD COLUMN extra TEXT", &[])
+        .await
+        .context("ALTER TABLE inside a block")?;
+    lake.execute(
+        "INSERT INTO pk_items (id, val, label, extra) VALUES (7411, 11, 'new', 'x')",
+        &[],
+    )
+    .await
+    .context("INSERT using the pending column")?;
+    lake.simple_query("COMMIT").await.context("COMMIT")?;
+    let extra: String = h
+        .lake
+        .query_one("SELECT extra FROM pk_items WHERE id = 7411", &[])
+        .await
+        .context("read the pending column after commit")?
+        .get(0);
+    assert_eq!(extra, "x");
+    let old: Option<String> = h
+        .lake
+        .query_one("SELECT extra FROM pk_items WHERE id = 7410", &[])
+        .await
+        .context("read the old row after alter commit")?
+        .get(0);
+    assert_eq!(old, None, "old rows read the new column as NULL");
+    eprintln!("sql-compat case=alter-table-staged outcome=committed");
+    Ok(())
+}
+
+/// `DROP TABLE` is only applied at `COMMIT`.
+async fn drop_table_rolls_back(h: &Harness) -> Result<()> {
+    let lake = h.connect_lake().await?;
+    lake.simple_query("BEGIN").await.context("BEGIN")?;
+    lake.simple_query("DROP TABLE empty_items")
+        .await
+        .context("DROP TABLE inside a block")?;
+    assert!(
+        lake.query_one("SELECT count(*) FROM empty_items", &[])
+            .await
+            .is_err(),
+        "the dropped table is hidden inside the block"
+    );
+    lake.simple_query("ROLLBACK").await.context("ROLLBACK")?;
+    lake.query_one("SELECT count(*) FROM empty_items", &[])
+        .await
+        .context("ROLLBACK restores the table")?;
+    eprintln!("sql-compat case=drop-table-rollback outcome=restored");
     Ok(())
 }
 

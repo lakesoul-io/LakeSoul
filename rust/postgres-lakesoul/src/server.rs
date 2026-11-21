@@ -976,11 +976,12 @@ impl LakeSoulStartupHandler {
         client
             .session_extensions()
             .insert::<CancelRegistration>(registration);
+        let transaction = Arc::clone(&session.transaction);
         client.session_extensions().insert(ConnectionSession {
             session,
             service,
             cancellation,
-            transaction: crate::transaction::shared(),
+            transaction,
             meta_client: Arc::clone(self.session_factory.meta_client()),
             permit,
             defaults,

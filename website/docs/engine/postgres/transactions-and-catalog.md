@@ -20,18 +20,27 @@ transaction. `ROLLBACK` deletes the staged files.
 
 - `BEGIN` / `COMMIT` / `ROLLBACK` are accepted. Reads inside a block see the
   published snapshot plus that block's staged writes.
-- DDL, IVM maintenance, subscriptions and savepoints inside a block are refused
-  with `0A000`. A non-CDC `DELETE` rewrite and `TRUNCATE` are also refused in
-  Phase 1. `COPY ... FROM STDIN` is a write: it is staged in the block and
-  published by `COMMIT`.
+- `CREATE TABLE`, `DROP TABLE` and `ALTER TABLE` are staged in a block and
+  published by `COMMIT` in the same metadata transaction as the block's data
+  writes. A peer sees nothing before the commit, and `ROLLBACK` leaves no table
+  or file behind. A `CREATE TABLE` is immediately usable by later statements
+  of the same block.
+- `SAVEPOINT`, `RELEASE SAVEPOINT` and `ROLLBACK TO SAVEPOINT` are supported.
+  A savepoint captures the block's staged data and table DDL;
+  `ROLLBACK TO SAVEPOINT` discards the changes after it and recovers a failed
+  transaction.
+- `CREATE INDEX`, `REINDEX`, `TRUNCATE`, IVM maintenance, subscriptions, users
+  and grants inside a block are still refused with `0A000`. A non-CDC `DELETE`
+  rewrite is also refused. `COPY ... FROM STDIN` is a write: it is staged in
+  the block and published by `COMMIT`.
 - `REPEATABLE READ`, `SERIALIZABLE` and their `SET` forms are refused with
   `0A000`.
 - A failed transaction returns `25P02` for subsequent statements until
-  `ROLLBACK`. `COMMIT` inside a failed block ends the transaction as a rollback,
-  matching PostgreSQL.
-- A write in a multi-statement simple-query batch is still refused: those
-  statements are not run in one transaction. Split writes into separate
-  messages or an explicit block.
+  `ROLLBACK` or a successful `ROLLBACK TO SAVEPOINT`. `COMMIT` inside a failed
+  block ends the transaction as a rollback, matching PostgreSQL.
+- A write or table DDL in a multi-statement simple-query batch is still
+  refused: those statements are not run in one transaction yet. Split them
+  into separate messages or use an explicit block.
 - `statement_timeout` cancels a running query with `57014`; the connection
   remains usable.
 - `idle_in_transaction_session_timeout` is not implemented.

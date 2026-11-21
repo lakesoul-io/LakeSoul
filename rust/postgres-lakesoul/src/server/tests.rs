@@ -3301,10 +3301,9 @@ async fn a_nested_begin_does_not_open_a_second_block() {
     );
 }
 
-/// Savepoints, `ROLLBACK TO SAVEPOINT` and the `AND CHAIN` forms are refused
-/// with `0A000`, and the block stays usable.
+/// Savepoints stage and truncate; only the `AND CHAIN` forms stay refused.
 #[tokio::test]
-async fn savepoints_and_chained_commits_are_refused() {
+async fn savepoints_work_and_chained_commits_are_refused() {
     let factory = test_factory().await;
     let mut mock = MockClient::new();
     let state = attach_session(&factory, &mut mock, "user_a").await;
@@ -3315,22 +3314,25 @@ async fn savepoints_and_chained_commits_are_refused() {
         .expect("answered")
         .expect("begin");
 
-    for sql in [
-        "savepoint s",
-        "release savepoint s",
-        "rollback to savepoint s",
-        "commit and chain",
-        "rollback and chain",
-    ] {
+    for sql in ["savepoint s", "savepoint s", "rollback to savepoint s"] {
+        let response = transaction_response(&state, &mut client, sql)
+            .await
+            .unwrap_or_else(|| panic!("{sql} is answered"))
+            .unwrap_or_else(|error| panic!("{sql} failed: {error:?}"));
+        assert!(matches!(response, Response::Execution(_)), "{sql}");
+    }
+    let missing = transaction_response(&state, &mut client, "release savepoint missing")
+        .await
+        .expect("answered")
+        .expect_err("an unknown savepoint is refused");
+    assert!(matches!(user_error_code(&missing), "3B001"));
+
+    for sql in ["commit and chain", "rollback and chain"] {
         let error = transaction_response(&state, &mut client, sql)
             .await
             .unwrap_or_else(|| panic!("{sql} is answered"))
             .expect_err(sql);
         assert_eq!(user_error_code(&error), "0A000", "{sql}");
-        assert!(
-            state.transaction.lock().is_some(),
-            "{sql} must not end the block"
-        );
     }
 }
 

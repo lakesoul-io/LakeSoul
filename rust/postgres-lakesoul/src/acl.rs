@@ -183,6 +183,9 @@ pub(crate) struct PgAclSession {
     /// write to. `None` keeps the pre-cluster-domain behaviour (the token's
     /// domain).
     pub cluster_domain: Option<String>,
+    /// Pending DDL of the connection's transaction block, for tables that are
+    /// not visible to the published ACL view yet.
+    pub transaction: crate::transaction::SharedTransaction,
 }
 
 pub(crate) fn pg_acl(session: &SessionContext) -> Option<Arc<PgAclSession>> {
@@ -255,11 +258,26 @@ fn write_domain_allows(acl: &PgAclSession, access: &TableAccess) -> bool {
 
 /// Require write (DML) access to a table. Missing tables stay `42P01`;
 /// visible read-only tables answer `42501`.
+/// Whether the open block created `table` and the connection may use it as its
+/// own before the metadata commit publishes it.
+fn pending_table_visible(session: &SessionContext, table: &str) -> bool {
+    let Some(acl) = pg_acl(session) else {
+        return false;
+    };
+    let block = acl.transaction.lock();
+    block
+        .as_ref()
+        .is_some_and(|state| state.pending_acl.can_access(table))
+}
+
 pub(crate) async fn require_table_write(
     session: &SessionContext,
     namespace: &str,
     table: &str,
 ) -> PgWireResult<()> {
+    if pending_table_visible(session, table) {
+        return Ok(());
+    }
     let Some(acl) = pg_acl(session) else {
         return Ok(());
     };
@@ -332,6 +350,9 @@ pub(crate) fn require_table_ddl(
     namespace: &str,
     table: &str,
 ) -> PgWireResult<()> {
+    if pending_table_visible(session, table) {
+        return Ok(());
+    }
     let Some(acl) = pg_acl(session) else {
         return Ok(());
     };

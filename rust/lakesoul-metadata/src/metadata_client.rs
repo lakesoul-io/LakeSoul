@@ -150,6 +150,411 @@ pub(crate) async fn apply_table_definition(
     Ok(())
 }
 
+/// Validate and sort one transaction block's data commits.
+fn validate_and_sort_data_commits(commits: &mut [TransactionTableCommit]) -> Result<()> {
+    for commit in commits.iter() {
+        let table_id = &commit.table_info.table_id;
+        if commit.data_commits.is_empty() {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "table {table_id} has no staged data commits"
+            )));
+        }
+        if commit
+            .data_commits
+            .iter()
+            .any(|info| &info.table_id != table_id)
+        {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "a staged commit for table {table_id} carries another table id"
+            )));
+        }
+        if commit
+            .data_commits
+            .iter()
+            .any(|info| info.commit_id.is_none())
+        {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "a staged commit for table {table_id} has no commit id"
+            )));
+        }
+    }
+    // Lock order: every transaction takes `table_info` rows in `table_id`
+    // order, so two blocks with overlapping table sets cannot deadlock.
+    commits
+        .sort_by(|left, right| left.table_info.table_id.cmp(&right.table_info.table_id));
+    if commits
+        .windows(2)
+        .any(|pair| pair[0].table_info.table_id == pair[1].table_info.table_id)
+    {
+        return Err(LakeSoulMetaDataError::Internal(
+            "a table appears twice in one transaction commit".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse a changeset whose DDL cannot be replayed in one transaction.
+fn validate_metadata_changes(
+    creates: &[TableInfo],
+    alters: &[TableAlteration],
+    drops: &[TableInfo],
+    data: &[TransactionTableCommit],
+) -> Result<()> {
+    let mut create_ids = HashSet::new();
+    let mut create_names = HashSet::new();
+    for table in creates {
+        if !create_ids.insert(table.table_id.as_str()) {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "table {} is created twice in one transaction",
+                table.table_id
+            )));
+        }
+        let name = (table.table_namespace.as_str(), table.table_name.as_str());
+        if !create_names.insert(name) {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "table {}.{} is created twice in one transaction",
+                table.table_namespace, table.table_name
+            )));
+        }
+    }
+
+    let mut altered_ids = HashSet::new();
+    for alter in alters {
+        let id = alter.expected.table_id.as_str();
+        if create_ids.contains(id) || !altered_ids.insert(id) {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "table {id} is altered through inconsistent plans in one transaction"
+            )));
+        }
+    }
+
+    let mut dropped_ids = HashSet::new();
+    for table in drops {
+        if create_ids.contains(table.table_id.as_str()) {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "table {} is both created and dropped in one transaction",
+                table.table_id
+            )));
+        }
+        if !dropped_ids.insert(table.table_id.as_str()) {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "table {} is dropped twice in one transaction",
+                table.table_id
+            )));
+        }
+    }
+
+    for commit in data {
+        let id = commit.table_info.table_id.as_str();
+        if dropped_ids.contains(id) {
+            return Err(LakeSoulMetaDataError::Internal(format!(
+                "table {id} has staged data but is dropped in the same transaction"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Insert all `table_info`, `table_name_id` and `table_path_id` rows for one
+/// new table inside the caller's transaction.
+async fn insert_table_atomic_in_transaction(
+    transaction: &tokio_postgres::Transaction<'_>,
+    table: &TableInfo,
+) -> Result<()> {
+    let sql = "with inserted_name as (
+            insert into table_name_id(table_id, table_name, table_namespace, domain)
+            values($1::TEXT, $2::TEXT, $9::TEXT, $10::TEXT)
+            returning table_id
+        ), inserted_path as (
+            insert into table_path_id(table_id, table_path, table_namespace, domain)
+            select $1::TEXT, $3::TEXT, $9::TEXT, $10::TEXT from inserted_name
+            returning table_id
+        )
+        insert into table_info(
+            table_id, table_name, table_path, table_schema,
+            table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash,
+            properties, partitions, table_namespace, domain, creator)
+        select $1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::BYTEA, $6::TEXT,
+               $7::JSON, $8::TEXT, $9::TEXT, $10::TEXT,
+               coalesce(nullif($11::TEXT, ''), current_user)
+        from inserted_path";
+    let properties: serde_json::Value = serde_json::from_str(&table.properties)?;
+    let table_schema_arrow_ipc: Option<&[u8]> =
+        (!table.table_schema_arrow_ipc.is_empty())
+            .then_some(table.table_schema_arrow_ipc.as_slice());
+    let table_schema_arrow_ipc_json_hash: Option<&str> =
+        (!table.table_schema_arrow_ipc_json_hash.is_empty())
+            .then_some(table.table_schema_arrow_ipc_json_hash.as_str());
+    let inserted = match transaction
+        .execute(
+            sql,
+            &[
+                &table.table_id,
+                &table.table_name,
+                &table.table_path,
+                &table.table_schema,
+                &table_schema_arrow_ipc,
+                &table_schema_arrow_ipc_json_hash,
+                &properties,
+                &table.partitions,
+                &table.table_namespace,
+                &table.domain,
+                &table.creator,
+            ],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(error) if error.code().is_some_and(|code| code.code() == "23505") => {
+            return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                "table {}.{} was created concurrently",
+                table.table_namespace, table.table_name
+            )));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    match inserted {
+        1 => Ok(()),
+        0 => Err(LakeSoulMetaDataError::CommitConflict(format!(
+            "table {}.{} was created concurrently",
+            table.table_namespace, table.table_name
+        ))),
+        other => Err(LakeSoulMetaDataError::Internal(format!(
+            "expected to insert one table, inserted {other}"
+        ))),
+    }
+}
+
+/// Remove every row of one table inside the caller's transaction, after
+/// requiring the stored definition to still be `expected`.
+async fn delete_table_by_table_id_cascade_in_transaction(
+    transaction: &tokio_postgres::Transaction<'_>,
+    expected: &TableInfo,
+) -> Result<()> {
+    let locked = transaction
+        .query_opt(
+            "select domain, table_name, table_namespace, table_schema, \
+             partitions, properties, table_schema_arrow_ipc_json_hash \
+             from table_info where table_id = $1::TEXT for update",
+            &[&expected.table_id],
+        )
+        .await?
+        .ok_or_else(|| {
+            LakeSoulMetaDataError::NotFound(format!(
+                "table {} no longer exists",
+                expected.table_id
+            ))
+        })?;
+    if TableIdentity::from_row(&locked) != TableIdentity::from_table_info(expected) {
+        return Err(LakeSoulMetaDataError::CommitConflict(format!(
+            "table {} was redefined concurrently; retry the transaction",
+            expected.table_id
+        )));
+    }
+    transaction
+        .execute(
+            "delete from table_name_id where table_id = $1::TEXT",
+            &[&expected.table_id],
+        )
+        .await?;
+    transaction
+        .execute(
+            "delete from table_path_id where table_id = $1::TEXT",
+            &[&expected.table_id],
+        )
+        .await?;
+    transaction
+        .execute(
+            "delete from partition_info where table_id = $1::TEXT",
+            &[&expected.table_id],
+        )
+        .await?;
+    transaction
+        .execute(
+            "delete from data_commit_info where table_id = $1::TEXT",
+            &[&expected.table_id],
+        )
+        .await?;
+    crate::index_catalog::clean_for_table_path(transaction, &expected.table_path).await?;
+    transaction
+        .execute(
+            "delete from table_info where table_id = $1::TEXT and table_path = $2::TEXT",
+            &[&expected.table_id, &expected.table_path],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Publish data commits inside the caller's transaction.
+async fn commit_data_commits_in_transaction(
+    transaction: &tokio_postgres::Transaction<'_>,
+    commits: &[TransactionTableCommit],
+) -> Result<Vec<String>> {
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let select_partition = transaction
+        .prepare(
+            "select version, snapshot from partition_info \
+             where table_id = $1::TEXT and partition_desc = $2::TEXT \
+             order by version desc limit 1",
+        )
+        .await?;
+    let insert_partition = transaction
+        .prepare(
+            "insert into partition_info \
+             (table_id, partition_desc, version, commit_op, snapshot, expression, domain) \
+             values ($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
+        )
+        .await?;
+    let insert_data_commit = transaction
+        .prepare(
+            "insert into data_commit_info \
+             (table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain) \
+             values ($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, TRUE, $7::TEXT)",
+        )
+        .await?;
+
+    let mut domains = Vec::with_capacity(commits.len());
+    for commit in commits {
+        let table_info = &commit.table_info;
+        let locked = transaction
+            .query_opt(
+                "select domain, table_name, table_namespace, table_schema, \
+                 partitions, properties, table_schema_arrow_ipc_json_hash \
+                 from table_info where table_id = $1::TEXT for share",
+                &[&table_info.table_id],
+            )
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {} no longer exists",
+                    table_info.table_id
+                ))
+            })?;
+        if TableIdentity::from_row(&locked) != TableIdentity::from_table_info(table_info)
+        {
+            return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                "table {} was redefined while the transaction was open; \
+                 retry the transaction",
+                table_info.table_id
+            )));
+        }
+        domains.push(locked.get::<_, String>(0));
+    }
+
+    let commit_op = CommitOp::AppendCommit.as_str_name();
+    let mut commit_ids = Vec::new();
+    for (commit, domain) in commits.iter().zip(&domains) {
+        let table_id = &commit.table_info.table_id;
+        let mut by_partition: BTreeMap<&str, Vec<&DataCommitInfo>> = BTreeMap::new();
+        for data_commit in &commit.data_commits {
+            by_partition
+                .entry(data_commit.partition_desc.as_str())
+                .or_default()
+                .push(data_commit);
+        }
+        for (partition_desc, staged) in by_partition {
+            let current = transaction
+                .query_opt(&select_partition, &[table_id, &partition_desc])
+                .await?;
+            let current_version = current
+                .as_ref()
+                .map(|row| row.get::<_, i32>(0))
+                .unwrap_or(-1);
+            if let Some(expected) = &commit.expected {
+                let expected_version = expected
+                    .iter()
+                    .find(|partition| partition.partition_desc == partition_desc)
+                    .map(|partition| partition.version)
+                    .unwrap_or(-1);
+                if current_version != expected_version {
+                    return Err(LakeSoulMetaDataError::InsertConflict {
+                        table_id: table_id.clone(),
+                        partition_desc: partition_desc.to_string(),
+                        expected_version,
+                        actual_version: current_version,
+                    });
+                }
+            }
+            let next_version = current_version.checked_add(1).ok_or_else(|| {
+                LakeSoulMetaDataError::Internal(format!(
+                    "partition version overflow on table {table_id} partition \
+                     {partition_desc}"
+                ))
+            })?;
+            let mut snapshot = current
+                .map(|row| row.get::<_, Vec<uuid::Uuid>>(1))
+                .unwrap_or_default();
+            let mut staged_ids = Vec::with_capacity(staged.len());
+            for data_commit in &staged {
+                let commit_id = data_commit.commit_id.expect("checked above");
+                let commit_id = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
+                snapshot.push(commit_id);
+                staged_ids.push(commit_id);
+            }
+            if let Err(error) = transaction
+                .execute(
+                    &insert_partition,
+                    &[
+                        table_id,
+                        &partition_desc,
+                        &next_version,
+                        &commit_op,
+                        &snapshot,
+                        &"",
+                        domain,
+                    ],
+                )
+                .await
+            {
+                if error.code().is_some_and(|code| code.code() == "23505") {
+                    return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                        "lost the partition version race on table {table_id} \
+                         partition {partition_desc} version {current_version}"
+                    )));
+                }
+                return Err(error.into());
+            }
+            for (data_commit, commit_id) in staged.iter().zip(staged_ids) {
+                let file_ops = data_commit
+                    .file_ops
+                    .iter()
+                    .map(DataFileOp::from_proto_data_file_op)
+                    .collect::<Result<Vec<_>>>()?;
+                transaction
+                    .execute(
+                        &insert_data_commit,
+                        &[
+                            table_id,
+                            &partition_desc,
+                            &commit_id,
+                            &file_ops,
+                            &commit_op,
+                            &data_commit.timestamp,
+                            domain,
+                        ],
+                    )
+                    .await?;
+                commit_ids.push(commit_id.to_string());
+            }
+        }
+    }
+    Ok(commit_ids)
+}
+
+fn metadata_commit_error(error: tokio_postgres::Error) -> LakeSoulMetaDataError {
+    // Constraint/transaction-rollback errors prove the commit aborted. Other
+    // server errors can arrive after local durability.
+    if error.code().is_some_and(|code| {
+        matches!(&code.code()[..2], "23" | "40") && code.code() != "40003"
+    }) {
+        LakeSoulMetaDataError::PostgresError(error)
+    } else {
+        LakeSoulMetaDataError::InsertCommitOutcomeUnknown(error)
+    }
+}
+
 /// One coherent primary PostgreSQL view used for an entire batch request.
 /// File paths are immutable snapshot inputs; before reading index objects,
 /// acquire `IndexReadLeaseGuard` for the exact `index_views` commit IDs.
@@ -194,6 +599,33 @@ pub struct TransactionTableCommit {
     /// this commit touches must still have exactly the version listed, and a
     /// partition that is not listed must not exist yet.
     pub expected: Option<Vec<PartitionInfo>>,
+}
+
+/// One table's definition change in a metadata transaction.
+///
+/// `expected` is the definition the change was computed from; the commit
+/// re-reads the row under its `table_info` lock and refuses to publish if it
+/// changed. `update` carries the new schema and/or properties.
+#[derive(Debug, Clone)]
+pub struct TableAlteration {
+    pub expected: TableInfo,
+    pub update: TableDefinitionUpdate,
+}
+
+/// Everything one PostgreSQL transaction block publishes at `COMMIT`.
+///
+/// Data-only blocks use [`MetaDataClient::commit_transaction`]; blocks that
+/// also staged table DDL use [`MetaDataClient::commit_metadata_transaction`].
+#[derive(Debug, Clone, Default)]
+pub struct MetadataChangeSet {
+    /// Tables created in the block, in statement order.
+    pub creates: Vec<TableInfo>,
+    /// Definitions changed in the block.
+    pub alters: Vec<TableAlteration>,
+    /// Tables dropped in the block.
+    pub drops: Vec<TableInfo>,
+    /// Staged data commits, already grouped per table.
+    pub data: Vec<TransactionTableCommit>,
 }
 
 /// One table's partitions in a `TRUNCATE`.
@@ -2183,248 +2615,104 @@ impl MetaDataClient {
 
     /// Publish the staged writes of a transaction block.
     ///
-    /// [`Self::commit_append_files`] generalised to several tables and to
-    /// several staged statements per table, all in one PostgreSQL transaction:
-    /// either every table's partitions move and every `data_commit_info` row is
-    /// published, or nothing changes.
-    ///
-    /// * The `table_info` rows are share-locked in `table_id` order, so two
-    ///   blocks that touch the same tables cannot deadlock on lock order. A DROP
-    ///   takes the same row exclusively, so it either wins (this call fails
-    ///   before publishing) or loses (it removes these rows too).
-    /// * Every table's identity, schema and properties are re-verified against
-    ///   the definition the statements were analysed against - for every kind of
-    ///   write, including plain inserts.
-    /// * Each partition gets one new version whose snapshot lists the staged
-    ///   commits in statement order: merge-on-read reads that array as version
-    ///   order, so it is not sorted. Each staged commit keeps its own
-    ///   `data_commit_info` row, so the files stay attributable.
-    /// * A write with `expected: None` publishes without a version comparison.
-    ///
-    /// A lost version race is reported as
-    /// [`LakeSoulMetaDataError::CommitConflict`] (the PostgreSQL front end maps
-    /// it to `40001`), and a commit whose outcome cannot be determined as
-    /// [`LakeSoulMetaDataError::InsertCommitOutcomeUnknown`].
+    /// Data-only wrapper around [`Self::commit_metadata_transaction`].
     pub async fn commit_transaction(
         &self,
-        mut commits: Vec<TransactionTableCommit>,
+        commits: Vec<TransactionTableCommit>,
     ) -> Result<Vec<String>> {
-        if commits.is_empty() {
-            return Ok(Vec::new());
-        }
-        for commit in &commits {
-            let table_id = &commit.table_info.table_id;
-            if commit.data_commits.is_empty() {
-                return Err(LakeSoulMetaDataError::Internal(format!(
-                    "table {table_id} has no staged data commits"
-                )));
-            }
-            if commit
-                .data_commits
-                .iter()
-                .any(|info| &info.table_id != table_id)
-            {
-                return Err(LakeSoulMetaDataError::Internal(format!(
-                    "a staged commit for table {table_id} carries another table id"
-                )));
-            }
-            if commit
-                .data_commits
-                .iter()
-                .any(|info| info.commit_id.is_none())
-            {
-                return Err(LakeSoulMetaDataError::Internal(format!(
-                    "a staged commit for table {table_id} has no commit id"
-                )));
-            }
-        }
-        // Lock order: every transaction takes `table_info` rows in `table_id`
-        // order, so two blocks with overlapping table sets cannot deadlock.
-        commits.sort_by(|left, right| {
-            left.table_info.table_id.cmp(&right.table_info.table_id)
-        });
-        if commits
-            .windows(2)
-            .any(|pair| pair[0].table_info.table_id == pair[1].table_info.table_id)
+        self.commit_metadata_transaction(MetadataChangeSet {
+            data: commits,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Publish staged table DDL and data commits in one PostgreSQL transaction.
+    ///
+    /// The block's DDL is normalized by the front end into:
+    ///
+    /// * `creates`: tables that do not exist yet;
+    /// * `alters`: definition changes against the definition the statement
+    ///   was analysed against;
+    /// * `drops`: tables to remove.
+    ///
+    /// Drops are applied first (so a drop followed by a create of the same
+    /// name works), then creates, then alters, then data commits. Existing
+    /// `table_info` rows are locked in `table_id` order before anything is
+    /// written; drops and alters take `FOR UPDATE`, data-only tables `FOR
+    /// SHARE`, so two blocks with overlapping table sets cannot deadlock.
+    ///
+    /// Any conflict is reported as [`LakeSoulMetaDataError::CommitConflict`]
+    /// or [`LakeSoulMetaDataError::InsertConflict`]; the PostgreSQL front end
+    /// maps both to `40001`.
+    pub async fn commit_metadata_transaction(
+        &self,
+        changes: MetadataChangeSet,
+    ) -> Result<Vec<String>> {
+        let MetadataChangeSet {
+            creates,
+            alters,
+            drops,
+            mut data,
+        } = changes;
+        validate_and_sort_data_commits(&mut data)?;
+        validate_metadata_changes(&creates, &alters, &drops, &data)?;
+
+        if creates.is_empty() && alters.is_empty() && drops.is_empty() && data.is_empty()
         {
-            return Err(LakeSoulMetaDataError::Internal(
-                "a table appears twice in one transaction commit".to_string(),
-            ));
+            return Ok(Vec::new());
         }
 
         let guard = self.client.lock().await;
         let mut connection = guard.get(QueryType::RW).await?;
         let transaction = connection.transaction().await?;
-        let select_partition = transaction
-            .prepare(
-                "select version, snapshot from partition_info \
-                 where table_id = $1::TEXT and partition_desc = $2::TEXT \
-                 order by version desc limit 1",
-            )
-            .await?;
-        let insert_partition = transaction
-            .prepare(
-                "insert into partition_info \
-                 (table_id, partition_desc, version, commit_op, snapshot, expression, domain) \
-                 values ($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
-            )
-            .await?;
-        let insert_data_commit = transaction
-            .prepare(
-                "insert into data_commit_info \
-                 (table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain) \
-                 values ($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, TRUE, $7::TEXT)",
-            )
-            .await?;
 
-        // Lock every table before touching any partition, in `table_id` order.
-        let mut domains = Vec::with_capacity(commits.len());
-        for commit in &commits {
-            let table_info = &commit.table_info;
-            let locked = transaction
-                .query_opt(
-                    "select domain, table_name, table_namespace, table_schema, \
-                     partitions, properties, table_schema_arrow_ipc_json_hash \
-                     from table_info where table_id = $1::TEXT for share",
-                    &[&table_info.table_id],
-                )
-                .await?
-                .ok_or_else(|| {
-                    LakeSoulMetaDataError::NotFound(format!(
-                        "table {} no longer exists",
-                        table_info.table_id
-                    ))
-                })?;
-            if TableIdentity::from_row(&locked)
-                != TableIdentity::from_table_info(table_info)
-            {
-                transaction.rollback().await?;
-                return Err(LakeSoulMetaDataError::CommitConflict(format!(
-                    "table {} was redefined while the transaction was open; \
-                     retry the transaction",
-                    table_info.table_id
+        // Existing rows are locked in table_id order. A table that is created
+        // in this transaction has no row yet and is skipped; a data commit for
+        // it locks the freshly inserted row inside the data helper.
+        let create_ids = creates
+            .iter()
+            .map(|table| table.table_id.as_str())
+            .collect::<HashSet<_>>();
+        let mut locks: BTreeMap<&str, bool> = BTreeMap::new();
+        for table in &drops {
+            locks.insert(table.table_id.as_str(), true);
+        }
+        for alter in &alters {
+            locks.insert(alter.expected.table_id.as_str(), true);
+        }
+        for commit in &data {
+            if !create_ids.contains(commit.table_info.table_id.as_str()) {
+                locks
+                    .entry(commit.table_info.table_id.as_str())
+                    .or_insert(false);
+            }
+        }
+        for (table_id, exclusive) in locks {
+            let sql = if exclusive {
+                "select 1 from table_info where table_id = $1::TEXT for update"
+            } else {
+                "select 1 from table_info where table_id = $1::TEXT for share"
+            };
+            if transaction.query_opt(sql, &[&table_id]).await?.is_none() {
+                return Err(LakeSoulMetaDataError::NotFound(format!(
+                    "table {table_id} no longer exists"
                 )));
             }
-            domains.push(locked.get::<_, String>(0));
         }
 
-        let commit_op = CommitOp::AppendCommit.as_str_name();
-        let mut commit_ids = Vec::new();
-        for (commit, domain) in commits.iter().zip(&domains) {
-            let table_id = &commit.table_info.table_id;
-            // Partitions in `partition_desc` order (a consistent insert order),
-            // each holding its staged commits in statement order.
-            let mut by_partition: BTreeMap<&str, Vec<&DataCommitInfo>> = BTreeMap::new();
-            for data_commit in &commit.data_commits {
-                by_partition
-                    .entry(data_commit.partition_desc.as_str())
-                    .or_default()
-                    .push(data_commit);
-            }
-            for (partition_desc, staged) in by_partition {
-                let current = transaction
-                    .query_opt(&select_partition, &[table_id, &partition_desc])
-                    .await?;
-                let current_version = current
-                    .as_ref()
-                    .map(|row| row.get::<_, i32>(0))
-                    .unwrap_or(-1);
-                if let Some(expected) = &commit.expected {
-                    let expected_version = expected
-                        .iter()
-                        .find(|partition| partition.partition_desc == partition_desc)
-                        .map(|partition| partition.version)
-                        .unwrap_or(-1);
-                    if current_version != expected_version {
-                        transaction.rollback().await?;
-                        return Err(LakeSoulMetaDataError::InsertConflict {
-                            table_id: table_id.clone(),
-                            partition_desc: partition_desc.to_string(),
-                            expected_version,
-                            actual_version: current_version,
-                        });
-                    }
-                }
-                let next_version = current_version.checked_add(1).ok_or_else(|| {
-                    LakeSoulMetaDataError::Internal(format!(
-                        "partition version overflow on table {table_id} partition \
-                         {partition_desc}"
-                    ))
-                })?;
-                let mut snapshot = current
-                    .map(|row| row.get::<_, Vec<uuid::Uuid>>(1))
-                    .unwrap_or_default();
-                let mut staged_ids = Vec::with_capacity(staged.len());
-                for data_commit in &staged {
-                    let commit_id = data_commit.commit_id.expect("checked above");
-                    let commit_id =
-                        uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
-                    snapshot.push(commit_id);
-                    staged_ids.push(commit_id);
-                }
-                if let Err(error) = transaction
-                    .execute(
-                        &insert_partition,
-                        &[
-                            table_id,
-                            &partition_desc,
-                            &next_version,
-                            &commit_op,
-                            &snapshot,
-                            &"",
-                            domain,
-                        ],
-                    )
-                    .await
-                {
-                    // Both writers can pass the version read above and then
-                    // race on `(table_id, partition_desc, version)`. Report the
-                    // lost race as the retryable conflict instead of leaking the
-                    // raw unique violation.
-                    if error.code().is_some_and(|code| code.code() == "23505") {
-                        transaction.rollback().await?;
-                        return Err(LakeSoulMetaDataError::CommitConflict(format!(
-                            "lost the partition version race on table {table_id} \
-                             partition {partition_desc} version {current_version}"
-                        )));
-                    }
-                    return Err(error.into());
-                }
-                for (data_commit, commit_id) in staged.iter().zip(staged_ids) {
-                    let file_ops = data_commit
-                        .file_ops
-                        .iter()
-                        .map(DataFileOp::from_proto_data_file_op)
-                        .collect::<Result<Vec<_>>>()?;
-                    transaction
-                        .execute(
-                            &insert_data_commit,
-                            &[
-                                table_id,
-                                &partition_desc,
-                                &commit_id,
-                                &file_ops,
-                                &commit_op,
-                                &data_commit.timestamp,
-                                domain,
-                            ],
-                        )
-                        .await?;
-                    commit_ids.push(commit_id.to_string());
-                }
-            }
+        for table in &drops {
+            delete_table_by_table_id_cascade_in_transaction(&transaction, table).await?;
         }
-        transaction.commit().await.map_err(|error| {
-            // Constraint/transaction-rollback errors prove the commit aborted.
-            // Other server errors can arrive after local durability.
-            if error.code().is_some_and(|code| {
-                matches!(&code.code()[..2], "23" | "40") && code.code() != "40003"
-            }) {
-                LakeSoulMetaDataError::PostgresError(error)
-            } else {
-                LakeSoulMetaDataError::InsertCommitOutcomeUnknown(error)
-            }
-        })?;
+        for table in &creates {
+            insert_table_atomic_in_transaction(&transaction, table).await?;
+        }
+        for alter in &alters {
+            apply_table_definition(&transaction, &alter.expected, &alter.update).await?;
+        }
+
+        let commit_ids = commit_data_commits_in_transaction(&transaction, &data).await?;
+        transaction.commit().await.map_err(metadata_commit_error)?;
         Ok(commit_ids)
     }
 
@@ -4384,6 +4672,55 @@ mod tests {
         assert_eq!(commits[0].timestamp, 123);
         assert_eq!(commits[0].domain, "public");
         assert!(commits.iter().all(|commit| commit.commit_id.is_some()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_transaction_drops_before_creating_a_replacement() {
+        let client = MetaDataClient::from_env().await.unwrap();
+        let suffix = uuid::Uuid::new_v4();
+        let table_name = format!("tx_replace_{suffix}");
+        let old = TableInfo {
+            table_id: format!("table_{suffix}_old"),
+            table_namespace: "default".to_string(),
+            table_name: table_name.clone(),
+            table_path: format!("file:///tmp/{table_name}_old"),
+            properties: "{}".to_string(),
+            domain: "public".to_string(),
+            ..Default::default()
+        };
+        client.create_table(old.clone()).await.unwrap();
+        let replacement = TableInfo {
+            table_id: format!("table_{suffix}_new"),
+            table_path: format!("file:///tmp/{table_name}_new"),
+            ..old.clone()
+        };
+        client
+            .commit_metadata_transaction(MetadataChangeSet {
+                creates: vec![replacement.clone()],
+                drops: vec![old],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let stored = client
+            .get_table_info_by_table_name(&table_name, "default")
+            .await
+            .unwrap()
+            .expect("the replacement table exists");
+        assert_eq!(stored.table_id, replacement.table_id);
+        assert_eq!(
+            client
+                .get_table_path_id_by_table_path(&replacement.table_path)
+                .await
+                .unwrap()
+                .expect("the replacement path exists")
+                .table_id,
+            replacement.table_id
+        );
+        client
+            .delete_table_by_table_info_cascade(&stored)
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

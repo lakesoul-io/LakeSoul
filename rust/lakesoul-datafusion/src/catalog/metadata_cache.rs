@@ -139,7 +139,7 @@ pub(crate) fn table_key(
 /// Cross-process/worker caches are bounded by `LAKESOUL_METADATA_TTL_MS`
 /// (and are disabled by default); the persistent `vector_index_epoch`
 /// invalidates snapshot caches once the table metadata is refreshed.
-pub(crate) fn invalidate_table(namespace: &str, name: &str) {
+pub fn invalidate_table(namespace: &str, name: &str) {
     let suffix = format!(":{namespace}:{name}");
     if let Ok(mut entries) = TABLES.entries.lock() {
         entries.retain(|key, _| !key.ends_with(&suffix));

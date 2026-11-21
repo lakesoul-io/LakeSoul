@@ -144,6 +144,9 @@ pub struct PgSession {
     catalog_list: Arc<PgDatabaseCatalogList>,
     /// The domain new tables are created in under a shared cluster.
     cluster_domain: Option<String>,
+    /// Pending DDL of the connection's open transaction block, shared with
+    /// the catalog overlay and the write sink.
+    pub(crate) transaction: crate::transaction::SharedTransaction,
 }
 
 impl PgSession {
@@ -157,6 +160,7 @@ impl PgSession {
         catalog_list: Arc<PgDatabaseCatalogList>,
         cluster_domain: Option<String>,
         distributed: bool,
+        transaction: crate::transaction::SharedTransaction,
     ) -> Result<Self> {
         let actor =
             SessionActor::new(identity.user.clone(), "", identity.database.clone());
@@ -177,6 +181,7 @@ impl PgSession {
             acl,
             catalog_list,
             cluster_domain,
+            transaction,
         })
     }
 
@@ -221,6 +226,29 @@ impl PgSession {
         // even when the local `changed` flag is false.
         self.replace_visible_databases(acl.view().visible_namespaces());
         Ok(changed)
+    }
+
+    /// Refresh the views a completed table DDL publication changed.
+    ///
+    /// Runs after `COMMIT` (including a publication detached from a cancelled
+    /// statement) and after `ROLLBACK`, so a pending definition never leaks
+    /// into a later statement.
+    pub(crate) async fn refresh_after_ddl(
+        &self,
+        ddl: &crate::ddl_transaction::DdlChanges,
+    ) {
+        for name in ddl
+            .creates
+            .keys()
+            .chain(ddl.alters.keys())
+            .chain(ddl.drops.keys())
+        {
+            lakesoul_datafusion::catalog::invalidate_table(&self.identity.database, name);
+        }
+        self.catalog_snapshot.refresh_after_write();
+        if let Err(error) = self.refresh_acl_now().await {
+            tracing::warn!(%error, "refreshing ACLs after table DDL failed");
+        }
     }
 
     /// The metadata view backing this connection's catalog listings.
@@ -572,10 +600,12 @@ impl PgSessionFactory {
                 .as_ref()
                 .map(|access| access.domain().to_string()),
         });
+        let transaction = crate::transaction::shared();
         if let Some(acl) = &acl {
             config.set_extension(Arc::new(crate::acl::PgAclSession {
                 acl: Arc::clone(acl),
                 cluster_domain: cluster_domain.clone(),
+                transaction: Arc::clone(&transaction),
             }));
         }
         if let Some(federation) = &self.federation {
@@ -623,6 +653,7 @@ impl PgSessionFactory {
             identity.access.clone(),
             acl.clone(),
             Arc::clone(&parameters),
+            Arc::clone(&transaction),
         );
         let catalog_list: Arc<PgDatabaseCatalogList> =
             Arc::new(PgDatabaseCatalogList::new(
@@ -722,6 +753,7 @@ impl PgSessionFactory {
             Arc::clone(&catalog_list),
             cluster_domain,
             self.distributed,
+            Arc::clone(&transaction),
         )?;
         session.ivm = self.ivm.clone();
         let session = Arc::new(session);

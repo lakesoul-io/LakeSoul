@@ -1851,8 +1851,8 @@ pub(crate) fn first_insert_in_batch(statements: &[String]) -> Option<usize> {
 pub(crate) fn refuse_insert_in_batch() -> PgWireError {
     feature_not_supported(
         "INSERT cannot be combined with other statements in one simple-query \
-         message: PostgreSQL would run the batch in an implicit transaction, \
-         and LakeSoul commits each INSERT immediately"
+         message: implicit transaction support for multi-statement batches is not available yet; \
+         split the statements or use an explicit BEGIN block"
             .to_string(),
     )
 }

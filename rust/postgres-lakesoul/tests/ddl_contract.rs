@@ -55,7 +55,7 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             drop_table_is_all_or_nothing(h).await?;
             simple_query_batch_with_ddl_is_refused(h).await?;
             if_not_exists_keeps_the_existing_schema(h).await?;
-            ddl_is_refused_inside_a_transaction(h).await?;
+            ddl_is_staged_inside_a_transaction(h).await?;
             same_connection_ddl_replans_prepared_statements(h).await?;
             cross_connection_drop_keeps_the_bound_plan(h).await?;
             cross_connection_drop_and_recreate_keeps_the_bound_plan(h).await?;
@@ -65,7 +65,7 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             alter_set_reset_options(h).await?;
             alter_refusal_matrix_changes_nothing(h).await?;
             alter_owned_tables_are_refused(h).await?;
-            alter_is_refused_in_a_batch_and_a_block(h).await?;
+            alter_is_refused_in_a_simple_query_batch(h).await?;
             alter_conflicts_with_a_block_written_against_the_old_definition(h).await?;
             alter_replans_prepared_statements(h).await?;
             alter_keeps_described_result_types(h).await?;
@@ -1396,43 +1396,47 @@ async fn if_not_exists_keeps_the_existing_schema(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// LakeSoul commits table metadata immediately, so DDL inside a transaction
-/// block is refused instead of silently ignoring `ROLLBACK`.
-async fn ddl_is_refused_inside_a_transaction(h: &Harness) -> Result<()> {
+/// Table DDL inside a block is staged: no metadata before `COMMIT`, and
+/// `ROLLBACK` leaves neither table nor metadata behind.
+async fn ddl_is_staged_inside_a_transaction(h: &Harness) -> Result<()> {
     h.lake.simple_query("BEGIN").await?;
-    let code = error_code(h, "CREATE TABLE ddl_tx (id INT)").await?;
+    command(h, "CREATE TABLE ddl_tx (id INT)").await?;
     ensure!(
-        code == "0A000",
-        "CREATE TABLE inside BEGIN: expected 0A000, actual {code}"
+        metadata(h, "ddl_tx").await?.is_none(),
+        "CREATE TABLE inside BEGIN must not publish metadata before COMMIT"
     );
     h.lake.simple_query("ROLLBACK").await?;
     ensure!(
         metadata(h, "ddl_tx").await?.is_none(),
-        "CREATE TABLE inside BEGIN must not publish metadata"
+        "ROLLBACK must not publish the staged table"
     );
     let (code, message) = error_detail(h, "SELECT id FROM ddl_tx").await?;
     ensure!(
         code == "42P01" && message.contains("ddl_tx"),
-        "SELECT after refused transactional CREATE: expected 42P01 naming the \
-         table, actual {code} ({message})"
+        "SELECT after rolled-back transactional CREATE: expected 42P01 naming \
+         the table, actual {code} ({message})"
     );
 
-    // A partition declaration does not change the commit boundary.
+    // The same statement commits when the block does.
     h.lake.simple_query("BEGIN").await?;
-    let code = error_code(
+    command(
         h,
         "CREATE TABLE ddl_tx_part (part INTEGER NOT NULL) PARTITIONED BY (part)",
     )
     .await?;
+    h.lake.simple_query("COMMIT").await?;
     ensure!(
-        code == "0A000",
-        "partitioned CREATE TABLE inside BEGIN: expected 0A000, actual {code}"
+        metadata(h, "ddl_tx_part").await?.is_some(),
+        "COMMIT must publish the staged partitioned table"
     );
+    h.lake.simple_query("BEGIN").await?;
+    command(h, "DROP TABLE ddl_tx_part").await?;
     h.lake.simple_query("ROLLBACK").await?;
     ensure!(
-        metadata(h, "ddl_tx_part").await?.is_none(),
-        "partitioned CREATE TABLE inside BEGIN must not publish metadata"
+        metadata(h, "ddl_tx_part").await?.is_some(),
+        "ROLLBACK must keep the table a staged DROP targeted"
     );
+    command(h, "DROP TABLE ddl_tx_part").await?;
     Ok(())
 }
 
@@ -2257,29 +2261,17 @@ async fn alter_owned_tables_are_refused(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// `ALTER TABLE` commits immediately, so it is refused where PostgreSQL could
-/// still roll it back: in a multi-statement simple query and in a block.
-async fn alter_is_refused_in_a_batch_and_a_block(h: &Harness) -> Result<()> {
-    const CONTRACT: &str = "alter-refused-in-batch-and-block";
+/// A multi-statement simple query is still refused because Phase 3 (implicit
+/// batch transactions) is not implemented yet.
+async fn alter_is_refused_in_a_simple_query_batch(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-refused-in-batch";
     command(h, "CREATE TABLE ddl_alter_tx (id BIGINT)").await?;
-    let before = definition(h, "ddl_alter_tx").await?;
     let (code, message) =
         error_detail(h, "ALTER TABLE ddl_alter_tx ADD COLUMN n INT; SELECT 1").await?;
     ensure!(
         code == "0A000" && message.contains("implicit transaction"),
         "case={CONTRACT}: batch expected 0A000 naming the implicit transaction, \
          actual {code} ({message})"
-    );
-    h.lake.simple_query("BEGIN").await?;
-    let code = error_code(h, "ALTER TABLE ddl_alter_tx ADD COLUMN n INT").await?;
-    h.lake.simple_query("ROLLBACK").await?;
-    ensure!(
-        code == "0A000",
-        "case={CONTRACT}: ALTER inside BEGIN expected 0A000, actual {code}"
-    );
-    ensure!(
-        definition(h, "ddl_alter_tx").await? == before,
-        "case={CONTRACT}: a refused ALTER changed table_info"
     );
     command(h, "DROP TABLE ddl_alter_tx").await?;
     eprintln!("PASS case={CONTRACT}");

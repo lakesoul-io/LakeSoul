@@ -8,8 +8,9 @@
 //! block run as they do outside it, except that a write stages its files in the
 //! block instead of publishing them: the writer hands them to the block's sink,
 //! nothing becomes visible, and `COMMIT` publishes every staged write in one
-//! metadata transaction. `ROLLBACK` (and any ending that publishes nothing)
-//! deletes the staged files.
+//! metadata transaction. Table DDL is staged the same way, with a
+//! connection-local catalog overlay for later statements. `ROLLBACK` (and any
+//! ending that publishes nothing) deletes the staged files.
 //!
 //! This hook replaces the upstream `TransactionStatementHook`, which only flips
 //! pgwire's transaction status. The differences are the ones PostgreSQL clients
@@ -19,8 +20,10 @@
 //!   so the next statement runs instead of failing with `25P02`;
 //! * every portal is destroyed when the block ends, so a named portal created
 //!   inside the block cannot execute its plan afterwards;
-//! * savepoints, `COMMIT`/`ROLLBACK AND CHAIN` and `DISCARD ALL` inside a block
-//!   are refused with PostgreSQL's SQLSTATEs instead of reaching DataFusion;
+//! * savepoints snapshot the block's staged state; `ROLLBACK TO SAVEPOINT`
+//!   truncates it and recovers a failed block. `COMMIT`/`ROLLBACK AND CHAIN`
+//!   and `DISCARD ALL` inside a block are still refused with PostgreSQL's
+//!   SQLSTATEs instead of reaching DataFusion;
 //! * the block's statements read their own staged writes: a scan appends them
 //!   to the published snapshot as its newest versions, so a later statement
 //!   sees an earlier one's rows and validates its keys against them.
@@ -51,7 +54,9 @@ use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::response::TransactionStatus;
 use tracing::{debug, warn};
 
+use crate::ddl_transaction::{DdlChanges, PendingAcl, PendingCatalog};
 use crate::server::ConnectionSession;
+use crate::session::PgSession;
 
 /// SQLSTATE for statements this front end does not implement.
 const FEATURE_NOT_SUPPORTED: &str = "0A000";
@@ -62,6 +67,10 @@ const ACTIVE_SQL_TRANSACTION: &str = "25001";
 const SERIALIZATION_FAILURE: &str = "40001";
 /// `internal_error`: the block's outcome is unknown.
 const INTERNAL_ERROR: &str = "XX000";
+/// `no_active_sql_transaction`: a savepoint command outside a block.
+const NO_ACTIVE_SQL_TRANSACTION: &str = "25P01";
+/// `invalid_savepoint_specification`: the named savepoint does not exist.
+const INVALID_SAVEPOINT_SPECIFICATION: &str = "3B001";
 
 /// Isolation a block runs under.
 ///
@@ -82,9 +91,30 @@ pub(crate) struct TransactionState {
     pub started: Instant,
     /// Writes waiting for `COMMIT`, in statement order.
     pub pending: Vec<StagedWrite>,
+    /// Table DDL waiting for `COMMIT`.
+    pub ddl: DdlChanges,
+    /// The block's session-local catalog view.
+    pub catalog: PendingCatalog,
+    /// Permissions for tables the block created but has not published.
+    pub pending_acl: PendingAcl,
+    /// Savepoints in creation order; duplicate names resolve to the latest.
+    pub savepoints: Vec<Savepoint>,
     /// Files the block holds, for its limits.
     pub staged_files: usize,
     /// Bytes the block holds, for its limits.
+    pub staged_bytes: u64,
+}
+
+/// One `SAVEPOINT` marker.
+#[derive(Debug, Clone)]
+pub(crate) struct Savepoint {
+    pub name: String,
+    /// Length of `TransactionState::pending` at the savepoint.
+    pub pending_len: usize,
+    pub ddl: DdlChanges,
+    pub catalog: PendingCatalog,
+    pub pending_acl: PendingAcl,
+    pub staged_files: usize,
     pub staged_bytes: u64,
 }
 
@@ -94,9 +124,39 @@ impl TransactionState {
             isolation,
             started: Instant::now(),
             pending: Vec::new(),
+            ddl: DdlChanges::default(),
+            catalog: PendingCatalog::default(),
+            pending_acl: PendingAcl::default(),
+            savepoints: Vec::new(),
             staged_files: 0,
             staged_bytes: 0,
         }
+    }
+
+    fn savepoint(&self, name: String) -> Savepoint {
+        Savepoint {
+            name,
+            pending_len: self.pending.len(),
+            ddl: self.ddl.clone(),
+            catalog: self.catalog.clone(),
+            pending_acl: self.pending_acl.clone(),
+            staged_files: self.staged_files,
+            staged_bytes: self.staged_bytes,
+        }
+    }
+
+    /// Restore the state captured by `savepoint`; returns the writes that were
+    /// staged after it and must be deleted.
+    fn rollback_to(&mut self, index: usize) -> Vec<StagedWrite> {
+        let savepoint = self.savepoints[index].clone();
+        let discarded = self.pending.split_off(savepoint.pending_len);
+        self.ddl = savepoint.ddl;
+        self.catalog = savepoint.catalog;
+        self.pending_acl = savepoint.pending_acl;
+        self.staged_files = savepoint.staged_files;
+        self.staged_bytes = savepoint.staged_bytes;
+        self.savepoints.truncate(index + 1);
+        discarded
     }
 }
 
@@ -333,6 +393,9 @@ pub(crate) async fn reconcile(session: &ConnectionSession, status: TransactionSt
     };
     warn!("dropping a transaction block the client never learned about");
     clear_sink(session);
+    if !state.ddl.is_empty() {
+        session.settings.bump();
+    }
     StagedFiles::new(&session.session.context, state.pending)
         .discard()
         .await;
@@ -363,13 +426,25 @@ impl LakeSoulTransactionHook {
         crate::cursor::clear(client);
     }
 
-    /// Publishes every staged write in one metadata transaction.
+    /// Publishes every staged write and table DDL in one metadata transaction.
     async fn publish(
         writes: &[StagedWrite],
+        ddl: &DdlChanges,
         client: &MetaDataClientRef,
-    ) -> Result<(), LakeSoulMetaDataError> {
-        if writes.is_empty() {
-            return Ok(());
+    ) -> Result<(Vec<StagedWrite>, Vec<StagedWrite>), LakeSoulMetaDataError> {
+        // Writes against a table the block dropped (or created and dropped
+        // again) are never published; their files are deleted by the caller.
+        let mut published_writes = Vec::new();
+        let mut discarded_writes = Vec::new();
+        for write in writes {
+            if ddl.is_dropped_id(&write.table_info.table_id) {
+                discarded_writes.push(write.clone());
+            } else {
+                published_writes.push(write.clone());
+            }
+        }
+        if published_writes.is_empty() && ddl.is_empty() {
+            return Ok((published_writes, discarded_writes));
         }
         // One entry per table, with its staged commits in statement order: the
         // metadata commit folds them into one partition version each.
@@ -396,7 +471,21 @@ impl LakeSoulTransactionHook {
         }
 
         let mut plans: Vec<TablePlan> = Vec::new();
-        for write in writes {
+        for write in &published_writes {
+            let effective = ddl
+                .creates
+                .get(&write.table_info.table_name)
+                .filter(|create| create.table_info.table_id == write.table_info.table_id)
+                .map(|create| create.table_info.clone())
+                .or_else(|| {
+                    ddl.alters
+                        .get(&write.table_info.table_name)
+                        .filter(|alter| {
+                            alter.final_info.table_id == write.table_info.table_id
+                        })
+                        .map(|alter| alter.final_info.clone())
+                })
+                .unwrap_or_else(|| (*write.table_info).clone());
             let index = match plans
                 .iter()
                 .position(|plan| plan.table_info.table_id == write.table_info.table_id)
@@ -404,7 +493,7 @@ impl LakeSoulTransactionHook {
                 Some(index) => index,
                 None => {
                     plans.push(TablePlan {
-                        table_info: (*write.table_info).clone(),
+                        table_info: effective,
                         data_commits: Vec::new(),
                         expected: write.expected.as_ref().map(|_| Default::default()),
                         expected_info: Default::default(),
@@ -468,7 +557,10 @@ impl LakeSoulTransactionHook {
                     .map(|_| plan.expected_info.into_values().collect()),
             })
             .collect();
-        client.commit_transaction(tables).await.map(|_| ())
+        client
+            .commit_metadata_transaction(ddl.metadata_changeset(tables))
+            .await?;
+        Ok((published_writes, discarded_writes))
     }
 
     /// Publishes the block without letting the statement's cancellation decide
@@ -483,12 +575,22 @@ impl LakeSoulTransactionHook {
     /// deletes them (failed), returning the writes when it kept them.
     fn publish_detached(
         staged: StagedFiles,
+        ddl: DdlChanges,
         client: MetaDataClientRef,
+        session: Arc<PgSession>,
     ) -> tokio::task::JoinHandle<Result<Vec<StagedWrite>, LakeSoulMetaDataError>> {
         let (context, writes) = staged.into_parts();
         tokio::spawn(async move {
-            match Self::publish(&writes, &client).await {
-                Ok(()) => Ok(writes),
+            match Self::publish(&writes, &ddl, &client).await {
+                Ok((published, discarded)) => {
+                    if !discarded.is_empty() {
+                        StagedFiles::delete(&context, &discarded).await;
+                    }
+                    if !ddl.is_empty() {
+                        session.refresh_after_ddl(&ddl).await;
+                    }
+                    Ok(published)
+                }
                 Err(error) => {
                     // Only a definitive failure deletes the files: an unknown
                     // outcome may be visible, and an unwind out of the
@@ -648,6 +750,9 @@ impl LakeSoulTransactionHook {
                 if let Some(stale) = stale {
                     warn!("replacing a transaction block the client never learned about");
                     clear_sink(&session);
+                    if !stale.ddl.is_empty() {
+                        session.settings.bump();
+                    }
                     StagedFiles::new(&session.session.context, stale.pending)
                         .discard()
                         .await;
@@ -661,9 +766,60 @@ impl LakeSoulTransactionHook {
             Statement::Rollback { chain: true, .. } => {
                 Err(unsupported("ROLLBACK AND CHAIN"))
             }
+            Statement::Savepoint { name } => {
+                let name = savepoint_name(name);
+                let mut block = session.transaction.lock();
+                let Some(state) = block.as_mut() else {
+                    return Err(no_active_transaction("SAVEPOINT"));
+                };
+                let savepoint = state.savepoint(name);
+                state.savepoints.push(savepoint);
+                Ok(Some(Response::Execution(Tag::new("SAVEPOINT"))))
+            }
+            Statement::ReleaseSavepoint { name } => {
+                let name = savepoint_name(name);
+                let mut block = session.transaction.lock();
+                let Some(state) = block.as_mut() else {
+                    return Err(no_active_transaction("RELEASE SAVEPOINT"));
+                };
+                let Some(index) = state
+                    .savepoints
+                    .iter()
+                    .rposition(|savepoint| savepoint.name == name)
+                else {
+                    return Err(savepoint_not_found(&name));
+                };
+                state.savepoints.truncate(index);
+                Ok(Some(Response::Execution(Tag::new("RELEASE"))))
+            }
             Statement::Rollback {
-                savepoint: Some(_), ..
-            } => Err(unsupported("ROLLBACK TO SAVEPOINT")),
+                savepoint: Some(name),
+                ..
+            } => {
+                let name = savepoint_name(name);
+                let discarded = {
+                    let mut block = session.transaction.lock();
+                    let Some(state) = block.as_mut() else {
+                        return Err(no_active_transaction("ROLLBACK TO SAVEPOINT"));
+                    };
+                    let Some(index) = state
+                        .savepoints
+                        .iter()
+                        .rposition(|savepoint| savepoint.name == name)
+                    else {
+                        return Err(savepoint_not_found(&name));
+                    };
+                    state.rollback_to(index)
+                };
+                if !discarded.is_empty() {
+                    StagedFiles::delete(&session.session.context, &discarded).await;
+                }
+                // `ROLLBACK TO` recovers a failed block: PostgreSQL leaves the
+                // transaction usable and reports no error state.
+                session.settings.bump();
+                client.set_transaction_status(TransactionStatus::Transaction);
+                Ok(Some(Response::Execution(Tag::new("ROLLBACK"))))
+            }
             Statement::Commit { .. } => {
                 // `END` parses as a `Commit` too. A failed block never
                 // publishes: PostgreSQL answers its `COMMIT` with the ROLLBACK
@@ -676,20 +832,29 @@ impl LakeSoulTransactionHook {
                     return Ok(Some(Response::TransactionEnd(Tag::new("COMMIT"))));
                 };
                 Self::log_end(&state, "commit");
+                let TransactionState { pending, ddl, .. } = state;
+                let has_ddl = !ddl.is_empty();
                 // The files stay owned until the publication's outcome is
                 // known. The publication itself runs detached: a cancelled
                 // `COMMIT` must not delete files it may have published.
-                let staged = StagedFiles::new(&session.session.context, state.pending);
+                let staged = StagedFiles::new(&session.session.context, pending);
                 if failed {
                     // The block is gone before its files are; report idle first
                     // so a cancel during the deletion cannot leave the client
                     // failed in a transaction that no longer exists.
                     client.set_transaction_status(TransactionStatus::Idle);
+                    if has_ddl {
+                        session.settings.bump();
+                    }
                     staged.discard().await;
                     return Ok(Some(Response::TransactionEnd(Tag::new("ROLLBACK"))));
                 }
-                let publication =
-                    Self::publish_detached(staged, Arc::clone(&session.meta_client));
+                let publication = Self::publish_detached(
+                    staged,
+                    ddl,
+                    Arc::clone(&session.meta_client),
+                    Arc::clone(&session.session),
+                );
                 // The block is over the moment its publication starts, and the
                 // task decides the files' fate on its own. Report the
                 // connection idle before waiting for it (and before the index
@@ -708,13 +873,24 @@ impl LakeSoulTransactionHook {
                             &session.session.context,
                         )
                         .await;
+                        if has_ddl {
+                            session.settings.bump();
+                        }
                         Ok(Some(Response::TransactionEnd(Tag::new("COMMIT"))))
                     }
-                    Ok(Err(error)) => Err(commit_error(error)),
+                    Ok(Err(error)) => {
+                        if has_ddl {
+                            session.settings.bump();
+                        }
+                        Err(commit_error(error))
+                    }
                     Err(join) => {
                         // The publication task panicked: the block's outcome is
                         // unknown, so its files are not deleted here either.
                         warn!(%join, "the COMMIT publication task failed");
+                        if has_ddl {
+                            session.settings.bump();
+                        }
                         Err(user_error(INTERNAL_ERROR, format!("COMMIT failed: {join}")))
                     }
                 }
@@ -729,14 +905,15 @@ impl LakeSoulTransactionHook {
                     // files, so the client must not stay in a transaction it
                     // cannot see if the deletion is cancelled.
                     client.set_transaction_status(TransactionStatus::Idle);
+                    if !state.ddl.is_empty() {
+                        session.settings.bump();
+                    }
                     StagedFiles::new(&session.session.context, state.pending)
                         .discard()
                         .await;
                 }
                 Ok(Some(Response::TransactionEnd(Tag::new("ROLLBACK"))))
             }
-            Statement::Savepoint { .. } => Err(unsupported("SAVEPOINT")),
-            Statement::ReleaseSavepoint { .. } => Err(unsupported("RELEASE SAVEPOINT")),
             Statement::Discard {
                 object_type: DiscardObject::ALL,
             } if is_open(&session, client.transaction_status()) => Err(user_error(
@@ -800,6 +977,31 @@ impl QueryHook for LakeSoulTransactionHook {
     ) -> Option<PgWireResult<Response>> {
         Self::respond(statement, client).await.transpose()
     }
+}
+
+/// Fold an unquoted savepoint name the way PostgreSQL folds identifiers.
+fn savepoint_name(name: &datafusion::sql::sqlparser::ast::Ident) -> String {
+    if name.quote_style.is_some() {
+        name.value.clone()
+    } else {
+        name.value.to_ascii_lowercase()
+    }
+}
+
+/// PostgreSQL's error for a savepoint command outside a transaction block.
+fn no_active_transaction(statement: &str) -> PgWireError {
+    user_error(
+        NO_ACTIVE_SQL_TRANSACTION,
+        format!("{statement} can only be used in transaction blocks"),
+    )
+}
+
+/// PostgreSQL's error for `RELEASE`/`ROLLBACK TO` naming an unknown savepoint.
+fn savepoint_not_found(name: &str) -> PgWireError {
+    user_error(
+        INVALID_SAVEPOINT_SPECIFICATION,
+        format!("savepoint \"{name}\" does not exist"),
+    )
 }
 
 /// A statement this front end refuses inside a block.

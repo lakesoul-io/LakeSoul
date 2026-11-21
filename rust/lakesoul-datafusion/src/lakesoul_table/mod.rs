@@ -400,6 +400,7 @@ impl LakeSoulTable {
                 .unwrap_or_default(),
             format_registry,
             deferred_commit: None,
+            pending_definition: false,
             read_snapshot: None,
             read_snapshot_explicit: false,
             read_snapshot_strict: false,
