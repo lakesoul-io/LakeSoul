@@ -1,7 +1,7 @@
 {
   pkgs,
   # lib,
-  # config,
+  config,
   ...
 }:
 {
@@ -51,8 +51,40 @@
       # extensions .timescaledb
     ];
     listen_addresses = "127.0.0.1";
-    # initialScript = "";
     # settings .shared_preload_libraries = "timescaledb";
+  };
+
+  # Run after PostgreSQL is ready, including for an existing data directory.
+  processes.lakesoul-metadata-init = {
+    after = [ "devenv:processes:postgres" ];
+    cwd = config.devenv.root;
+    restart.on = "never";
+    exec = ''
+      set -euo pipefail
+      # devenv's initdb uses the current OS user as its PostgreSQL superuser.
+      psql -X -w -v ON_ERROR_STOP=1 -U "$(id -un)" -d postgres <<'SQL'
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'base_super_admin_role') THEN
+          CREATE ROLE base_super_admin_role WITH BYPASSRLS CREATEROLE;
+        END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'base_admin_role') THEN
+          CREATE ROLE base_admin_role;
+        END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'base_user_role') THEN
+          CREATE ROLE base_user_role;
+        END IF;
+      END
+      $$;
+      SQL
+
+      # Keep metadata objects owned by the test user. Do not run meta_cleanup.sql.
+      export PGPASSWORD=lakesoul_test
+      ${pkgs.python3}/bin/python3 script/metadata_migrate.py migrate \
+        --database-url "postgresql://lakesoul_test@$PGHOST:$PGPORT/lakesoul_test"
+      psql -X -w -v ON_ERROR_STOP=1 -U lakesoul_test -d lakesoul_test \
+        -f script/meta_rbac_init.sql
+    '';
   };
 
   # https://devenv.sh/scripts/
