@@ -290,7 +290,11 @@ system linker), so those still compile on every run. To keep the non-cacheable
 part small, `postgres-lakesoul` puts all server logic in its lib target
 (`src/lib.rs`) and leaves `src/main.rs` as a thin `run()` shim, and the PG wire
 contracts are modules of one integration-test binary (`tests/contracts.rs`)
-instead of 24 separate targets that each recompiled the `support` harness.
+instead of 24 separate targets that each recompiled the `support` harness. The
+same pattern is used by `lakesoul-ivm` (`tests/ivm_contracts.rs`), `lakesoul-io`
+(`tests/io_contracts.rs`) and `lakesoul-datafusion`
+(`tests/datafusion_contracts.rs`); suites that need a distinct thread count are
+selected by module-name filter from `.github/scripts/run_ivm_tests.py`.
 
 The Maven local repository is not cached: Maven resolves through the Google
 Central mirror configured in `.mvn/settings.xml`.

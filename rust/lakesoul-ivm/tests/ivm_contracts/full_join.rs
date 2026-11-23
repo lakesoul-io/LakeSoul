@@ -1,0 +1,665 @@
+// SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! FULL join views over two keyed sources: all matching pairs plus the
+//! unmatched rows of either side (NULL-padded).
+
+use std::sync::Arc;
+
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use datafusion::datasource::memory::MemTable;
+use datafusion::prelude::SessionContext;
+use lakesoul_ivm::{
+    FullJoinView, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
+    full_join_view_schema_for, keyed_join_output_primary_keys,
+};
+use tempfile::tempdir;
+
+const CHANGE_COLUMN: &str = "op";
+
+fn table_path(dir: &tempfile::TempDir, name: &str) -> String {
+    format!("file://{}", dir.path().join(name).display())
+}
+
+fn register(
+    context: &SessionContext,
+    name: &str,
+    batches: Vec<RecordBatch>,
+    schema: &SchemaRef,
+) {
+    let schema = batches
+        .first()
+        .map(|batch| batch.schema())
+        .unwrap_or_else(|| schema.clone());
+    let batches = if batches.is_empty() {
+        vec![RecordBatch::new_empty(schema.clone())]
+    } else {
+        batches
+    };
+    let table: Arc<dyn datafusion::catalog::TableProvider> =
+        Arc::new(MemTable::try_new(schema, vec![batches]).unwrap());
+    context.register_table(name, table).unwrap();
+}
+
+fn left_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("jk", DataType::Utf8, true),
+        Field::new("lv", DataType::Utf8, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+fn right_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("rid", DataType::Int64, false),
+        Field::new("jk", DataType::Utf8, true),
+        Field::new("rv", DataType::Int64, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+fn left_batch(rows: &[(i64, Option<&str>, &str, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        left_schema(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from(
+                rows.iter().map(|row| row.1).collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.3))),
+        ],
+    )
+    .unwrap()
+}
+
+fn right_batch(rows: &[(i64, Option<&str>, i64, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        right_schema(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from(
+                rows.iter().map(|row| row.1).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.3))),
+        ],
+    )
+    .unwrap()
+}
+
+type FullJoinRow = (
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
+
+#[allow(clippy::too_many_arguments)]
+fn collect_rows(
+    batches: &[RecordBatch],
+    left_id: &str,
+    right_id: &str,
+    jk: &str,
+    left_value: &str,
+    right_value: &str,
+    kinds: Option<&str>,
+) -> Vec<FullJoinRow> {
+    let mut rows = Vec::new();
+    for batch in batches {
+        let schema = batch.schema();
+        let ids = batch
+            .column(schema.index_of(left_id).unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let right_ids = batch
+            .column(schema.index_of(right_id).unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let keys = batch
+            .column(schema.index_of(jk).unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let lefts = batch
+            .column(schema.index_of(left_value).unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let rights = batch
+            .column(schema.index_of(right_value).unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = kinds.map(|kinds| {
+            batch
+                .column(schema.index_of(kinds).unwrap())
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+        });
+        for row in 0..batch.num_rows() {
+            if kinds.is_some_and(|kinds| kinds.value(row) != "insert") {
+                continue;
+            }
+            rows.push((
+                if ids.is_null(row) {
+                    None
+                } else {
+                    Some(ids.value(row))
+                },
+                if right_ids.is_null(row) {
+                    None
+                } else {
+                    Some(right_ids.value(row))
+                },
+                if keys.is_null(row) {
+                    None
+                } else {
+                    Some(keys.value(row).to_string())
+                },
+                if lefts.is_null(row) {
+                    None
+                } else {
+                    Some(lefts.value(row).to_string())
+                },
+                if rights.is_null(row) {
+                    None
+                } else {
+                    Some(rights.value(row))
+                },
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+async fn full_join_rows(runtime: &IvmRuntime, output: &IvmTable) -> Vec<FullJoinRow> {
+    let batches = output.read_current(runtime.client()).await.unwrap();
+    collect_rows(
+        &batches,
+        "__left_pk_id",
+        "__right_pk_rid",
+        "jk",
+        "left_value",
+        "right_value",
+        Some(IVM_ROW_KINDS_COLUMN),
+    )
+}
+
+/// The SQL semantics of the same full join over the current source states.
+async fn sql_full_join_rows(
+    runtime: &IvmRuntime,
+    left: &IvmTable,
+    right: &IvmTable,
+    predicate: &str,
+) -> Vec<FullJoinRow> {
+    let context = SessionContext::new();
+    register(
+        &context,
+        "l",
+        left.read_current(runtime.client()).await.unwrap(),
+        &left.schema,
+    );
+    register(
+        &context,
+        "r",
+        right.read_current(runtime.client()).await.unwrap(),
+        &right.schema,
+    );
+    let frame = context
+        .sql(&format!(
+            "select l.id, r.rid, coalesce(l.jk, r.jk) as jk, l.lv, r.rv from \
+             (select * from l where \"{CHANGE_COLUMN}\" <> 'delete') l \
+             full join (select * from r where \"{CHANGE_COLUMN}\" <> 'delete') r \
+             on {predicate}"
+        ))
+        .await
+        .unwrap();
+    let batches = frame.collect().await.unwrap();
+    collect_rows(&batches, "id", "rid", "jk", "lv", "rv", None)
+}
+
+struct Fixture {
+    runtime: IvmRuntime,
+    dir: tempfile::TempDir,
+    left: IvmTable,
+    right: IvmTable,
+    output: IvmTable,
+    view: FullJoinView,
+}
+
+impl Fixture {
+    async fn cleanup(self) {
+        for table in [&self.left, &self.right, &self.output] {
+            self.runtime
+                .client()
+                .drop_table(&table.table_name, "default")
+                .await
+                .unwrap();
+        }
+        drop(self.dir);
+    }
+}
+
+async fn setup() -> Fixture {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fulljoin_left_{suffix}"),
+                table_path(&dir, "left"),
+                left_schema(),
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fulljoin_right_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema(),
+            )
+            .with_primary_keys(vec!["rid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let output = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fulljoin_out_{suffix}"),
+                table_path(&dir, "out"),
+                full_join_view_schema_for(
+                    &left_schema(),
+                    &right_schema(),
+                    &["id".to_string()],
+                    &["rid".to_string()],
+                    &["jk".to_string()],
+                    "lv",
+                    "rv",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(keyed_join_output_primary_keys(
+                &["id".to_string()],
+                &["rid".to_string()],
+            )),
+        )
+        .await
+        .unwrap();
+    let view = FullJoinView::new(
+        format!("fulljoin_{suffix}"),
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        "jk",
+        "lv",
+        "rv",
+    );
+    Fixture {
+        runtime,
+        dir,
+        left,
+        right,
+        output,
+        view,
+    }
+}
+
+#[test_log::test(tokio::test)]
+async fn full_join_keeps_unmatched_rows_of_both_sides() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+
+    // A match, an unmatched left row, an unmatched right row and NULL keys.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "insert"),
+            (2, Some("b"), "L2", "insert"),
+            (3, None, "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("a"), 100, "insert"),
+                (11, Some("c"), 101, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+
+    // A right update and a right delete that leaves a left row unmatched.
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("b"), 110, "insert"),
+                (11, Some("c"), 101, "delete"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+
+    // A left join-key change to an unmatched right row matches it.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(3, Some("b"), "L3", "insert")]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+
+    // A left delete removes its pairs; its right partner becomes unmatched.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "delete"),
+            (2, Some("b"), "L2", "delete"),
+        ]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    let expected = sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await;
+    assert_eq!(full_join_rows(runtime, output).await, expected);
+
+    // A rebuild agrees with the incremental state.
+    runtime.rebuild_full_join(view).await.unwrap();
+    assert_eq!(full_join_rows(runtime, output).await, expected);
+
+    fixture.cleanup().await;
+}
+
+#[test_log::test(tokio::test)]
+async fn null_safe_full_join_matches_null_keys_and_sql() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output) = (&fixture.left, &fixture.right, &fixture.output);
+    let view = fixture.view.clone().with_null_safe(true);
+    let predicate = "l.jk is not distinct from r.jk";
+
+    // NULL keys match NULL keys; the unmatched rows of both sides stay padded.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, None, "L1", "insert"),
+            (2, Some("a"), "L2", "insert"),
+            (3, Some("b"), "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, None, 100, "insert"),
+                (11, Some("a"), 101, "insert"),
+                (12, Some("c"), 102, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        vec![
+            (None, Some(12), Some("c".to_string()), None, Some(102)),
+            (Some(1), Some(10), None, Some("L1".to_string()), Some(100)),
+            (
+                Some(2),
+                Some(11),
+                Some("a".to_string()),
+                Some("L2".to_string()),
+                Some(101)
+            ),
+            (
+                Some(3),
+                None,
+                Some("b".to_string()),
+                Some("L3".to_string()),
+                None
+            ),
+        ]
+    );
+
+    // A right key moving from NULL to "b": the NULL-match of left 1 drops (the
+    // changed-right-key selection must find it null-safely), left 3 gains it.
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[(10, Some("b"), 110, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // A new NULL-key pair on both sides, currently unmatched.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(9, Some("x"), "L9", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(13, None, 113, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // The left key moving to NULL must find the NULL-key right row (the
+    // changed-left-key selection must be null-safe too).
+    left.append_batch(runtime.client(), left_batch(&[(9, None, "L9", "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // A right delete turns its partner into a padded left row.
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[(11, Some("a"), 101, "delete")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    // A rebuild agrees with the incremental state.
+    runtime.rebuild_full_join(&view).await.unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, predicate).await
+    );
+
+    fixture.cleanup().await;
+}
+
+/// Both sources change in one window: the refresh must rewrite only the
+/// affected pairs, keep right-only rows, and match a full recompute.
+#[test_log::test(tokio::test)]
+async fn both_sided_window_matches_a_full_recompute() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "insert"),
+            (2, Some("b"), "L2", "insert"),
+            (3, None, "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("a"), 100, "insert"),
+                (11, Some("c"), 101, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+
+    // The left row moves from `a` to `b`; right row 10 changes its payload,
+    // right row 11 (an unmatched right row) is deleted, right row 12 joins the
+    // new left key and right row 13 is a new unmatched right row.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(1, Some("b"), "L1b", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("a"), 110, "insert"),
+                (11, Some("c"), 101, "delete"),
+                (12, Some("b"), 102, "insert"),
+                (13, Some("d"), 103, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+}
+
+/// High-cardinality both-sided window: a deleted left row makes its right
+/// partner right-only, a right insert with no left match stays right-only,
+/// and the result still matches the direct SQL FULL JOIN reference.
+#[test_log::test(tokio::test)]
+async fn both_sided_high_cardinality_matches_sql_reference() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+    let left_owned = (1..=10_000i64)
+        .map(|key| (key, Some(format!("g{key}")), format!("L{key}"), "insert"))
+        .collect::<Vec<_>>();
+    let left_rows = left_owned
+        .iter()
+        .map(|(key, group, value, op)| (*key, group.as_deref(), value.as_str(), *op))
+        .collect::<Vec<_>>();
+    left.append_batch(runtime.client(), left_batch(&left_rows))
+        .await
+        .unwrap();
+    let right_owned = (1..=1_000i64)
+        .map(|key| (key, Some(format!("g{key}")), key * 10, "insert"))
+        .collect::<Vec<_>>();
+    let right_rows = right_owned
+        .iter()
+        .map(|(key, group, value, op)| (*key, group.as_deref(), *value, *op))
+        .collect::<Vec<_>>();
+    right
+        .append_batch(runtime.client(), right_batch(&right_rows))
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+
+    // Both sides change in one window.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("g1"), "L1", "delete"),
+            (10_001, Some("g10001"), "L10001", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (2, Some("g2"), 20, "insert"),
+                (3, Some("g3"), 30, "delete"),
+                (1_001, Some("g1001"), 10_010, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+}
