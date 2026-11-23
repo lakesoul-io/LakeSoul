@@ -191,7 +191,7 @@ async fn get_incremental_files(
   `ListPartitionByTableIdAndTimestamp`（P0-1）；版本区间补 `order by version`。
 - `MetaDataClient::get_partition_info_by_version` / `get_partition_changelog` /
   `get_incremental_files`，helper `active_added_files`（镜像 JVM `filterFiles`）。
-- 集成测试 `rust/lakesoul-metadata/tests/incremental_read.rs`（7 个场景）。
+- 集成测试 `rust/lakesoul-metadata/tests/metadata_contracts/incremental_read.rs`（7 个场景）。
 - 顺带修复：`commit_data` 的 Update/Compaction/Delete 分支缺少 snapshot 容器，
   导致 `TransactionInsertPartitionInfo` 把最后一个真实分区 pop 掉、版本未落库。
 
@@ -295,7 +295,7 @@ PG 唯一键错误。JVM 侧有完整实现（`integrations/lakesoul-common/src/
   - 首次提交的分区版本从 -1 起算（对齐 JVM `getOrCreateCurPartitionInfo`）。
 - 新增 `merge_submitted_snapshot`（JVM `updateSubmitPartitionSnapshot` 语义）与
   `get_commit_ops_between_versions`（`ListCommitOpsBetweenVersions` DAO wrapper）。
-- 测试 `rust/lakesoul-metadata/tests/commit_occ.rs` 6 例：4 写者并发 append
+- 测试 `rust/lakesoul-metadata/tests/metadata_contracts/commit_occ.rs` 6 例：4 写者并发 append
   无丢文件；Compaction/Update 与并发 Append 合并；stale Update 与 Update 冲突
   报错；stale Compaction 在有 Update 时跳过；stale Update 越过带并发追加的
   Compaction 报错。
@@ -748,7 +748,7 @@ pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑�
     `not exists` 过滤。
 - 不新增 DAO 类型/偏移（Java `CodedDaoType` 不变）；内部表仍可被逐表查询、
   compaction 等按 id 访问，只是不再出现在列表里。
-- 测试：Rust `rust/lakesoul-metadata/tests/list_tables_filter.rs`（覆盖四个 JNI
+- 测试：Rust `rust/lakesoul-metadata/tests/metadata_contracts/list_tables_filter.rs`（覆盖四个 JNI
   查询）与 Java `ListTablesFilterTest`（JDBC 四个列表方法）；`lakesoul-common`
   模块测试与 `lakesoul-metadata` 串行测试全绿。
 
@@ -783,7 +783,7 @@ pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑�
 - `collect_source_window` 改用它：每条源窗口由 O(分区) 次元数据往返降为固定 2 次
   （分区版本 + commit 文件）；`requires_rebuild`/`partition_deleted`/identity/cursor
   推进等语义保持不变。
-- 测试 `rust/lakesoul-metadata/tests/table_changelog.rs` 与逐分区 API 对照：
+- 测试 `rust/lakesoul-metadata/tests/metadata_contracts/table_changelog.rs` 与逐分区 API 对照：
   多分区全量、按 cursor 增量、删除分区、update 触发 rebuild；IVM 全量 27 个二进制
   legacy/V2 全绿。
 
