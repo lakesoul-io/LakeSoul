@@ -278,9 +278,12 @@ is required by sccache.
   `consistency-ci`, `compaction-clean-e2e`, `python-ci`, CDC suites)
 
 Host and cross builds do not share entries because `--target` is part of the
-sccache key. Each stream has one producer on `main`: `rust_test (legacy)` for
-host, `python-ci` for cross-target. Other jobs only restore; PRs never save.
-To keep the cache total small, only these two entries are written per run.
+sccache key. There are three producers on `main`: `rust_test (legacy)` for the
+default host stream, `rust_test (ivm)` for the IVM-feature host stream (the
+feature set changes rustc's command line, so those entries miss the default
+stream), and `python-ci` for cross-target. Other jobs only restore; PRs never
+save. To keep the cache total small, only these three entries are written per
+run.
 
 `native-build` and the release jobs keep the release profile and the Swatinem
 `native-glibc217-v2` cache because they produce shipped artifacts.
@@ -295,6 +298,21 @@ same pattern is used by `lakesoul-ivm` (`tests/ivm_contracts.rs`), `lakesoul-io`
 (`tests/io_contracts.rs`) and `lakesoul-datafusion`
 (`tests/datafusion_contracts.rs`); suites that need a distinct thread count are
 selected by module-name filter from `.github/scripts/run_ivm_tests.py`.
+
+#### Measured limits of further link/codegen tuning (2026-11)
+
+Non-cacheable test harnesses are the remaining cost (postgres-lakesoul lib
+harness ~116 s, datafusion ~40 s locally). `cargo --timings` shows the
+non-test lib is dominated by the rustc frontend (postgres-lakesoul: 262 s
+frontend + 22 s codegen), while the actual bin link is ~2 s. Measured on this
+machine: mold/lld/gold differ by <=3 s; `codegen-units` 1..512 has no effect;
+`--jobs-frontend` 1..16 is neutral-to-slower; cranelift
+(`-Zcodegen-backend=cranelift`, nightly) is ~30% faster on a small crate but
+fails on the full graph (`llvm.x86.sse2.pmulhu.w is not yet supported`).
+Moving `#[cfg(test)]` unit tests out of libs into integration binaries would
+avoid re-frontending the lib, but in postgres-lakesoul it means exposing ~1100
+private items (50 test modules, 55 modules, 520 functions, ~525 methods/fields)
+and was abandoned as too invasive.
 
 The Maven local repository is not cached: Maven resolves through the Google
 Central mirror configured in `.mvn/settings.xml`.
