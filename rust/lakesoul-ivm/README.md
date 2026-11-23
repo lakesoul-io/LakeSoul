@@ -594,7 +594,7 @@ after merge-on-read, so it can never resurrect an older version of a key).
   explicitly.  The differential oracle covers a fallback view across random
   insert/update/delete rounds, so its rows are checked against the reference
   recompute every round, and the sqllogic harness accepts
-  `/*ivm-expect-action fallback*/` (`tests/slt/fallback.slt`).  Create the target with `with_allow_fallback(false)` to keep
+  `/*ivm-expect-action fallback*/` (`tests/ivm_contracts/slt/fallback.slt`).  Create the target with `with_allow_fallback(false)` to keep
   the strict behavior (unsupported shapes are then rejected, as before), and
   note that a Tier-1 view must not read a fallback view: the fallback rewrites
   its MV, so a downstream incremental refresh cannot see what it removed.
@@ -877,19 +877,19 @@ cannot skip pages, and the scan is faster.  See the state-read experiment in
 
 The crate has three test layers:
 
-* SQL entry end-to-end scripts (`tests/slt/*.slt`) driven by `tests/sqllogic.rs`;
-* differential oracles against full recomputes (`tests/sql_oracle.rs`),
+* SQL entry end-to-end scripts (`tests/ivm_contracts/slt/*.slt`) driven by `tests/ivm_contracts/sqllogic.rs`;
+* differential oracles against full recomputes (`tests/ivm_contracts/sql_oracle.rs`),
   including the join shapes (differently named inner keys, non-equality pair
   conditions) and the filtered semi/anti and multi-column distinct views. The
   mutation stream is deterministic per oracle; vary it with
   `IVM_ORACLE_SEED=7 IVM_ORACLE_ROUNDS=30 cargo test -p lakesoul-ivm --test
   sql_oracle` (a custom seed whose data stays empty no longer fails the
   coverage guard);
-* typed runtime tests (e.g. `tests/join_keyed.rs`, `tests/window_refresh.rs`);
-* fallback tests (`tests/fallback_views.rs`), including an insert-only append
+* typed runtime tests (e.g. `tests/ivm_contracts/join_keyed.rs`, `tests/ivm_contracts/window_refresh.rs`);
+* fallback tests (`tests/ivm_contracts/fallback_views.rs`), including an insert-only append
   source recomputed through Tier-2;
 * typed coverage for `Float64` / `Decimal128` / `Date32` / `Boolean` inputs
-  (`tests/slt/typed_*.slt` and `union_types.slt`), including NULL handling and
+  (`tests/ivm_contracts/slt/typed_*.slt` and `union_types.slt`), including NULL handling and
   the non-NULL count.
 
 ```sh

@@ -1,0 +1,1024 @@
+// SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! TOP-K views: the top `limit` rows of every group, recomputed per affected
+//! group, with ties broken deterministically by the source primary keys.
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use datafusion::datasource::memory::MemTable;
+use datafusion::prelude::SessionContext;
+use lakesoul_ivm::{
+    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, RowView, StateRole,
+    TopKView, top_k_mv_schema_for,
+};
+use tempfile::tempdir;
+
+const CHANGE_COLUMN: &str = "op";
+
+fn table_path(dir: &tempfile::TempDir, name: &str) -> String {
+    format!("file://{}", dir.path().join(name).display())
+}
+
+fn register(
+    context: &SessionContext,
+    name: &str,
+    batches: Vec<RecordBatch>,
+    schema: &SchemaRef,
+) {
+    let schema = batches
+        .first()
+        .map(|batch| batch.schema())
+        .unwrap_or_else(|| schema.clone());
+    let batches = if batches.is_empty() {
+        vec![RecordBatch::new_empty(schema.clone())]
+    } else {
+        batches
+    };
+    let table: Arc<dyn datafusion::catalog::TableProvider> =
+        Arc::new(MemTable::try_new(schema, vec![batches]).unwrap());
+    context.register_table(name, table).unwrap();
+}
+
+fn source_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("ord", DataType::Int64, false),
+        Field::new("amount", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+fn source_batch(rows: &[(i64, &str, i64, i64, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        source_schema(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.1))),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.3))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.4))),
+        ],
+    )
+    .unwrap()
+}
+
+struct Fixture {
+    runtime: IvmRuntime,
+    dir: tempfile::TempDir,
+    source: IvmTable,
+    mv: IvmTable,
+    view: TopKView,
+}
+
+async fn fixture(output_columns: Vec<String>, limit: i64) -> Fixture {
+    fixture_with_offset(output_columns, limit, 0).await
+}
+
+async fn fixture_with_offset(
+    output_columns: Vec<String>,
+    limit: i64,
+    offset: i64,
+) -> Fixture {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &output_columns)
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = TopKView::new(
+        format!("topk_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        vec!["ord".to_string()],
+        limit,
+    )
+    .with_output_columns(output_columns)
+    .with_offset(offset);
+    Fixture {
+        runtime,
+        dir,
+        source,
+        mv,
+        view,
+    }
+}
+
+/// The current MV rows as `(k, g, ord, amount)`.
+async fn top_k_rows(fixture: &Fixture) -> HashSet<(i64, String, i64, i64)> {
+    let mut rows = HashSet::new();
+    for batch in fixture
+        .mv
+        .read_current(fixture.runtime.client())
+        .await
+        .unwrap()
+    {
+        let schema = batch.schema();
+        let keys = batch
+            .column(schema.index_of("k").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let groups = batch
+            .column(schema.index_of("g").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let orders = batch
+            .column(schema.index_of("ord").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let amounts = batch
+            .column(schema.index_of("amount").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(schema.index_of(IVM_ROW_KINDS_COLUMN).unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if kinds.value(row) == "insert" {
+                rows.insert((
+                    keys.value(row),
+                    groups.value(row).to_string(),
+                    orders.value(row),
+                    amounts.value(row),
+                ));
+            }
+        }
+    }
+    rows
+}
+
+/// The SQL semantics: `row_number() <= limit` per group, ties broken by `k`.
+async fn full_top_k_rows(fixture: &Fixture) -> HashSet<(i64, String, i64, i64)> {
+    let context = SessionContext::new();
+    register(
+        &context,
+        "src",
+        fixture
+            .source
+            .read_current(fixture.runtime.client())
+            .await
+            .unwrap(),
+        &fixture.source.schema,
+    );
+    let frame = context
+        .sql(&format!(
+            "select k, g, ord, amount from ( \
+               select k, g, ord, amount, \
+                      row_number() over (partition by g order by ord, k) as rn \
+               from src where \"{CHANGE_COLUMN}\" <> 'delete' \
+             ) where rn > {} and rn <= {}",
+            fixture.view.offset,
+            fixture.view.offset + fixture.view.limit
+        ))
+        .await
+        .unwrap();
+    let mut rows = HashSet::new();
+    for batch in frame.collect().await.unwrap() {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let groups = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let orders = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let amounts = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.insert((
+                keys.value(row),
+                groups.value(row).to_string(),
+                orders.value(row),
+                amounts.value(row),
+            ));
+        }
+    }
+    rows
+}
+
+async fn assert_matches_oracle(fixture: &Fixture) {
+    assert_eq!(top_k_rows(fixture).await, full_top_k_rows(fixture).await);
+}
+
+#[test_log::test(tokio::test)]
+async fn top_k_keeps_and_replaces_rows() {
+    let fixture = fixture(
+        vec![
+            "k".to_string(),
+            "g".to_string(),
+            "ord".to_string(),
+            "amount".to_string(),
+        ],
+        2,
+    )
+    .await;
+    let runtime = &fixture.runtime;
+    let _keep_dir = &fixture.dir;
+
+    fixture
+        .source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 1, 10, "insert"),
+                (2, "a", 2, 20, "insert"),
+                (3, "a", 3, 30, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 1, 10), (2, "a".to_string(), 2, 20),])
+    );
+
+    // A row entering the top-k displaces the worst row of the group.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 0, 40, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 1, 10), (4, "a".to_string(), 0, 40),])
+    );
+
+    // An ordering update lets a row fall out of the top-k.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(1, "a", 5, 15, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(2, "a".to_string(), 2, 20), (4, "a".to_string(), 0, 40),])
+    );
+
+    // Deleting the best row promotes the next one.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 0, 40, "delete")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(2, "a".to_string(), 2, 20), (3, "a".to_string(), 3, 30),])
+    );
+
+    // Ties on the ordering are broken by the primary key.
+    fixture
+        .source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (5, "b", 1, 50, "insert"),
+                (6, "b", 1, 60, "insert"),
+                (7, "b", 2, 70, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([
+            (2, "a".to_string(), 2, 20),
+            (3, "a".to_string(), 3, 30),
+            (5, "b".to_string(), 1, 50),
+            (6, "b".to_string(), 1, 60),
+        ])
+    );
+
+    runtime.rebuild_top_k(&fixture.view).await.unwrap();
+    assert_matches_oracle(&fixture).await;
+}
+
+/// The MV rows of the projected view as `(k, g, ord)`.
+async fn projected_rows(fixture: &Fixture) -> HashSet<(i64, String, i64)> {
+    let mut rows = HashSet::new();
+    for batch in fixture
+        .mv
+        .read_current(fixture.runtime.client())
+        .await
+        .unwrap()
+    {
+        let schema = batch.schema();
+        let keys = batch
+            .column(schema.index_of("k").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let groups = batch
+            .column(schema.index_of("g").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let orders = batch
+            .column(schema.index_of("ord").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(schema.index_of(IVM_ROW_KINDS_COLUMN).unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if kinds.value(row) == "insert" {
+                rows.insert((
+                    keys.value(row),
+                    groups.value(row).to_string(),
+                    orders.value(row),
+                ));
+            }
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn top_k_projection_and_group_moves() {
+    let fixture =
+        fixture(vec!["k".to_string(), "g".to_string(), "ord".to_string()], 2).await;
+    let runtime = &fixture.runtime;
+    let _keep_dir = &fixture.dir;
+
+    // The projected schema excludes the payload column.
+    assert!(fixture.mv.schema.field_with_name("amount").is_err());
+
+    fixture
+        .source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 1, 10, "insert"),
+                (2, "a", 2, 20, "insert"),
+                (3, "a", 3, 30, "insert"),
+                (4, "b", 2, 40, "insert"),
+                (5, "b", 3, 50, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_eq!(
+        projected_rows(&fixture).await,
+        HashSet::from([
+            (1, "a".to_string(), 1),
+            (2, "a".to_string(), 2),
+            (4, "b".to_string(), 2),
+            (5, "b".to_string(), 3),
+        ])
+    );
+
+    // Moving a row to another group retracts it from the old group and may
+    // displace a row of the new one.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(1, "b", 0, 10, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_eq!(
+        projected_rows(&fixture).await,
+        HashSet::from([
+            (2, "a".to_string(), 2),
+            (3, "a".to_string(), 3),
+            (1, "b".to_string(), 0),
+            (4, "b".to_string(), 2),
+        ])
+    );
+
+    runtime.rebuild_top_k(&fixture.view).await.unwrap();
+    assert_eq!(
+        projected_rows(&fixture).await,
+        HashSet::from([
+            (2, "a".to_string(), 2),
+            (3, "a".to_string(), 3),
+            (1, "b".to_string(), 0),
+            (4, "b".to_string(), 2),
+        ])
+    );
+}
+
+#[test_log::test(tokio::test)]
+async fn top_k_validation() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_valid_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_valid_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &[]).unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+
+    // A non-positive limit.
+    let view = TopKView::new(
+        format!("valid_a_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        vec!["ord".to_string()],
+        0,
+    );
+    assert!(
+        runtime
+            .refresh_top_k(&view)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("positive limit")
+    );
+
+    // A global top-k (no group keys) is valid; the order keys are required.
+    let view = TopKView::new(
+        format!("valid_b_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        Vec::new(),
+        vec!["ord".to_string()],
+        1,
+    );
+    assert!(runtime.refresh_top_k(&view).await.unwrap().is_none());
+
+    let view = TopKView::new(
+        format!("valid_b2_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        Vec::new(),
+        1,
+    );
+    assert!(
+        runtime
+            .refresh_top_k(&view)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("order keys")
+    );
+
+    // A keyed source is required.
+    let append_only = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_topk_append_{suffix}"),
+            table_path(&dir, "append"),
+            Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("g", DataType::Utf8, false),
+                Field::new("ord", DataType::Int64, false),
+            ])),
+        ))
+        .await
+        .unwrap();
+    let append_mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_append_mv_{suffix}"),
+                table_path(&dir, "append_mv"),
+                top_k_mv_schema_for(&append_only.schema, &[], &[]).unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = TopKView::new(
+        format!("valid_c_{suffix}"),
+        append_only.clone(),
+        append_mv,
+        vec!["g".to_string()],
+        vec!["ord".to_string()],
+        1,
+    );
+    assert!(
+        runtime
+            .refresh_top_k(&view)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("primary key")
+    );
+
+    // The output must contain the group keys and the primary keys.
+    let view = TopKView::new(
+        format!("valid_d_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        vec!["ord".to_string()],
+        1,
+    )
+    .with_output_columns(vec!["amount".to_string()]);
+    assert!(
+        runtime
+            .refresh_top_k(&view)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("output columns must contain")
+    );
+
+    // An unknown filter/projection column is rejected by the schema helper.
+    assert!(
+        top_k_mv_schema_for(
+            &source_schema(),
+            &["k".to_string()],
+            &["missing".to_string()]
+        )
+        .is_err()
+    );
+    let _ = RowView::new(format!("unused_{suffix}"), source, mv);
+}
+
+/// A top-k window keeps `offset < rank <= offset + limit` per group and
+/// shifts as rows enter and leave the ordering.
+#[test_log::test(tokio::test)]
+async fn top_k_with_offset_shifts_the_window() {
+    let fixture = fixture_with_offset(
+        vec![
+            "k".to_string(),
+            "g".to_string(),
+            "ord".to_string(),
+            "amount".to_string(),
+        ],
+        2,
+        1,
+    )
+    .await;
+    let runtime = &fixture.runtime;
+    let _keep_dir = &fixture.dir;
+
+    fixture
+        .source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 1, 10, "insert"),
+                (2, "a", 2, 20, "insert"),
+                (3, "a", 3, 30, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(2, "a".to_string(), 2, 20), (3, "a".to_string(), 3, 30),])
+    );
+
+    // A row better than the window's first row pushes the previous first row
+    // into the window and the last one out.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 0, 40, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 1, 10), (2, "a".to_string(), 2, 20),])
+    );
+
+    // Removing it shifts the window back.
+    fixture
+        .source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 0, 40, "delete")]))
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&fixture.view).await.unwrap().unwrap();
+    assert_matches_oracle(&fixture).await;
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(2, "a".to_string(), 2, 20), (3, "a".to_string(), 3, 30),])
+    );
+}
+
+/// A pending epoch whose MV is ahead of the auxiliary index must not be
+/// accepted as committed: keyed reads would otherwise use stale state.
+#[test_log::test(tokio::test)]
+async fn pending_epoch_with_missing_auxiliary_state_is_repaired() {
+    let fixture = fixture(
+        vec![
+            "k".to_string(),
+            "g".to_string(),
+            "ord".to_string(),
+            "amount".to_string(),
+        ],
+        1,
+    )
+    .await;
+    fixture
+        .source
+        .append_batch(
+            fixture.runtime.client(),
+            source_batch(&[(1, "a", 10, 100, "insert"), (2, "a", 20, 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    let expected_rows = top_k_rows(&fixture).await;
+    let record = fixture
+        .runtime
+        .latest_epoch(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!record.state_versions.is_empty());
+
+    fixture
+        .runtime
+        .metadata()
+        .upsert_cursor(
+            &fixture.view.view_id,
+            &fixture.source.table_id,
+            lakesoul_io::constant::DEFAULT_PARTITION_DESC,
+            -1,
+            0,
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .metadata()
+        .set_epoch_pending(&fixture.view.view_id, record.generation, record.epoch)
+        .await
+        .unwrap();
+    let state = fixture
+        .runtime
+        .list_states(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|state| state.role == StateRole::RankState)
+        .unwrap();
+    fixture
+        .runtime
+        .open_table_by_id(&state.table_id)
+        .await
+        .unwrap()
+        .truncate(fixture.runtime.client())
+        .await
+        .unwrap();
+
+    let replayed = fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .unwrap()
+        .expect("the pending epoch should be completed after repairing the mirror state");
+    assert_eq!(replayed, record.epoch);
+    let state = fixture
+        .runtime
+        .list_states(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|state| state.role == StateRole::RankState)
+        .unwrap();
+    assert!(
+        !fixture
+            .runtime
+            .open_table_by_id(&state.table_id)
+            .await
+            .unwrap()
+            .current_files(fixture.runtime.client())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(top_k_rows(&fixture).await, expected_rows);
+}
+
+/// A group key that is also the source primary key exercises the keyed source
+/// lookup path.
+#[test_log::test(tokio::test)]
+async fn keyed_group_source_refreshes() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_keyed_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let output_columns = vec![
+        "k".to_string(),
+        "g".to_string(),
+        "ord".to_string(),
+        "amount".to_string(),
+    ];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_keyed_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &output_columns)
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = TopKView::new(
+        format!("topk_keyed_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["k".to_string()],
+        vec!["ord".to_string()],
+        1,
+    )
+    .with_output_columns(output_columns);
+    let fixture = Fixture {
+        runtime,
+        dir,
+        source: source.clone(),
+        mv: mv.clone(),
+        view: view.clone(),
+    };
+
+    fixture
+        .source
+        .append_batch(
+            fixture.runtime.client(),
+            source_batch(&[(1, "a", 10, 100, "insert"), (2, "b", 20, 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut roles = fixture
+        .runtime
+        .list_states(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|state| state.role.as_str())
+        .collect::<Vec<_>>();
+    roles.sort_unstable();
+    // A top-1 view keyed by its group shares the MV as the mirror state.
+    assert_eq!(roles, vec!["mv", "rank_state"]);
+    let epoch = fixture
+        .runtime
+        .latest_epoch(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .expect("top-k refresh should publish an epoch");
+    let mut state_roles = epoch
+        .state_versions
+        .iter()
+        .map(|state| state.role.as_str())
+        .collect::<Vec<_>>();
+    state_roles.sort_unstable();
+    assert_eq!(state_roles, vec!["rank_state"]);
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 10, 100), (2, "b".to_string(), 20, 200),])
+    );
+
+    fixture
+        .source
+        .append_batch(
+            fixture.runtime.client(),
+            source_batch(&[(1, "a", 5, 101, "insert")]),
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 5, 101), (2, "b".to_string(), 20, 200),])
+    );
+}
+
+/// A rank state created before column trimming is rebuilt when its persisted
+/// schema no longer matches the projected rank schema.
+#[test_log::test(tokio::test)]
+async fn rank_state_schema_is_migrated() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_migrate_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let output_columns = vec!["k".to_string(), "ord".to_string()];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_migrate_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &output_columns)
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = TopKView::new(
+        format!("topk_migrate_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["k".to_string()],
+        vec!["ord".to_string()],
+        1,
+    )
+    .with_output_columns(output_columns);
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, 100, "insert"), (2, "b", 20, 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&view).await.unwrap().unwrap();
+
+    let old = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_old_rank_{suffix}"),
+                table_path(&dir, "old_rank"),
+                source.schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_bucket_columns(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    runtime
+        .metadata()
+        .unregister_state(&view.view_id, StateRole::RankState)
+        .await
+        .unwrap();
+    runtime
+        .metadata()
+        .register_state(&view.view_id, StateRole::RankState, &old)
+        .await
+        .unwrap();
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(3, "c", 30, 300, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&view).await.unwrap().unwrap();
+
+    let states = runtime.list_states(&view.view_id).await.unwrap();
+    let rank = states
+        .iter()
+        .find(|state| state.role == StateRole::RankState)
+        .unwrap();
+    let rank_table = runtime.open_table_by_id(&rank.table_id).await.unwrap();
+    assert_eq!(
+        rank_table
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>(),
+        vec![
+            "k".to_string(),
+            "ord".to_string(),
+            CHANGE_COLUMN.to_string()
+        ]
+    );
+
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql(&format!(
+            "select k, ord from mv where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' order by k"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let orders = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), orders.value(row)));
+        }
+    }
+    assert_eq!(rows, vec![(1, 10), (2, 20), (3, 30)]);
+}
