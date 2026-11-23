@@ -147,7 +147,7 @@ coordinators (`DBManager.commitData` lines for `updateTableShortName` /
 
 Same-trace conformance is executable:
 
-- `rust/lakesoul-metadata/tests/commit_occ.rs` — direct Rust client: concurrent
+- `rust/lakesoul-metadata/tests/metadata_contracts/commit_occ.rs` — direct Rust client: concurrent
   appends, compaction merging, update merging, stale update/compaction
   conflicts, idempotent replay, multi-partition publication.
 - `integrations/lakesoul-common/src/test/java/.../CommitConformanceTest.java` — the same

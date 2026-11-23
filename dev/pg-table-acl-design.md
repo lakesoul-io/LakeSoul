@@ -421,7 +421,7 @@ S3 proxy 对表路径的访问增加 ACL 检查：
   creator=客户端用户、跨 domain 授权不依赖 cluster、ACL 变更后的刷新。
 - SQL GRANT/REVOKE：`acl_contract.rs` 覆盖 GRANT/REVOKE 的读写、跨 domain、
   PUBLIC、ALL TABLES、非 owner、public 表、事务块和扩展协议；
-  `lakesoul-metadata/tests/acl_mutation.rs` 覆盖原子性与折叠语义。
+  `lakesoul-metadata/tests/metadata_contracts/acl_mutation.rs` 覆盖原子性与折叠语义。
 - 回归：现有 `rbac_contract`、`session_contract`、`sql_compat`、`copy_contract`
   等。测试 harness 的 out-of-band 表需要补 domain rw ACL，模拟旧表。
 - S3 proxy：单元测试 path ACL 读写判断；跨 domain ro 读通过、写 403。

@@ -7,8 +7,6 @@
 //! Requires a running PostgreSQL configured through `LAKESOUL_PG_URL` (the
 //! same service the rust CI provides).
 
-#![cfg(feature = "catalog")]
-
 use std::sync::Arc;
 
 use lakesoul_metadata::MetaDataClient;

@@ -391,7 +391,7 @@ WHERE id = 1;
 Lower-level concurrency acceptance must use a **dedicated test metadata database** (`libtest`'s existing initialization wipes it) and must not point at development data. PG tests may share that dedicated database but must not run in parallel with `libtest`:
 
 ```sh
-cargo -q test --profile test-fast -p lakesoul-metadata --test update_commit --jobs 4
+cargo -q test --profile test-fast -p lakesoul-metadata --test metadata_contracts update_commit:: --jobs 4
 cargo -q test --profile test-fast -p lakesoul-datafusion --lib tests::update_concurrency_tests --jobs 4
 ```
 
@@ -610,7 +610,7 @@ The server also accepts a table-level subset of PostgreSQL `GRANT` / `REVOKE` on
 
 - Queries resolve a table's domain and ACL live when a miss is not in the session's ACL view, so a table another engine has just created is usable at once by its creator/domain and never by an ungranted user. The ACL view is refreshed every 5 s and after DDL; new connections refresh it immediately. Because the view can be stale, `DROP` authorizes again on the exact row it deletes (resolved once, deleted by `table_id`): a name dropped and recreated in another domain since the last refresh is reported as absent and left alone (`rbac_contract`, `rbac-stale-drop`).
 - `CREATE TABLE` of a name another domain already uses in the namespace is `42P07`, as in PostgreSQL: names are unique per namespace across domains.
-- A token carries one group. A user who needs several domains connects with one token per domain. Table ACLs are covered by `tests/contracts/acl_contract.rs` and `lakesoul-metadata/tests/acl_resolution.rs`; atomic mutations and the SQL GRANT/REVOKE subset by `lakesoul-metadata/tests/acl_mutation.rs` and `src/grant.rs` unit tests.
+- A token carries one group. A user who needs several domains connects with one token per domain. Table ACLs are covered by `tests/contracts/acl_contract.rs` and `lakesoul-metadata/tests/metadata_contracts/acl_resolution.rs`; atomic mutations and the SQL GRANT/REVOKE subset by `lakesoul-metadata/tests/metadata_contracts/acl_mutation.rs` and `src/grant.rs` unit tests.
 - Covered by `auth::domain_tests`, `server::tests::rbac_*`, `catalog::snapshot::tests` (lakesoul-datafusion) and `rbac_contract::rbac_domain_enforcement_contract`, against a real `--jwt-auth --rbac` child with one namespace per team plus the public fixtures: database visibility and the hidden-equals-missing startup error, `create-sets-domain` read back from the metadata database, every statement above refused for another team and for a `public` token while the authoritative snapshot (metadata rows and warehouse bytes) stays unchanged, extended Parse, detached jobs (including the same `sub` under another group: its jobs, results and `job_key`s stay apart), the `42501` refusals, and a table inserted straight into the metadata database (resolved at once by its team, listed after the refresh, never visible to the other team).
 
 ```sh
