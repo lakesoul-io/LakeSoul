@@ -199,7 +199,9 @@ async fn database_visibility(h: &Harness, alice: &Client, token: &str) -> Result
     Ok(())
 }
 
-/// `CREATE TABLE` stores the creator's domain on every metadata row.
+/// `CREATE TABLE` stores the creator's domain on every metadata row,
+/// including the `data_commit_info` and `partition_info` rows its first
+/// `INSERT` publishes.
 async fn create_sets_domain(h: &Harness, alice: &Client) -> Result<()> {
     alice
         .batch_execute(&format!(
@@ -211,11 +213,12 @@ async fn create_sets_domain(h: &Harness, alice: &Client) -> Result<()> {
         .batch_execute(&format!("INSERT INTO {OWNED} VALUES (1, 10), (2, 20)"))
         .await
         .context("rbac-create-sets-domain: fill as team A")?;
-    let domains = h.stored_domains(OWNED).await?;
+    let mut domains = h.stored_domains(OWNED).await?;
+    domains.extend(h.stored_commit_domains(OWNED).await?);
     ensure!(
         domains.iter().all(|domain| domain == RBAC_TEAM_A),
-        "rbac-create-sets-domain: table_info/table_name_id/table_path_id domains \
-         are {domains:?}, expected {RBAC_TEAM_A}"
+        "rbac-create-sets-domain: table_info/table_name_id/table_path_id/\
+         partition_info/data_commit_info domains are {domains:?}, expected {RBAC_TEAM_A}"
     );
     Ok(())
 }

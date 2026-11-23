@@ -133,6 +133,38 @@ impl Harness {
         Ok(domains)
     }
 
+    /// The `domain` column of `table`'s `partition_info` and
+    /// `data_commit_info` rows, which only exist once data is committed.
+    ///
+    /// Version and commit rows accumulate, but every one of them must carry
+    /// the owning table's domain, so each relation must yield exactly one
+    /// distinct value.
+    pub async fn stored_commit_domains(&self, table: &str) -> Result<Vec<String>> {
+        let client = self.connect_reference().await?;
+        let mut domains = Vec::new();
+        for (relation, sql) in [
+            (
+                "partition_info",
+                "SELECT DISTINCT p.domain FROM public.partition_info p \
+                 JOIN public.table_info t ON t.table_id = p.table_id \
+                 WHERE t.table_namespace = $1 AND t.table_name = $2",
+            ),
+            (
+                "data_commit_info",
+                "SELECT DISTINCT d.domain FROM public.data_commit_info d \
+                 JOIN public.table_info t ON t.table_id = d.table_id \
+                 WHERE t.table_namespace = $1 AND t.table_name = $2",
+            ),
+        ] {
+            let row = client
+                .query_one(sql, &[&self.lake_namespace, &table])
+                .await
+                .with_context(|| format!("read {relation}.domain of {table}"))?;
+            domains.push(row.get(0));
+        }
+        Ok(domains)
+    }
+
     /// Creates `table` in the base namespace and `domain` the way another
     /// engine would: straight in the metadata database, in one transaction,
     /// so this server learns of it only from metadata. The definition is

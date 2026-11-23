@@ -1330,10 +1330,21 @@ impl MetaDataClient {
         &self,
         data_commit_info: &DataCommitInfo,
     ) -> Result<i32> {
+        // A commit row is owned by its table, so its domain is the table's
+        // domain, exactly like the partition rows of the same publication.
+        // Callers cannot label a commit with any other domain, and the
+        // column default never applies because the column is named
+        // explicitly: an empty domain here would make the row invisible to
+        // every Postgres role under the RBAC row-level security policies.
+        let mut data_commit_info = data_commit_info.clone();
+        data_commit_info.domain = self
+            .get_table_domain(&data_commit_info.table_id)
+            .await?
+            .domain;
         self.execute_insert(
             DaoType::InsertDataCommitInfo as i32,
             JniWrapper {
-                data_commit_info: vec![data_commit_info.clone()],
+                data_commit_info: vec![data_commit_info],
                 ..Default::default()
             },
         )
@@ -1964,12 +1975,6 @@ impl MetaDataClient {
         // two statements publish the same partition set concurrently.
         to_stage.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
         to_publish.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
-        // Stage the new rows in one transaction; publication below flips them
-        // to committed together with the partition versions.
-        if !to_stage.is_empty() {
-            self.transaction_insert_data_commit_info(to_stage).await?;
-        }
-
         let table_info = self
             .get_table_info_by_table_id(&table_id)
             .await?
@@ -1978,7 +1983,22 @@ impl MetaDataClient {
                     "table {table_id} not found while publishing data commits"
                 ))
             })?;
+        // A commit row is owned by its table, so its domain is the table's
+        // domain, exactly like the partition rows published with it in this
+        // same call. A caller that leaves the proto default (empty string)
+        // or hard-codes another value must not disagree with that: under
+        // the RBAC row-level security policies an empty domain makes the
+        // row invisible to every Postgres role.
         let domain = self.get_table_domain(&table_id).await?.domain;
+        // Stage the new rows in one transaction; publication below flips them
+        // to committed together with the partition versions.
+        if !to_stage.is_empty() {
+            for staged in to_stage.iter_mut() {
+                staged.domain = domain.clone();
+            }
+            self.transaction_insert_data_commit_info(to_stage).await?;
+        }
+
         let list_partition = to_publish
             .iter()
             .map(|data_commit_info| {
