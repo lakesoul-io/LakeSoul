@@ -38,9 +38,10 @@ concurrency:
 jobs:
   rust_test:
     runs-on: ubuntu-24.04
-    # The three suites run in parallel and share the sccache GHA stream.
-    # The stream is read-only outside main, so PRs restore main's entries
-    # without writing their own.
+    # The three suites run in parallel. legacy/v2 share the default host sccache
+    # entry; ivm has its own entry because IVM_FEATURES change rustc's command
+    # line (and therefore sccache's key) for several large crates. Both host
+    # entries are written on main only; PRs restore without writing.
     strategy:
       fail-fast: false
       matrix:
@@ -152,11 +153,25 @@ jobs:
       # sccache keeps compiled units in a local disk cache; actions/cache
       # persists that directory as one entry, written on main only.
       - name: Restore sccache
+        if: matrix.suite != 'ivm'
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
           restore-keys: |
+            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
+            sccache-host-testfast-${{ runner.os }}-
+      # IVM compiles a different feature set, so its cache entries do not
+      # match the default host stream. Restore the IVM stream first and fall
+      # back to the default one.
+      - name: Restore IVM sccache
+        if: matrix.suite == 'ivm'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-host-ivm-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+          restore-keys: |
+            sccache-host-ivm-testfast-${{ runner.os }}-${{ github.job }}-
             sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
             sccache-host-testfast-${{ runner.os }}-
 
@@ -244,6 +259,14 @@ jobs:
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+      # Persist the IVM feature-set entries too; otherwise every run recompiles
+      # the same ~12 crates whose feature combination differs from legacy/v2.
+      - name: Save IVM sccache
+        if: github.ref == 'refs/heads/main' && matrix.suite == 'ivm'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-host-ivm-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
   clippy_check:
     runs-on: ubuntu-24.04
     env:

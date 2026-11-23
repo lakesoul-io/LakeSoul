@@ -8,6 +8,12 @@ use std::str::FromStr;
 use pyo3::prelude::*;
 use rootcause::Report;
 
+// dist-ffi/hdfs enable this crate so its C shared library is built for
+// release wheels. Reference it without using any symbols; the metadata C
+// crate stays unlinked because its exported C symbols overlap with this one.
+#[cfg(any(feature = "dist-ffi", feature = "hdfs"))]
+use lakesoul_io_c as _;
+
 mod index;
 mod metadata;
 mod reader;
