@@ -48,7 +48,9 @@ services as tasks in the test process, with a separate coordinator child and
 `--distributed-fallback-local=false`. Each file gets fresh connections, and
 cleanup also runs on failure (including worker tasks and RPC ports). Missing
 metadata PostgreSQL, invalid scripts and an empty file selection fail the test.
-No separately started `postgres-lakesoul` is needed.
+Use PostgreSQL 18 to match CI for the full target: the imported scripts contain
+syntax such as aliasless `FROM` subqueries that PostgreSQL 14 rejects. No
+separately started `postgres-lakesoul` is needed.
 
 ```sh
 LAKESOUL_IO_USE_V2_MERGE=false cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic --jobs 4 -- --nocapture
@@ -168,12 +170,25 @@ contracts, or GitHub Actions.
 The distributed runner exposed a scalar-subquery correctness defect: upstream's
 `with_distributed_planner()` disabled physical scalar subqueries, allowing
 `SELECT (SELECT val FROM items WHERE id = 1)` to return two rows instead of
-`21000`. `LakeSoulSessionFactory` now preserves runtime scalar subqueries, and
-the existing placement gate keeps both queries and writes with surviving
-runtime subqueries on the coordinator. Already-decorrelated joins and ordinary
-scans/writes still use workers, and `fallback_to_local=false` is unchanged.
-The existing strict shared SLT case covers this fix in both wire protocols;
-no SQL expectation was weakened or skipped.
+`21000`. `LakeSoulSessionFactory` keeps runtime cardinality checks for
+uncorrelated scalars by default. Its optimizer can reuse the join rewrite for
+scalars whose output is a global aggregate (no `GROUP BY`), such as
+`SELECT AVG(val) FROM items`. A global aggregate produces one row even on
+empty input, so the join cannot multiply outer rows. The existing worker path
+can then split the scans and run partial aggregation remotely while finalizing
+the scalar aggregate once.
+
+If a filter or projection also contains an uncorrelated scalar subquery that
+cannot be proved single-row, the optimizer leaves the runtime checks in place.
+The placement gate keeps statements with surviving runtime subqueries on the
+coordinator; this is not `fallback_to_local`. The shared SLT cases cover NULL
+from an empty-input `AVG` and `21000` for multi-row scalars, including grouped
+aggregates and a projection combining a single-row `AVG` with a multi-row
+scalar. The DataFusion tests `test_scalar_subquery_aggregates_once_over_split_scans`
+and `sql_mor_value_aggregates_and_nullability_survive_distribution` independently
+require worker stages for the single-row `AVG` scans. Both regressions passed
+with legacy and v2 merge; the full `sqllogic` target on PostgreSQL 18.6 also
+passed in both modes (**6 passed / 2 ignored** each).
 
 After adding the distributed runners and that correction, PostgreSQL 18.6
 acceptance on 2026-11-16 passed in both legacy and v2: `sqllogic` **6 passed /

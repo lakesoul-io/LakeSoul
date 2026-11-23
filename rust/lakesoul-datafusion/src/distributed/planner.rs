@@ -215,9 +215,10 @@ impl LakeSoulDistributedQueryPlanner {
 ///
 /// The upstream distributed builder disables physical scalar subqueries,
 /// causing optimization into `LEFT JOIN ... ON true` before this gate sees
-/// them. `LakeSoulSessionFactory` restores the option for both reads and writes
-/// so the runtime expression survives to here. The update planner also guards
-/// contexts built directly through upstream's builder.
+/// them. `LakeSoulSessionFactory` restores the option for reads and writes,
+/// allowing uncorrelated scalar subqueries to be rewritten only where it can
+/// prove single-row cardinality. The update planner also guards contexts built
+/// through upstream's builder.
 pub(crate) fn plan_contains_subquery(plan: &LogicalPlan) -> bool {
     let mut found = false;
     let _ = plan.apply(|node| {

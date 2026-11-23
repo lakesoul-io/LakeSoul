@@ -73,6 +73,20 @@ SELECT (SELECT val FROM items WHERE id = 2) AS found, (SELECT val FROM items WHE
 query error (21000)
 SELECT (SELECT val FROM items WHERE id = 1)
 
+# A global aggregate produces a single NULL on empty input.
+query I
+SELECT CASE WHEN (SELECT AVG(val) FROM items WHERE id > 1000) IS NULL THEN 1 ELSE 0 END
+----
+1
+
+# A grouped aggregate can still produce multiple rows.
+query error (21000)
+SELECT (SELECT AVG(val) FROM items GROUP BY id)
+
+# A safe aggregate must not enable join rewriting of its multi-row neighbor.
+query error (21000)
+SELECT (SELECT AVG(val) FROM items) AS overall_avg, (SELECT val FROM items WHERE id = 1) AS item_val
+
 # First read on the same connection after a server error.
 query I
 SELECT COUNT(*) FROM items
