@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Process memory allocator. The executable owns `#[global_allocator]`;
-//! LakeSoul libraries never install one. The default `jemalloc` feature uses
+//! Process memory allocator. `postgres_lakesoul` is the crate of this binary
+//! (the bin target is only a thin `run()` shim), so the `#[global_allocator]`
+//! lives here and applies to the server and to every test binary that links
+//! the lib. The default `jemalloc` feature uses
 //! jemalloc with its built-in defaults: no heap profiling, no decay tuning
 //! (`MALLOC_CONF` still applies at startup). `--no-default-features` builds
 //! with the system allocator.
