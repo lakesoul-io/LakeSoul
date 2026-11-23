@@ -49,7 +49,11 @@ jobs:
     env:
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      RUSTC_WRAPPER: "sccache"
+      # Test harnesses cannot be cached by sccache; enable rustc's parallel
+      # frontend for them so borrow/type checking use several cores. Other
+      # builds still go through sccache unchanged.
+      RUSTC_WRAPPER: ${{ github.workspace }}/.github/scripts/rustc-parallel-frontend.sh
+      RUSTC_BOOTSTRAP: "1"
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       # Metadata PostgreSQL used by the postgres-lakesoul contract tests.
