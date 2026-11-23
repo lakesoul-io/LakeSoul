@@ -981,9 +981,11 @@ async fn sql_vector_search_end_to_end() {
     .await
     .unwrap();
 
-    // 2. Write 200 random vectors — the index is auto-built after commit.
+    // 2. Write 200 vectors — the index is auto-built after commit. Use a
+    //    deterministic seed: the recall assertion below must not depend on the
+    //    random draw (see `seeded_vectors`).
     let n = 200u64;
-    let vectors = random_vectors(n as usize);
+    let vectors = seeded_vectors(n as usize, 7);
     let ids: Vec<u64> = (0..n).collect();
     let batch = make_batch(&ids, &vectors);
     crate::lakesoul_table::LakeSoulTable::for_name(table_name)
