@@ -80,6 +80,7 @@
       ++ [rustDevToolchain]
       ++ (with pkgs; [
         actionlint
+        protobuf_25
 
         # The `vortex` git dependency's build script runs `flatc` to generate
         # its FlatBuffers bindings (overridable with $FLATC).
