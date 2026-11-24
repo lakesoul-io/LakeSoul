@@ -303,6 +303,11 @@ fn index_failure_is_not_reported_as_a_commit_failure() {
             )
             .await
             .expect("create the table");
+            let table_info = client
+                .get_table_info_by_table_name(table, "default")
+                .await
+                .expect("look up the created table")
+                .expect("the created table exists");
             let mut partitions = PartitionedFile::new();
             partitions.insert(
                 "hash=0".to_string(),
@@ -318,6 +323,7 @@ fn index_failure_is_not_reported_as_a_commit_failure() {
             );
             wait_for_commit(
                 client.clone(),
+                Arc::new(table_info),
                 format!("default.{table}"),
                 vec!["pk".to_string()],
                 SecretMap::new(),
