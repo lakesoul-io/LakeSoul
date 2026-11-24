@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! `CREATE TABLE`, `DROP TABLE` and `ALTER TABLE` for the PostgreSQL front
-//! end. `ALTER TABLE`'s evolution policy lives in [`crate::alter`].
+//! Database and table DDL for the PostgreSQL front end.
+//! `ALTER TABLE`'s evolution policy lives in [`crate::alter`].
 //!
 //! The statements are answered here rather than by DataFusion's own DDL
 //! machinery: a PostgreSQL `CREATE TABLE` has no `STORED AS`/`LOCATION`
@@ -42,17 +42,19 @@ use datafusion_postgres::datafusion_pg_catalog::sql::{
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_common::schema_evolution::column_names_collide;
-use lakesoul_datafusion::catalog::LakeSoulProviderOptions;
+use lakesoul_datafusion::catalog::{CatalogSnapshot, LakeSoulProviderOptions};
 use lakesoul_datafusion::datasource::table_provider::{
     CREATOR_OPTION, DOMAIN_OPTION, LakeSoulTableProvider,
 };
-use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClientRef};
+use lakesoul_metadata_proto::entity::Namespace;
 use pgwire::api::ClientInfo;
 use pgwire::api::results::{Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::response::TransactionStatus;
+use tokio_postgres::error::SqlState;
 
-use crate::catalog::PUBLIC_SCHEMA;
+use crate::catalog::{PUBLIC_SCHEMA, PgDatabaseCatalogList};
 use crate::server::ConnectionSession;
 use crate::session_settings::{SessionSettingsHook, settings_generation};
 
@@ -60,6 +62,7 @@ const FEATURE_NOT_SUPPORTED: &str = "0A000";
 const UNDEFINED_TABLE: &str = "42P01";
 const UNDEFINED_COLUMN: &str = "42703";
 const DUPLICATE_TABLE: &str = "42P07";
+const DUPLICATE_DATABASE: &str = "42P04";
 const DUPLICATE_COLUMN: &str = "42701";
 const INVALID_TABLE_DEFINITION: &str = "42P16";
 const SYNTAX_ERROR: &str = "42601";
@@ -124,16 +127,17 @@ pub(crate) fn target_table(_database: &str, name: &ObjectName) -> PgWireResult<S
     }
 }
 
-/// Answers the two data-definition statements this server supports.
+/// Answers database and table DDL through LakeSoul metadata.
 pub struct DdlStatementHook {
     client: MetaDataClientRef,
     database: String,
     warehouse: Option<String>,
-    /// The domain new tables are created in under domain enforcement;
+    /// The domain new namespaces and tables are created in under domain enforcement;
     /// `None` keeps the `public` default.
     domain: Option<String>,
     /// The connecting user, written as the new table's logical owner.
     user: String,
+    catalog_snapshot: Arc<CatalogSnapshot>,
 }
 
 impl DdlStatementHook {
@@ -143,6 +147,7 @@ impl DdlStatementHook {
         warehouse: Option<String>,
         domain: Option<String>,
         user: String,
+        catalog_snapshot: Arc<CatalogSnapshot>,
     ) -> Self {
         Self {
             client,
@@ -150,7 +155,55 @@ impl DdlStatementHook {
             warehouse,
             domain,
             user,
+            catalog_snapshot,
         }
+    }
+
+    async fn create_database(
+        &self,
+        statement: &Statement,
+        context: &SessionContext,
+    ) -> PgWireResult<Response> {
+        let (database, if_not_exists) = database_options(statement)?;
+        let namespace = Namespace {
+            namespace: database.clone(),
+            properties: "{}".to_string(),
+            comment: String::new(),
+            domain: self.domain.as_deref().unwrap_or("public").to_string(),
+            creator: self.user.clone(),
+        };
+        match self.client.create_namespace(namespace).await {
+            Ok(()) => {}
+            Err(LakeSoulMetaDataError::PostgresError(error))
+                if error.code() == Some(&SqlState::UNIQUE_VIOLATION) =>
+            {
+                if !if_not_exists {
+                    return Err(user_error(
+                        DUPLICATE_DATABASE,
+                        format!("database \"{database}\" already exists"),
+                    ));
+                }
+                return Ok(Response::Execution(Tag::new("CREATE DATABASE")));
+            }
+            Err(error) => {
+                return Err(user_error(
+                    "XX000",
+                    format!("creating database \"{database}\": {error}"),
+                ));
+            }
+        }
+
+        if let Some(catalogs) = context
+            .state()
+            .catalog_list()
+            .downcast_ref::<PgDatabaseCatalogList>()
+        {
+            catalogs.register_database(database);
+        }
+        if let Err(error) = self.catalog_snapshot.refresh().await {
+            tracing::warn!(%error, "catalog refresh after creating a database failed");
+        }
+        Ok(Response::Execution(Tag::new("CREATE DATABASE")))
     }
 
     /// `public` of the connection's own database: the only schema DDL can
@@ -728,6 +781,10 @@ impl DdlStatementHook {
         statement: &Statement,
         session_context: &SessionContext,
     ) -> PgWireResult<()> {
+        if matches!(statement, Statement::CreateDatabase { .. }) {
+            database_options(statement)?;
+            return Ok(());
+        }
         if let Statement::AlterTable(alter) = statement {
             crate::alter::validate_alter(alter)?;
             self.target(&alter.name)?;
@@ -799,6 +856,15 @@ impl DdlStatementHook {
             )));
         }
         let result = match statement {
+            Statement::CreateDatabase { .. } => {
+                match reject_in_transaction(
+                    client.transaction_status(),
+                    "CREATE DATABASE",
+                ) {
+                    Ok(()) => self.create_database(statement, session_context).await,
+                    Err(error) => Err(error),
+                }
+            }
             Statement::CreateTable(create) => match &block {
                 Some(transaction) => {
                     self.create_table_staged(create, session_context, transaction)
@@ -858,13 +924,14 @@ impl DdlStatementHook {
     }
 }
 
-/// Whether the statement publishes metadata that cannot be rolled back.
+/// Whether the statement is DDL handled by the simple-query batch guard.
 /// Used by the simple-query batch guard; `CREATE INDEX` is answered by
 /// [`crate::index_ddl::IndexStatementHook`], not this hook.
 pub(crate) fn is_ddl(statement: &Statement) -> bool {
     matches!(
         statement,
-        Statement::CreateTable(_)
+        Statement::CreateDatabase { .. }
+            | Statement::CreateTable(_)
             | Statement::CreateIndex(_)
             | Statement::AlterTable(_)
             | Statement::Drop {
@@ -878,6 +945,7 @@ pub(crate) fn is_ddl(statement: &Statement) -> bool {
 /// left to the read-only guard, which refuses it before execution.
 fn ddl_verb(statement: &Statement) -> Option<&'static str> {
     match statement {
+        Statement::CreateDatabase { .. } => Some("CREATE DATABASE"),
         Statement::CreateTable(_) => Some("CREATE TABLE"),
         Statement::Drop {
             object_type: ObjectType::Table,
@@ -909,10 +977,9 @@ pub(crate) fn refuse_ddl_in_batch(statements: &[String]) -> PgWireResult<()> {
         return Ok(());
     }
     Err(feature_not_supported(
-        "CREATE/DROP/ALTER TABLE cannot be combined with other statements in one \
+        "LakeSoul DDL cannot be combined with other statements in one \
          simple-query message: implicit transaction support for multi-statement \
-         batches is not available yet; split the statements or use an explicit \
-         BEGIN block"
+         batches is not available yet; send the statements separately"
             .to_string(),
     ))
 }
@@ -930,9 +997,46 @@ pub(crate) fn reject_in_transaction(
         return Ok(());
     }
     Err(feature_not_supported(format!(
-        "{verb} is not supported inside a transaction block: LakeSoul table \
+        "{verb} is not supported inside a transaction block: LakeSoul \
          metadata is committed immediately and cannot be rolled back"
     )))
+}
+
+fn database_options(statement: &Statement) -> PgWireResult<(String, bool)> {
+    let Statement::CreateDatabase {
+        db_name,
+        if_not_exists,
+        location: None,
+        managed_location: None,
+        or_replace: false,
+        transient: false,
+        clone: None,
+        data_retention_time_in_days: None,
+        max_data_extension_time_in_days: None,
+        external_volume: None,
+        catalog: None,
+        replace_invalid_characters: None,
+        default_ddl_collation: None,
+        storage_serialization_policy: None,
+        comment: None,
+        default_charset: None,
+        default_collation: None,
+        catalog_sync: None,
+        catalog_sync_namespace_mode: None,
+        catalog_sync_namespace_flatten_delimiter: None,
+        with_tags: None,
+        with_contacts: None,
+    } = statement
+    else {
+        return Err(feature_not_supported(
+            "CREATE DATABASE only supports a database name and IF NOT EXISTS".to_string(),
+        ));
+    };
+    let mut parts = name_parts(db_name)?;
+    if parts.len() != 1 {
+        return Err(user_error(SYNTAX_ERROR, "expected a single database name"));
+    }
+    Ok((parts.remove(0), *if_not_exists))
 }
 
 /// Split a parsed object name into normalized parts.

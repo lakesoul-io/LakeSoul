@@ -4,34 +4,24 @@
 
 set -euo pipefail
 
-: "${LAKESOUL_MIRROR_SOURCE_URL:?Set a disposable source PostgreSQL URL}"
-: "${LAKESOUL_MIRROR_DESTINATION_METADATA_URL:?Set a separate disposable destination metadata URL}"
-: "${LAKESOUL_MIRROR_DESTINATION_URL:?Set a disposable postgres-lakesoul URL for lakesoul_meta}"
-
-case "$LAKESOUL_MIRROR_SOURCE_URL" in
-  postgresql://*|postgres://*) ;;
-  *)
-    printf 'LAKESOUL_MIRROR_SOURCE_URL must use postgresql:// or postgres://.\n' >&2
-    exit 1
-    ;;
-esac
-
-if [[ "$LAKESOUL_MIRROR_SOURCE_URL" == "$LAKESOUL_MIRROR_DESTINATION_METADATA_URL" ]]; then
-  printf 'Use separate source and destination metadata databases.\n' >&2
-  exit 1
-fi
+: "${LAKESOUL_MIRROR_DESTINATION_URL:?Set a disposable postgres-lakesoul URL for an existing namespace}"
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+mirror_source_url=$(python3 "$script_dir/source_url.py")
+
 source_sql() {
-  psql -X -v ON_ERROR_STOP=1 -d "$LAKESOUL_MIRROR_SOURCE_URL" "$@"
+  psql -X -v ON_ERROR_STOP=1 -d "$mirror_source_url" "$@"
 }
 mirror_sql() {
   psql -X -v ON_ERROR_STOP=1 -d "$LAKESOUL_MIRROR_DESTINATION_URL" "$@"
 }
+mirror_query() {
+  mirror_sql -qAt -c '\connect lakesoul_meta' -c "$1"
+}
 wait_for_value() {
   local query=$1 expected=$2 actual deadline=$((SECONDS + 90))
   while (( SECONDS < deadline )); do
-    actual=$(mirror_sql -qAtc "$query")
+    actual=$(mirror_query "$query")
     if [[ "$actual" == "$expected" ]]; then
       return
     fi
@@ -43,8 +33,6 @@ wait_for_value() {
 }
 
 source_sql -f "$script_dir/source.sql"
-psql -X -v ON_ERROR_STOP=1 -d "$LAKESOUL_MIRROR_DESTINATION_METADATA_URL" \
-  -f "$script_dir/target_namespace.sql"
 
 source_sql <<'SQL'
 INSERT INTO public.table_info (table_id, table_namespace, table_name, table_path)
@@ -70,7 +58,7 @@ VALUES ('metadata_mirror_smoke', '-5', 0, 'AppendCommit', ARRAY[
 ]);
 SQL
 
-mirror_sql -f "$script_dir/subscribe.sql"
+lakesoul_mirror_source_dsn="$mirror_source_url" mirror_sql -f "$script_dir/subscribe.sql"
 
 table_filter="table_id = 'metadata_mirror_smoke'"
 partition_filter="$table_filter AND partition_desc = '-5'"
@@ -78,7 +66,7 @@ wait_for_value "SELECT table_path FROM table_info WHERE $table_filter" 'file:///
 wait_for_value "SELECT snapshot FROM partition_info WHERE $partition_filter AND version = 0" \
   '["00000000-0000-0000-0000-000000000002","00000000-0000-0000-0000-000000000001"]'
 wait_for_value "SELECT count(*) FROM data_commit_info WHERE $partition_filter" 2
-mirror_sql -qAtc "SELECT file_ops FROM data_commit_info WHERE $partition_filter AND commit_id = '00000000-0000-0000-0000-000000000001'" |
+mirror_query "SELECT file_ops FROM data_commit_info WHERE $partition_filter AND commit_id = '00000000-0000-0000-0000-000000000001'" |
   python3 -c 'import json, sys; assert json.load(sys.stdin) == [
     {"path": "file:///old", "file_op": "del", "size": 3, "file_exist_cols": "id"},
     {"path": "file:///new,part", "file_op": "add", "size": 8, "file_exist_cols": "id,value"}

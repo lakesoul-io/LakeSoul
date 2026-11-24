@@ -1,8 +1,10 @@
 -- SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 -- SPDX-License-Identifier: Apache-2.0
 
--- Run through psql against the postgres-lakesoul endpoint.
-\set source_url `printenv LAKESOUL_MIRROR_SOURCE_URL`
+-- Run through psql against the postgres-lakesoul endpoint, using the README command.
+\set source_url `printenv lakesoul_mirror_source_dsn`
+CREATE DATABASE IF NOT EXISTS lakesoul_meta;
+
 CREATE SUBSCRIPTION lakesoul_meta_mirror
 CONNECTION :'source_url'
 PUBLICATION lakesoul_meta_publication

@@ -22,6 +22,52 @@ use tokio_postgres::types::Type;
 
 use crate::support::Harness;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ddl_create_database() -> Result<()> {
+    support::run_suite(|h| {
+        Box::pin(async move {
+            let database = format!("{}_db", h.lake_namespace);
+            let result = async {
+                let sql = format!("CREATE DATABASE {database}");
+                command(h, &sql).await?;
+                let count = scalar(
+                    &h.lake,
+                    &format!(
+                        "SELECT count(*) FROM pg_database WHERE datname = '{database}'"
+                    ),
+                )
+                .await?;
+                ensure!(count == 1, "created database should appear in pg_database");
+                ensure!(error_code(h, &sql).await? == "42P04");
+                command(h, &format!("CREATE DATABASE IF NOT EXISTS {database}")).await?;
+                let client = h.connect_database(&database).await?;
+                let connected_database: String = client
+                    .query_one("SELECT current_database()", &[])
+                    .await?
+                    .try_get(0)?;
+                ensure!(connected_database == database);
+
+                let rejected = format!("{database}_rejected");
+                command(h, "BEGIN").await?;
+                let error = error_code(h, &format!("CREATE DATABASE {rejected}")).await;
+                command(h, "ROLLBACK").await?;
+                ensure!(error? == "0A000");
+                ensure!(
+                    h.meta()
+                        .get_namespace_by_namespace(&rejected)
+                        .await?
+                        .is_none()
+                );
+                Ok(())
+            }
+            .await;
+            h.meta().delete_namespace_by_namespace(&database).await?;
+            result
+        })
+    })
+    .await
+}
+
 /// One `table_info` row reduced to the fields the DDL contract pins.
 struct TableRow {
     table_id: String,
