@@ -19,6 +19,7 @@
 
 mod copy_text;
 mod decode;
+mod metadata_json;
 mod multi;
 mod mysql;
 mod plan;

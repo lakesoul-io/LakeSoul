@@ -531,6 +531,9 @@ pub(crate) fn relation_columns(
             );
         };
         let pg_type = PgType::from_oid(relation.type_id, relation.type_modifier)
+            .or_else(|| {
+                (relation.type_id == current.type_id).then_some(current.pg_type.clone())
+            })
             .ok_or_else(|| {
                 report!(
                     "column {} has unsupported type oid {} in the Relation message",
@@ -597,7 +600,12 @@ pub(crate) fn target_accepts(source: &SourceColumn, target: &DataType) -> bool {
             }
             _ => false,
         },
-        PgType::Text | PgType::Uuid | PgType::Json | PgType::Jsonb => {
+        PgType::Text
+        | PgType::Uuid
+        | PgType::Json
+        | PgType::Jsonb
+        | PgType::UuidArray
+        | PgType::DataFileOpArray => {
             matches!(target, DataType::Utf8)
         }
         PgType::Bytea => matches!(target, DataType::Binary),
@@ -660,7 +668,12 @@ pub(crate) fn source_arrow_type(source: &SourceColumn) -> Result<DataType> {
              with an explicit numeric(precision, scale)",
             source.name
         ),
-        PgType::Text | PgType::Uuid | PgType::Json | PgType::Jsonb => DataType::Utf8,
+        PgType::Text
+        | PgType::Uuid
+        | PgType::Json
+        | PgType::Jsonb
+        | PgType::UuidArray
+        | PgType::DataFileOpArray => DataType::Utf8,
         PgType::Bytea => DataType::Binary,
         PgType::Date => DataType::Date32,
         PgType::Time => DataType::Time64(TimeUnit::Microsecond),
