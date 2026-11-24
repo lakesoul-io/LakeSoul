@@ -1,0 +1,15 @@
+# Strict defect reproduction: simple query currently returns XX000 instead of
+# PostgreSQL's 23502. Never change this expected SQLSTATE to bless the defect.
+statement ok
+CREATE TABLE slt_not_null (id BIGINT NOT NULL PRIMARY KEY, n INTEGER)
+
+statement error (23502)
+INSERT INTO slt_not_null VALUES (NULL, 99)
+
+query I
+SELECT COUNT(*) FROM slt_not_null
+----
+0
+
+statement ok
+DROP TABLE slt_not_null

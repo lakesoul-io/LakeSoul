@@ -206,13 +206,17 @@ jobs:
           LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
           LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
-          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4 -- --test-threads=4
+          read -r -a test_packages <<< "$TEST_PKGS"
+          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --tests --jobs 4 -- --test-threads=4
+      # sqllogic runs both wire protocols locally and with two real Flight workers.
       - name: PostgreSQL SQL compatibility (legacy merge)
         if: matrix.suite == 'legacy'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_BACKTRACE: full
-        run: cargo test --profile test-fast $TEST_PKGS --lib --bins --test contracts --jobs 4 -- --nocapture --test-threads=4
+        run: |
+          read -r -a test_packages <<< "$TEST_PKGS"
+          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --test contracts --test sqllogic --jobs 4 -- --nocapture --test-threads=4
       - name: Test v2 merge
         if: matrix.suite == 'v2'
         env:
@@ -224,13 +228,16 @@ jobs:
           LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
           LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
-          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4 -- --test-threads=4
+          read -r -a test_packages <<< "$TEST_PKGS"
+          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --tests --jobs 4 -- --test-threads=4
       - name: PostgreSQL SQL compatibility (v2 merge)
         if: matrix.suite == 'v2'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
-        run: cargo test --profile test-fast $TEST_PKGS --lib --bins --test contracts --jobs 4 -- --nocapture --test-threads=4
+        run: |
+          read -r -a test_packages <<< "$TEST_PKGS"
+          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --test contracts --test sqllogic --jobs 4 -- --nocapture --test-threads=4
 
       # IVM tests use their own package selection but must reuse the shared
       # dependency build of the main test steps.  The script builds the core

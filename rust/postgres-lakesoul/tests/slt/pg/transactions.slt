@@ -1,0 +1,78 @@
+statement ok
+CREATE TABLE slt_tx (id BIGINT NOT NULL PRIMARY KEY, n INTEGER)
+
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO slt_tx VALUES (1, 10)
+
+query II
+SELECT id, n FROM slt_tx
+----
+1 10
+
+statement ok
+ROLLBACK
+
+query I
+SELECT COUNT(*) FROM slt_tx
+----
+0
+
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO slt_tx VALUES (1, 10)
+
+statement count 1
+UPDATE slt_tx SET n = n + 5 WHERE id = 1
+
+query II
+SELECT id, n FROM slt_tx
+----
+1 15
+
+statement ok
+COMMIT
+
+query II
+SELECT id, n FROM slt_tx
+----
+1 15
+
+statement ok
+BEGIN
+
+statement error (23505)
+INSERT INTO slt_tx VALUES (1, 99)
+
+query error (25P02)
+SELECT COUNT(*) FROM slt_tx
+
+statement ok
+ROLLBACK
+
+query II
+SELECT id, n FROM slt_tx
+----
+1 15
+
+statement ok
+BEGIN
+
+statement error (23505)
+INSERT INTO slt_tx VALUES (1, 99)
+
+# COMMIT in a failed block ends it as a rollback.
+statement ok
+COMMIT
+
+query II
+SELECT id, n FROM slt_tx
+----
+1 15
+
+statement ok
+DROP TABLE slt_tx

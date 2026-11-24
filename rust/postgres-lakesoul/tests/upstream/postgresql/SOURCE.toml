@@ -1,0 +1,88 @@
+# Pinned upstream snapshot. Tests read only the checked-in files; no network fetch.
+[upstream]
+repository = "https://github.com/postgres/postgres.git"
+tag = "REL_18_6"
+commit = "724edf9bde9d356724ad384a2e196edc3c9f80f7"
+license = "PostgreSQL"
+
+[[files]]
+path = "COPYRIGHT"
+upstream_path = "COPYRIGHT"
+sha256 = "3d6af92ff8a4c2cdf69afb1cf44edea727922f5cd0cf8b5f72b11cdecac8fdfd"
+
+[[files]]
+path = "expected/join.out"
+upstream_path = "src/test/regress/expected/join.out"
+sha256 = "6b08d51704804395f98169ef547c550ba64aeb008f2ead7eb0360292ea2bbaa0"
+
+[[files]]
+path = "expected/subselect.out"
+upstream_path = "src/test/regress/expected/subselect.out"
+sha256 = "32ec2cfdcd76f2a54d55306ce38a4e9598a72f941951f3243912c5ada9846824"
+
+[[files]]
+path = "sql/join.sql"
+upstream_path = "src/test/regress/sql/join.sql"
+sha256 = "2182a7d327ba88f384723e9dc3905fb9ac84650e88e3bab4e8df8a79c19392eb"
+
+[[files]]
+path = "sql/subselect.sql"
+upstream_path = "src/test/regress/sql/subselect.sql"
+sha256 = "3442c4351cce0a18003c2b4e7cc4f777502179f56357776395b275e24756e125"
+
+[[selection]]
+source = "sql/subselect.sql"
+expected = "expected/subselect.out"
+slt = "../../slt/pg/upstream/subselect.slt"
+ranges = [[5, 26], [30, 57], [66, 73]]
+selected_query_records = 19
+gate_query_records = 15
+known_defect_query_records = 4
+known_defects_slt = "../../known_defects/upstream/subselect.slt"
+known_defect_source_lines = [21, 22, 45, 70]
+statement_records = 9
+ordering = "rowsort"
+sql_changes = "none"
+
+[[selection]]
+source = "sql/join.sql"
+expected = "expected/join.out"
+slt = "../../slt/pg/upstream/join.slt"
+ranges = [
+  [
+    6,
+    38,
+  ],
+  [
+    52,
+    79,
+  ],
+  [
+    86,
+    98,
+  ],
+  [
+    114,
+    127,
+  ],
+  [
+    146,
+    153,
+  ],
+  [
+    165,
+    211,
+  ],
+  [
+    231,
+    322,
+  ],
+]
+selected_query_records = 41
+gate_query_records = 33
+known_defect_query_records = 8
+known_defects_slt = "../../known_defects/upstream/join.slt"
+known_defect_source_lines = [125, 210, 243, 262, 280, 292, 299, 308]
+statement_records = 32
+ordering = "rowsort"
+sql_changes = "none"

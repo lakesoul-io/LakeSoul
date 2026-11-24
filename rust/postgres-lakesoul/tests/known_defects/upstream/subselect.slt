@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: PostgreSQL
+# Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+# Portions Copyright (c) 1994, The Regents of the University of California
+# License: tests/upstream/postgresql/COPYRIGHT (the full upstream notice).
+# PostgreSQL REL_18_6 @ 724edf9bde9d356724ad384a2e196edc3c9f80f7
+# Selected source statements are unchanged, including their semicolons.
+# Answers come from upstream expected output; rowsort compares multisets
+# and deliberately does not claim upstream incidental/partial row order.
+# The shared harness removes these tables and files at suite teardown.
+
+# Known incompatibilities: keep PostgreSQL answers; explicitly run the ignored
+# upstream_postgresql_known_defects test to reproduce them.
+
+# upstream-sql: sql/subselect.sql:21-21
+# upstream-expected: expected/subselect.out:51-55
+query I rowsort
+SELECT ((SELECT 2) UNION SELECT 2);
+----
+2
+
+# upstream-sql: sql/subselect.sql:22-22
+# upstream-expected: expected/subselect.out:57-61
+query I rowsort
+SELECT (((SELECT 2)) UNION SELECT 2);
+----
+2
+
+# upstream-sql: sql/subselect.sql:30-34
+# upstream-expected: expected/subselect.out:82
+statement ok
+CREATE TABLE SUBSELECT_TBL (
+  f1 integer,
+  f2 integer,
+  f3 float
+);
+
+# upstream-sql: sql/subselect.sql:36-36
+# upstream-expected: expected/subselect.out:87
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (1, 2, 3);
+
+# upstream-sql: sql/subselect.sql:37-37
+# upstream-expected: expected/subselect.out:88
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (2, 3, 4);
+
+# upstream-sql: sql/subselect.sql:38-38
+# upstream-expected: expected/subselect.out:89
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (3, 4, 5);
+
+# upstream-sql: sql/subselect.sql:39-39
+# upstream-expected: expected/subselect.out:90
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (1, 1, 1);
+
+# upstream-sql: sql/subselect.sql:40-40
+# upstream-expected: expected/subselect.out:91
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (2, 2, 2);
+
+# upstream-sql: sql/subselect.sql:41-41
+# upstream-expected: expected/subselect.out:92
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (3, 3, 3);
+
+# upstream-sql: sql/subselect.sql:42-42
+# upstream-expected: expected/subselect.out:93
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (6, 7, 8);
+
+# upstream-sql: sql/subselect.sql:43-43
+# upstream-expected: expected/subselect.out:94
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (8, 9, NULL);
+
+# upstream-sql: sql/subselect.sql:45-45
+# upstream-expected: expected/subselect.out:95-106
+query IIR rowsort
+SELECT * FROM SUBSELECT_TBL;
+----
+1 1 1
+1 2 3
+2 2 2
+2 3 4
+3 3 3
+3 4 5
+6 7 8
+8 9 NULL
+
+# upstream-sql: sql/subselect.sql:70-73
+# upstream-expected: expected/subselect.out:167-178
+query IR rowsort
+SELECT f1 AS "Correlated Field", f3 AS "Second Field"
+  FROM SUBSELECT_TBL upper
+  WHERE f1 IN
+    (SELECT f2 FROM SUBSELECT_TBL WHERE CAST(upper.f2 AS float) = f3);
+----
+1 1
+2 2
+2 4
+3 3
+3 5

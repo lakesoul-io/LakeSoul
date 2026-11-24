@@ -1,0 +1,131 @@
+query IIIII
+SELECT COUNT(*), COUNT(val), SUM(val), MIN(val), MAX(val) FROM items
+----
+4 2 30 10 20
+
+query IIIII
+SELECT COUNT(*), COUNT(val), SUM(val), MIN(val), MAX(val) FROM empty_items
+----
+0 0 NULL NULL NULL
+
+query III
+SELECT COUNT(*), COUNT(val), SUM(val) FROM items WHERE val IS NULL
+----
+2 0 NULL
+
+query II
+SELECT val, COUNT(*) FROM items GROUP BY val HAVING COUNT(*) > 1 ORDER BY val NULLS FIRST
+----
+NULL 2
+
+query ITT
+SELECT l.id, l.label, r.label FROM items l JOIN items r ON l.id = r.id WHERE l.id = 1 ORDER BY l.label, r.label
+----
+1 (empty) (empty)
+1 (empty) a
+1 a (empty)
+1 a a
+
+query II
+SELECT l.id, r.id FROM (VALUES (1), (2)) AS l(id) LEFT JOIN (VALUES (2), (3)) AS r(id) ON l.id = r.id ORDER BY l.id
+----
+1 NULL
+2 2
+
+query II
+SELECT l.id, r.id FROM (VALUES (1), (2)) AS l(id) FULL OUTER JOIN (VALUES (2), (3)) AS r(id) ON l.id = r.id ORDER BY l.id NULLS LAST, r.id
+----
+1 NULL
+2 2
+NULL 3
+
+query II
+SELECT id, val FROM items ORDER BY val NULLS LAST, id NULLS LAST LIMIT 2 OFFSET 1
+----
+2 20
+1 NULL
+
+query I
+SELECT id FROM items ORDER BY id LIMIT 0
+----
+
+query I
+SELECT id FROM items ORDER BY id OFFSET 100
+----
+
+query II
+WITH grouped AS (SELECT id, COUNT(*) AS n FROM items GROUP BY id) SELECT id, n FROM grouped ORDER BY id NULLS LAST
+----
+1 2
+2 1
+NULL 1
+
+query I
+SELECT i.id FROM items i WHERE EXISTS (SELECT 1 FROM items j WHERE j.id = i.id AND j.val = 20) ORDER BY i.id
+----
+2
+
+query II
+SELECT (SELECT val FROM items WHERE id = 2) AS found, (SELECT val FROM items WHERE id > 1000) AS missing
+----
+20 NULL
+
+query error (21000)
+SELECT (SELECT val FROM items WHERE id = 1)
+
+# A global aggregate produces a single NULL on empty input.
+query I
+SELECT CASE WHEN (SELECT AVG(val) FROM items WHERE id > 1000) IS NULL THEN 1 ELSE 0 END
+----
+1
+
+# A grouped aggregate can still produce multiple rows.
+query error (21000)
+SELECT (SELECT AVG(val) FROM items GROUP BY id)
+
+# A safe aggregate must not enable join rewriting of its multi-row neighbor.
+query error (21000)
+SELECT (SELECT AVG(val) FROM items) AS overall_avg, (SELECT val FROM items WHERE id = 1) AS item_val
+
+# First read on the same connection after a server error.
+query I
+SELECT COUNT(*) FROM items
+----
+4
+
+query I
+SELECT val FROM items UNION SELECT val FROM items ORDER BY val NULLS FIRST
+----
+NULL
+10
+20
+
+query I
+SELECT val FROM items UNION ALL SELECT val FROM items ORDER BY val NULLS FIRST
+----
+NULL
+NULL
+NULL
+NULL
+10
+10
+20
+20
+
+query I
+SELECT val FROM items INTERSECT SELECT val FROM items WHERE val IS NULL OR val = 20 ORDER BY val NULLS FIRST
+----
+NULL
+20
+
+query I
+SELECT val FROM items EXCEPT SELECT val FROM items WHERE val IS NOT NULL
+----
+NULL
+
+query IIII
+SELECT id, CAST(ROW_NUMBER() OVER (ORDER BY id) AS BIGINT), CAST(RANK() OVER (ORDER BY v) AS BIGINT), SUM(v) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM (VALUES (1, 10), (2, 10), (3, 20)) AS t(id, v) ORDER BY id
+----
+1 1 1 10
+2 2 1 20
+3 3 3 40

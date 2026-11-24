@@ -76,6 +76,7 @@ pub mod headers;
 pub mod locality;
 pub mod planner;
 pub mod resolver;
+pub(crate) mod scalar_subquery;
 mod trace_context;
 pub(crate) mod vector_batch_codec;
 pub mod worker;

@@ -21,6 +21,7 @@ use datafusion::execution::memory_pool::{
     MemoryReservation, TrackConsumersPool, UnboundedMemoryPool,
 };
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+use datafusion::optimizer::{Optimizer, OptimizerRule};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -56,6 +57,7 @@ use crate::distributed::planner::LakeSoulDistributedQueryPlanner;
 use crate::distributed::resolver::{
     KubernetesWorkerResolver, StaticWorkerResolver, WorkerDiscovery,
 };
+use crate::distributed::scalar_subquery::DistributedScalarSubqueryToJoin;
 use crate::planner::LakeSoulQueryPlanner;
 
 pub const DEFAULT_CATALOG: &str = "lakesoul";
@@ -953,6 +955,17 @@ impl LakeSoulSessionFactory {
                 )?;
             }
             builder = builder.with_distributed_planner();
+            // Keep the upstream rule's position so later passes still
+            // optimize the joins and predicates it creates.
+            let scalar_rewrite = Arc::new(DistributedScalarSubqueryToJoin::default());
+            let scalar_rule = builder
+                .optimizer()
+                .get_or_insert_with(Optimizer::new)
+                .rules
+                .iter_mut()
+                .find(|rule| rule.name() == scalar_rewrite.name())
+                .expect("DataFusion's default optimizer has a scalar subquery rule");
+            *scalar_rule = scalar_rewrite;
             if dist.max_tasks_per_stage > 0 {
                 builder = builder
                     .with_distributed_max_tasks_per_stage(dist.max_tasks_per_stage)?;
@@ -976,6 +989,16 @@ impl LakeSoulSessionFactory {
         }
 
         let mut state = builder.build();
+        if distributed.is_some() {
+            // Preserve cardinality checks by default. Our join rule opts out
+            // only for nodes where none of the uncorrelated scalar subqueries
+            // can produce multiple rows.
+            state
+                .config_mut()
+                .options_mut()
+                .optimizer
+                .enable_physical_uncorrelated_scalar_subquery = true;
+        }
         #[cfg(feature = "ivm")]
         {
             state = lakesoul_ivm::runtime::with_keyed_lookup_rule(state);

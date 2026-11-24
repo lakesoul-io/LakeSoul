@@ -7,7 +7,7 @@
 //! The gate decides per query what a distributed session does when the
 //! distributed planner cannot produce a *distributable* plan:
 //!
-//! - a table write whose plan carries a runtime subquery (`Expr::ScalarSubquery`
+//! - a query or table write carrying a runtime subquery (`Expr::ScalarSubquery`
 //!   and its siblings) runs on the coordinator: the statement-local
 //!   result/cardinality state of such a subquery has no stage contract, and a
 //!   decorrelated `LEFT JOIN ... ON true` would silently answer a multi-row
@@ -66,7 +66,7 @@ use crate::planner::LakeSoulQueryPlanner;
 use crate::planner::query_planner::end_current_otel_span;
 
 /// Restricts this planning attempt to coordinator execution: an explicitly
-/// local key scan, a write with statement-local subquery state, or a configured
+/// local key scan, a query with statement-local subquery state, or a configured
 /// fallback after distributed planning fails. Other statements keep their workers.
 #[derive(Debug)]
 struct CoordinatorPlanning;
@@ -168,7 +168,7 @@ impl LakeSoulDistributedQueryPlanner {
     /// coordinator.
     ///
     /// `placement` is recorded on the trace, because two very different things
-    /// lead here: a required execution placement (a write with runtime
+    /// lead here: a required execution placement (a query with runtime
     /// subquery state) and the configured fallback after the distributed
     /// planner failed.
     ///
@@ -190,8 +190,8 @@ impl LakeSoulDistributedQueryPlanner {
             .config_mut()
             .set_extension(Arc::new(CoordinatorPlanning));
         // A runtime subquery can only be planned by the coordinator's own
-        // planner: a distributed session clears this option so the optimizer
-        // flattens uncorrelated subqueries the stage could not ship. The
+        // planner: upstream distributed sessions may clear this option so the
+        // optimizer flattens uncorrelated subqueries the stage could not ship. The
         // placement is already coordinator-only here, so put the option back
         // and let `DefaultPhysicalPlanner` build the `ScalarSubqueryExec` the
         // statement needs (including its typed cardinality error).
@@ -213,14 +213,12 @@ impl LakeSoulDistributedQueryPlanner {
 /// result/cardinality state; a subquery the optimizer already decorrelated
 /// into a join is an ordinary join and no longer matches.
 ///
-/// A distributed session turns physical uncorrelated scalar subqueries off
-/// (`with_distributed_planner` clears
-/// `optimizer.enable_physical_uncorrelated_scalar_subquery` because a stage
-/// cannot ship `ScalarSubqueryExec`), which makes the optimizer flatten such a
-/// subquery into `LEFT JOIN ... ON true` *before* a planner can see it. A
-/// write planned from `lakesoul_datafusion::planner::update` therefore keeps
-/// the option enabled for the statement (`RuntimeSubqueryGuard`), so the
-/// subquery survives to here and can be recognized.
+/// The upstream distributed builder disables physical scalar subqueries,
+/// causing optimization into `LEFT JOIN ... ON true` before this gate sees
+/// them. `LakeSoulSessionFactory` restores the option for reads and writes,
+/// allowing uncorrelated scalar subqueries to be rewritten only where it can
+/// prove single-row cardinality. The update planner also guards contexts built
+/// through upstream's builder.
 pub(crate) fn plan_contains_subquery(plan: &LogicalPlan) -> bool {
     let mut found = false;
     let _ = plan.apply(|node| {
@@ -247,18 +245,6 @@ pub(crate) fn plan_contains_subquery(plan: &LogicalPlan) -> bool {
         })
     });
     found
-}
-
-/// Whether a write plan carries a runtime subquery.
-///
-/// Runtime subqueries have statement-local result/cardinality state. Keep
-/// these writes on the coordinator until that state has a distributed stage
-/// contract: a worker stage cannot share the subquery result, and a
-/// decorrelated `LEFT JOIN ... ON true` does not reproduce PostgreSQL's
-/// `21000` for a multi-row subquery. Already-decorrelated joins and ordinary
-/// writes remain distributable.
-fn write_has_subquery(plan: &LogicalPlan) -> bool {
-    matches!(plan, LogicalPlan::Dml(_)) && plan_contains_subquery(plan)
 }
 
 /// The first scan or write node a worker stage cannot receive.
@@ -489,16 +475,15 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
         // This is a required execution placement, not recovery from a planning
         // error: a runtime subquery's shared result/cardinality state must stay
         // in one coordinator plan. Do not split it into independent worker
-        // writes, which would lose that state and can report `UPDATE 0`
-        // instead of the subquery's typed error. The update planner keeps the
-        // subquery as an expression (instead of a decorrelated join) for the
-        // duration of the statement, so this check sees it; a query without
-        // surviving subqueries keeps its workers.
-        if write_has_subquery(logical_plan) {
+        // tasks, which would lose that state and can return duplicate rows
+        // or `UPDATE 0` instead of the subquery's typed error. The factory
+        // preserves runtime subqueries as expressions; already-decorrelated
+        // joins and queries without surviving subqueries keep their workers.
+        if plan_contains_subquery(logical_plan) {
             let plan = self
-                .plan_locally(logical_plan, session, "write with runtime subquery")
+                .plan_locally(logical_plan, session, "query with runtime subquery")
                 .await?;
-            record_distributed_plan(&plan, "subquery_write_coordinator");
+            record_distributed_plan(&plan, "subquery_coordinator");
             end_current_otel_span();
             return Ok(plan);
         }

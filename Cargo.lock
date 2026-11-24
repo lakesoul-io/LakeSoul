@@ -8128,6 +8128,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "sqllogictest",
  "tempfile",
  "thiserror 1.0.69",
  "tikv-jemalloc-ctl",
