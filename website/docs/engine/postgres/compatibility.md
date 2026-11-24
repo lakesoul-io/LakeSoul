@@ -27,7 +27,7 @@ covered today.
 | Area | Statements |
 | --- | --- |
 | Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
-| DDL | `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` schema evolution (add/widen columns, `SET`/`RESET` supported options), `CREATE INDEX` for vector/text declarations, `REINDEX TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` |
+| DDL | `CREATE DATABASE [IF NOT EXISTS]` for LakeSoul namespaces, `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` schema evolution (add/widen columns, `SET`/`RESET` supported options), `CREATE INDEX` for vector/text declarations, `REINDEX TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` |
 | Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstone, partition clear or partition rewrite) and `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |

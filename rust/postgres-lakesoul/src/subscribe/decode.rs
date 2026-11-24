@@ -106,6 +106,11 @@ fn parse_value_raw(
         PgType::Text | PgType::Uuid | PgType::Json | PgType::Jsonb => {
             Ok(ScalarValue::Utf8(Some(text.to_string())))
         }
+        PgType::UuidArray | PgType::DataFileOpArray => {
+            let json = super::metadata_json::array_to_json(text, &column.pg_type)
+                .map_err(|error| report!("column {}: {error}", column.name))?;
+            Ok(ScalarValue::Utf8(Some(json)))
+        }
         PgType::Bytea => Ok(ScalarValue::Binary(Some(
             parse_bytea(text)
                 .map_err(|error| report!("column {}: {error}", column.name))?,

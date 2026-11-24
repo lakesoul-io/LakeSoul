@@ -479,6 +479,11 @@ impl PgDatabaseCatalogList {
     pub fn replace_visible_databases(&self, databases: BTreeSet<String>) {
         *self.visible_databases.write() = databases;
     }
+
+    /// Make a database created by this connection visible in its catalog.
+    pub(crate) fn register_database(&self, name: String) {
+        self.visible_databases.write().insert(name);
+    }
 }
 
 impl CatalogProviderList for PgDatabaseCatalogList {

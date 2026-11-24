@@ -35,6 +35,10 @@ pub enum PgType {
     Uuid,
     Json,
     Jsonb,
+    /// Ordered UUID array, mirrored as JSON text.
+    UuidArray,
+    /// Catalog-validated LakeSoul data_file_op array, mirrored as JSON text.
+    DataFileOpArray,
 }
 
 impl PgType {
@@ -57,6 +61,7 @@ impl PgType {
             1114 => Self::Timestamp,
             1184 => Self::TimestampTz,
             2950 => Self::Uuid,
+            2951 => Self::UuidArray,
             114 => Self::Json,
             3802 => Self::Jsonb,
             _ => return None,
@@ -240,11 +245,12 @@ async fn inspect(
         .query(
             "select a.attname, a.atttypid::int8, a.atttypmod, a.attnotnull, \
                     a.attgenerated::text, t.typname, a.attstorage::text, a.attlen, \
-                    a.atthasdef \
+                    a.atthasdef, e.typname, e.typtype::text, e.typrelid::int8 \
              from pg_attribute a \
              join pg_class c on c.oid = a.attrelid \
              join pg_namespace n on n.oid = c.relnamespace \
              join pg_type t on t.oid = a.atttypid \
+             left join pg_type e on e.oid = t.typelem \
              where n.nspname = $1 and c.relname = $2 \
                and a.attnum > 0 and not a.attisdropped \
              order by a.attnum",
@@ -272,7 +278,39 @@ async fn inspect(
         }
         let oid = u32::try_from(oid)
             .map_err(|_| report!("column {name} has an out-of-range type oid {oid}"))?;
-        let pg_type = PgType::from_oid(oid, typmod).ok_or_else(|| {
+        let mut pg_type = PgType::from_oid(oid, typmod);
+        if pg_type.is_none()
+            && row.get::<_, Option<String>>(9).as_deref() == Some("data_file_op")
+            && row.get::<_, Option<String>>(10).as_deref() == Some("c")
+        {
+            // Composite OIDs are installation-specific. Check the actual
+            // element layout instead of hardcoding an OID or trusting a name.
+            let relation: i64 = row.get(11);
+            let fields = client
+                .query(
+                    "select attname, atttypid::int8 from pg_attribute \
+                 where attrelid = $1::bigint::oid and attnum > 0 and not attisdropped \
+                 order by attnum",
+                    &[&relation],
+                )
+                .await
+                .map_err(|error| report!("inspect data_file_op: {error}"))?;
+            let layout = fields
+                .iter()
+                .map(|field| (field.get::<_, String>(0), field.get::<_, i64>(1)))
+                .collect::<Vec<_>>();
+            if layout
+                == [
+                    ("path".into(), 25),
+                    ("file_op".into(), 25),
+                    ("size".into(), 20),
+                    ("file_exist_cols".into(), 25),
+                ]
+            {
+                pg_type = Some(PgType::DataFileOpArray);
+            }
+        }
+        let pg_type = pg_type.ok_or_else(|| {
             report!(
                 "column {name} of {schema}.{table} has unsupported type {type_name} \
                  (oid {oid}); P0 supports bool, int2/4/8, float4/8, numeric, text, \

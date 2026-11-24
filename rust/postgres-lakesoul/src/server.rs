@@ -1042,8 +1042,7 @@ impl StartupHandler for LakeSoulStartupHandler {
 /// The pgvector GUC hook claims `ivfflat.probes` before the upstream
 /// `SetShowHook` offers the generic DataFusion config path, behind the
 /// transaction hook like every other `SET` hook. The DDL hook claims
-/// `CREATE TABLE`/`DROP TABLE`, which DataFusion would otherwise plan as its
-/// own dialect-specific DDL.
+/// LakeSoul database and table DDL.
 pub(crate) fn connection_statement_hooks(
     factory: &PgSessionFactory,
     session: &PgSession,
@@ -1090,6 +1089,7 @@ pub(crate) fn connection_statement_hooks(
         factory.warehouse().map(str::to_owned),
         cluster_domain,
         identity.user.clone(),
+        Arc::clone(factory.catalog_snapshot()),
     )));
     hooks.push(Arc::new(crate::index_ddl::IndexStatementHook::new(
         Arc::clone(factory.meta_client()),

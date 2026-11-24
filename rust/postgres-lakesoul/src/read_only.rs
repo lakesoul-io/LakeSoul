@@ -527,7 +527,7 @@ impl ReadOnlyStatementGuard {
             Statement::Truncate { .. } => true,
             // DDL is claimed by `DdlStatementHook`, which refuses the
             // unsupported clauses itself.
-            Statement::CreateTable(_) => true,
+            Statement::CreateTable(_) | Statement::CreateDatabase { .. } => true,
             Statement::Drop { object_type, .. } => {
                 matches!(object_type, ObjectType::Table)
             }
