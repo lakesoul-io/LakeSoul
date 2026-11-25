@@ -493,6 +493,7 @@ pub async fn plan_update(
             table_name: identity.table_name.clone(),
             table_info: Arc::new(authoritative.clone()),
             partitions: Arc::clone(&captured),
+            commit_kind: crate::write_mode::FixedSnapshotCommitKind::Strict,
         });
         snapshot = Some(captured);
         snapshot_guard = Some(installed);

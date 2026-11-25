@@ -1640,10 +1640,45 @@ impl MetaDataClient {
                         },
                     };
 
-                    // Append and merge extend the current head snapshot
-                    // unconditionally, exactly like the JDBC coordinator: the
-                    // writer layer (Spark/Flink) owns table-type restrictions
-                    // such as rejecting a second append on a hash table.
+                    // A merge rebases over commits the caller could not see:
+                    // compaction, append or another merge only add/rewrite
+                    // files and are folded into the current head. An update or
+                    // delete in between replaced the file set this upsert's
+                    // rows were computed against, so reusing it would
+                    // resurrect stale rows; report a conflict instead.
+                    if commit_op == CommitOp::MergeCommit {
+                        let read_version = read_partition_map
+                            .get(partition_desc)
+                            .map(|info| i64::from(info.version))
+                            .unwrap_or(0);
+                        if read_version < cur_version {
+                            let middle_ops = self
+                                .get_commit_ops_between_versions(
+                                    &table_info.table_id,
+                                    partition_desc,
+                                    read_version + 1,
+                                    cur_version,
+                                )
+                                .await?;
+                            if middle_ops.contains(&CommitOp::UpdateCommit)
+                                || middle_ops.contains(&CommitOp::DeleteCommit)
+                            {
+                                return Err(LakeSoulMetaDataError::CommitConflict(
+                                    format!(
+                                        "merge commit conflicts with a concurrent update or \
+                                     delete on table {} partition {} (read version \
+                                     {read_version}, current version {cur_version}, middle \
+                                     commits {middle_ops:?})",
+                                        table_info.table_id, partition_desc
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    // Append and merge extend the current head snapshot, exactly
+                    // like the JDBC coordinator: the writer layer (Spark/Flink)
+                    // owns table-type restrictions such as rejecting a second
+                    // append on a hash table.
                     cur_partition_info
                         .snapshot
                         .extend_from_slice(&partition_info.snapshot);
@@ -2066,6 +2101,83 @@ impl MetaDataClient {
     ) -> Result<Vec<String>> {
         self.commit_append_files(table_info, expected_partitions, files, true)
             .await
+    }
+
+    /// Publish a hash-keyed upsert's rewritten files, rebasing on a stale
+    /// partition version when the commits in between are compatible.
+    ///
+    /// This is the commit-only retry of `INSERT ... ON CONFLICT DO UPDATE`.
+    /// The rows were computed from `expected_partitions`; nothing is recomputed
+    /// or re-uploaded here. Each attempt of [`Self::commit_data`] re-reads the
+    /// current partition heads and rebuilds the snapshot from them:
+    /// compaction, append and merge commits that landed in between are folded
+    /// in (`head.snapshot ++ submitted`), while an intervening update or
+    /// delete replaces the file set the rows were computed against and is
+    /// reported as a conflict instead of silently resurrecting old rows.
+    ///
+    /// Commit ids are generated once and staged before the first attempt, so a
+    /// publication that raced with another writer is idempotently replayed
+    /// rather than minting a second version. Identity is verified against the
+    /// primary before staging, like the other read-modify-write commits.
+    pub async fn commit_merge_with_retry(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.verify_table_definition(table_info).await?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
+            .as_millis() as i64;
+        let domain = self.get_table_domain(&table_info.table_id).await?.domain;
+
+        let data_commits = data_commit_info_list_from_files(
+            table_info,
+            files,
+            CommitOp::MergeCommit,
+            timestamp,
+            &domain,
+        );
+        let commit_ids = data_commits
+            .iter()
+            .filter_map(|info| info.commit_id)
+            .map(|id| uuid::Uuid::from_u64_pair(id.high, id.low).to_string())
+            .collect::<Vec<_>>();
+        let list_partition = data_commits
+            .iter()
+            .map(|data_commit| PartitionInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: data_commit.partition_desc.clone(),
+                commit_op: CommitOp::MergeCommit.into(),
+                snapshot: data_commit.commit_id.into_iter().collect(),
+                domain: domain.clone(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        self.transaction_insert_data_commit_info(data_commits)
+            .await?;
+        match self
+            .commit_data(
+                MetaInfo {
+                    table_info: Some(table_info.clone()),
+                    list_partition,
+                    read_partition_info: expected_partitions.to_vec(),
+                },
+                CommitOp::MergeCommit,
+            )
+            .await?
+        {
+            CommitOutcome::Committed | CommitOutcome::AlreadyCommitted => Ok(commit_ids),
+            CommitOutcome::Superseded => Err(LakeSoulMetaDataError::CommitConflict(
+                "the merge was superseded by a concurrent update; retry the statement"
+                    .to_string(),
+            )),
+        }
     }
 
     /// Replace the current file set of the touched partitions with `files`.

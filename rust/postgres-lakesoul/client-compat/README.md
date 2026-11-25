@@ -127,10 +127,15 @@ Single-frontend measurements (local disk, no workers, 1000 rows per statement):
 | VALUES / JSON | 8, same partition | 3k–6k | ~200–310 ms | most commits fail with `40001` |
 | VALUES, distinct partitions | 8 | ~18k | ~200 ms | all commits succeed |
 
-Concurrent writes to the same `(table, partition)` use optimistic CAS: only one
-writer wins and the rest get SQLSTATE `40001` (retryable). Clients must either
-retry, serialize per partition, or shard across partitions/tables; adding more
-pgwire processes does not remove this conflict.
+Concurrent writes to the same `(table, partition)` use optimistic CAS. A plain
+INSERT or UPDATE/DELETE still returns SQLSTATE `40001` on a stale version and
+must be retried by the client. An `ON CONFLICT DO UPDATE` (upsert) instead
+retries its commit inside the metadata client: it re-reads the current partition
+version and regenerates the snapshot without recomputing or re-uploading the
+rows. Compaction, append and merge commits that landed in between are rebased
+into the new snapshot; an intervening update or delete is reported as a
+conflict. A writer still needs to retry when the five-attempt budget is
+exhausted under heavy contention, or shard across partitions/tables.
 
 The remaining known gaps are:
 

@@ -42,6 +42,67 @@ async fn insert_contract() -> Result<()> {
     support::run_suite(|h| Box::pin(async move { insert_scenarios(h).await })).await
 }
 
+/// Concurrent upserts to distinct keys rebase their commit on the partition
+/// head instead of failing with `40001`.
+///
+/// The rows are computed once from the captured snapshot. A compatible commit
+/// that lands in between (another append or merge) is folded into the new
+/// snapshot inside the metadata commit, with no statement re-execution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_rebases_concurrent_commits() -> Result<()> {
+    support::run_suite(|h| Box::pin(async move { upsert_rebase(h).await })).await
+}
+
+async fn upsert_rebase(h: &Harness) -> Result<()> {
+    let table = "upsert_rebase";
+    simple_rows(
+        h,
+        &format!("CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY, val TEXT)"),
+    )
+    .await?;
+    simple_rows(h, &format!("INSERT INTO {table} VALUES (0, 'base')")).await?;
+
+    let clients = futures::future::try_join_all((0..4).map(|_| h.connect_lake()))
+        .await
+        .context("connect four upsert clients")?;
+    let sql = format!(
+        "INSERT INTO {table} VALUES ($1, $2) \
+         ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val"
+    );
+    let mut tasks = Vec::new();
+    for (index, client) in clients.iter().enumerate() {
+        let id = (index + 1) as i64;
+        let sql = sql.clone();
+        tasks.push(async move {
+            client
+                .query(&sql, &[&id, &format!("c{index}")])
+                .await
+                .map(|_| ())
+        });
+    }
+    for result in futures::future::join_all(tasks).await {
+        result.with_context(|| "concurrent upsert rebased on the partition head")?;
+    }
+
+    ensure_eq(
+        "all upserted keys are visible",
+        lake_i64(h, &format!("SELECT count(*) FROM {table}")).await?,
+        5,
+    )?;
+    for index in 0..4 {
+        ensure_eq(
+            &format!("upserted key {}", index + 1),
+            lake_text(
+                h,
+                &format!("SELECT val FROM {table} WHERE id = {}", index + 1),
+            )
+            .await?,
+            Some(format!("c{index}")),
+        )?;
+    }
+    Ok(())
+}
+
 /// One INSERT batch is one publication, but not necessarily one metadata row
 /// or one data file.
 ///

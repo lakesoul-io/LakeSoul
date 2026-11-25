@@ -100,8 +100,18 @@ type PartitionedFile = HashMap<String, (Vec<CommittedFile>, u64)>;
 /// statements re-verify the table identity/schema they were planned against.
 #[derive(Debug, Clone)]
 pub(crate) enum CommitSnapshot {
+    /// A plain primary-key append: strict CAS, no rebase, duplicate keys were
+    /// rejected during the write.
     InsertOnly(Vec<PartitionInfo>),
+    /// A read-modify-write whose rows came from the captured snapshot: strict
+    /// CAS, no rebase. Used by UPDATE and DELETE/MERGE rewrites, where
+    /// rebasing onto a newer head would replay stale rows.
     Update(Arc<Vec<PartitionInfo>>),
+    /// An upsert whose rows came from the captured snapshot but may safely be
+    /// published onto a newer head. Compatible commits (compaction, append,
+    /// merge) are rebased by regenerating the snapshot inside the metadata
+    /// commit; an intervening update or delete is reported as a conflict.
+    Merge(Arc<Vec<PartitionInfo>>),
 }
 
 /// One file written by a [`LakeSoulWriteExec`] task.
@@ -1630,7 +1640,8 @@ async fn commit_reports(
             table_info: Arc::clone(&table_info),
             expected: cas_commit.as_ref().map(|snapshot| match snapshot {
                 CommitSnapshot::InsertOnly(partitions) => partitions.clone(),
-                CommitSnapshot::Update(partitions) => partitions.as_ref().clone(),
+                CommitSnapshot::Update(partitions)
+                | CommitSnapshot::Merge(partitions) => partitions.as_ref().clone(),
             }),
             context: Arc::clone(&context),
             attempted_files: Arc::clone(&attempted_files),
@@ -1838,6 +1849,15 @@ async fn wait_for_commit(
             CommitSnapshot::Update(partitions) => {
                 client
                     .commit_update(table_info, partitions.as_slice(), data_files)
+                    .await
+            }
+            CommitSnapshot::Merge(partitions) => {
+                client
+                    .commit_merge_with_retry(
+                        table_info,
+                        partitions.as_slice(),
+                        data_files,
+                    )
                     .await
             }
         };

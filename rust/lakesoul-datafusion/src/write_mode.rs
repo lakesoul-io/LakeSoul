@@ -302,6 +302,22 @@ pub struct FixedSnapshot {
     /// Shared, not copied: every scan of the target table replays the same
     /// partition list.
     pub partitions: std::sync::Arc<Vec<lakesoul_metadata_proto::entity::PartitionInfo>>,
+    /// How the write publishes against `partitions`. UPDATE and DELETE rewrites
+    /// need strict CAS (rebasing would replay rows computed from the old head);
+    /// an upsert can rebase over compatible commits by regenerating the
+    /// snapshot inside the metadata commit.
+    pub commit_kind: FixedSnapshotCommitKind,
+}
+
+/// The publication policy a read-modify-write statement installs with its
+/// snapshot. See [`FixedSnapshot::commit_kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FixedSnapshotCommitKind {
+    /// Strict version comparison, no rebase (UPDATE, DELETE/MERGE rewrites).
+    #[default]
+    Strict,
+    /// Regenerate the snapshot over compatible commits (upsert).
+    Merge,
 }
 
 /// Whether two table definitions describe the same analysed table.

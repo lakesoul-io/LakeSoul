@@ -259,7 +259,14 @@ impl FileFormat for LakeSoulMetaDataFormat {
                         },
                     )));
                 }
-                Some(CommitSnapshot::Update(Arc::clone(&snapshot.partitions)))
+                Some(match snapshot.commit_kind {
+                    crate::write_mode::FixedSnapshotCommitKind::Merge => {
+                        CommitSnapshot::Merge(Arc::clone(&snapshot.partitions))
+                    }
+                    crate::write_mode::FixedSnapshotCommitKind::Strict => {
+                        CommitSnapshot::Update(Arc::clone(&snapshot.partitions))
+                    }
+                })
             }
             None => None,
         };

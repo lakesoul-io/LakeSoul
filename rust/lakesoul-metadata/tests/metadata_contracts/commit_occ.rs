@@ -260,6 +260,93 @@ async fn compaction_merges_concurrent_append() -> Result<()> {
 }
 
 #[tokio::test]
+async fn merge_rebases_over_compatible_commits() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("merge_rebase");
+    let table_id = create_test_table(&client, &name).await?;
+
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "base")])
+        .await?;
+    let read = latest_partition_info(&client, &table_id, "p1").await?;
+
+    // A plain append lands after the upsert read its snapshot.
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "other")])
+        .await?;
+    let after_append = latest_partition_info(&client, &table_id, "p1").await?;
+
+    let (merge_id, merge_uuid) = new_uuid();
+    commit_with_read(
+        &client,
+        &table_id,
+        "p1",
+        CommitOp::MergeCommit,
+        vec![merge_uuid],
+        Some(&read),
+    )
+    .await?;
+
+    let latest = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(latest.version, after_append.version + 1);
+    assert_eq!(latest.commit_op(), CommitOp::MergeCommit);
+    // A merge extends the whole current head (base + concurrent append) with
+    // its own commit: unlike an update it does not drop the read snapshot.
+    let expected = snapshot_ids(&after_append)
+        .into_iter()
+        .chain(std::iter::once(merge_id))
+        .collect::<HashSet<_>>();
+    assert_eq!(snapshot_ids(&latest), expected);
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn merge_conflicts_with_concurrent_update_or_delete() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+
+    for rewrite_op in [CommitOp::UpdateCommit, CommitOp::DeleteCommit] {
+        let name = unique_name("merge_conflict");
+        let table_id = create_test_table(&client, &name).await?;
+
+        client
+            .commit_data_files(&name, NAMESPACE, vec![file("p1", "base")])
+            .await?;
+        let read = latest_partition_info(&client, &table_id, "p1").await?;
+
+        // A rewrite the upsert's rows were not computed against lands first.
+        commit_with_read(
+            &client,
+            &table_id,
+            "p1",
+            rewrite_op,
+            vec![new_uuid().1],
+            Some(&read),
+        )
+        .await?;
+
+        let (_, merge_uuid) = new_uuid();
+        let result = commit_with_read(
+            &client,
+            &table_id,
+            "p1",
+            CommitOp::MergeCommit,
+            vec![merge_uuid],
+            Some(&read),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "merge must not rebase over a concurrent {rewrite_op:?}"
+        );
+
+        client.drop_table(&name, NAMESPACE).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn update_over_concurrent_append_merges() -> Result<()> {
     let client = MetaDataClient::from_env().await?;
     let name = unique_name("update_merge");

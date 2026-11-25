@@ -724,6 +724,7 @@ pub async fn plan_upsert(
             table_name: identity.table_name.clone(),
             table_info: Arc::new(authoritative.clone()),
             partitions: Arc::clone(&captured),
+            commit_kind: crate::write_mode::FixedSnapshotCommitKind::Merge,
         });
         snapshot = Some(captured);
         snapshot_guard = Some(installed);
