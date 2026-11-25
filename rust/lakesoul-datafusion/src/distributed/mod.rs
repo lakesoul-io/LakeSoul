@@ -72,6 +72,9 @@
 //! distribution/ordering plus finalization cardinality after splitting.
 
 pub mod codec;
+pub mod compaction;
+pub mod compaction_coordinator;
+pub mod compaction_discovery;
 pub mod headers;
 pub mod locality;
 pub mod planner;
