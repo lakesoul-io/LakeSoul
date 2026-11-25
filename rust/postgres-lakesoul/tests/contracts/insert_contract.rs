@@ -62,9 +62,13 @@ async fn upsert_rebase(h: &Harness) -> Result<()> {
     .await?;
     simple_rows(h, &format!("INSERT INTO {table} VALUES (0, 'base')")).await?;
 
-    let clients = futures::future::try_join_all((0..4).map(|_| h.connect_lake()))
+    // More clients than the five-attempt retry budget: without per-partition
+    // publication locking most of these would exhaust the budget with 40001.
+    // Twelve stays under the harness's 16-connection limit (two are held by
+    // the suite itself).
+    let clients = futures::future::try_join_all((0..12).map(|_| h.connect_lake()))
         .await
-        .context("connect four upsert clients")?;
+        .context("connect twelve upsert clients")?;
     let sql = format!(
         "INSERT INTO {table} VALUES ($1, $2) \
          ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val"
@@ -87,9 +91,9 @@ async fn upsert_rebase(h: &Harness) -> Result<()> {
     ensure_eq(
         "all upserted keys are visible",
         lake_i64(h, &format!("SELECT count(*) FROM {table}")).await?,
-        5,
+        13,
     )?;
-    for index in 0..4 {
+    for index in 0..12 {
         ensure_eq(
             &format!("upserted key {}", index + 1),
             lake_text(

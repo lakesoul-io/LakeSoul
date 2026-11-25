@@ -31,6 +31,15 @@ use crate::{
     create_connection, execute_insert, execute_query, execute_update,
 };
 
+/// Per-partition publication locks shared by all clones of one metadata
+/// client. A metadata commit claims one version slot `(table, partition,
+/// version)` per partition; without a lock, concurrent writers all plan the
+/// same slot and only one wins, so N writers need up to N retry rounds. Holding
+/// a lock across read-plan-publish serializes same-process writers on the
+/// slot they already contend on, so they succeed without burning the retry
+/// budget. Different partitions and tables still commit concurrently.
+type CommitLocks = Arc<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>>;
+
 /// The metadata client for the postgres database.
 pub struct MetaDataClient {
     /// The pooled client for the postgres database.
@@ -39,6 +48,8 @@ pub struct MetaDataClient {
     max_retry: usize,
     /// The encoded secret for the postgres database.
     secret: String,
+    /// Per-partition publication locks, shared by every clone.
+    commit_locks: CommitLocks,
 }
 
 impl Clone for MetaDataClient {
@@ -47,6 +58,7 @@ impl Clone for MetaDataClient {
             client: self.client.clone(),
             max_retry: self.max_retry,
             secret: self.secret.clone(),
+            commit_locks: Arc::clone(&self.commit_locks),
         }
     }
 }
@@ -940,6 +952,7 @@ impl MetaDataClient {
             client: Arc::new(Mutex::new(pooled)),
             max_retry: MAX_COMMIT_ATTEMPTS,
             secret: String::new(),
+            commit_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -957,6 +970,7 @@ impl MetaDataClient {
             client,
             max_retry,
             secret,
+            commit_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -966,6 +980,7 @@ impl MetaDataClient {
             client: Arc::new(Mutex::new(self.client.lock().await.primary_only())),
             max_retry: self.max_retry,
             secret: self.secret.clone(),
+            commit_locks: Arc::clone(&self.commit_locks),
         }
     }
 
@@ -1417,6 +1432,33 @@ impl MetaDataClient {
             "table info missing".to_string(),
         ))?;
 
+        // Serialize same-process writers that would otherwise claim the same
+        // `(table, partition, version)` slot. Acquire in sorted order so a
+        // multi-partition commit cannot deadlock against another one that
+        // names the same partitions in a different order. Guards live until
+        // the end of this call, covering the fresh read, the plan and every
+        // publication attempt. Cross-process writers still use the CAS retry.
+        let partition_desc_list = meta_info
+            .list_partition
+            .iter()
+            .map(|partition_info| partition_info.partition_desc.clone())
+            .collect::<Vec<_>>();
+        let mut lock_keys = partition_desc_list
+            .iter()
+            .map(|desc| format!("{}|{}", table_info.table_id, desc))
+            .collect::<Vec<_>>();
+        lock_keys.sort();
+        lock_keys.dedup();
+        let mut guards = Vec::with_capacity(lock_keys.len());
+        for key in lock_keys {
+            let mutex = {
+                let mut locks =
+                    self.commit_locks.lock().unwrap_or_else(|p| p.into_inner());
+                Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
+            };
+            guards.push(mutex.lock_owned().await);
+        }
+
         // Table metadata mutations are part of the commit contract and are
         // applied identically to the JVM coordinator (`DBManager.commitData`).
         if !table_info.table_name.is_empty() {
@@ -1435,11 +1477,6 @@ impl MetaDataClient {
             .get_table_domain(table_info.table_id.as_str())
             .await?
             .domain;
-        let partition_desc_list = meta_info
-            .list_partition
-            .iter()
-            .map(|partition_info| partition_info.partition_desc.clone())
-            .collect::<Vec<String>>();
         let read_partition_map = meta_info
             .read_partition_info
             .iter()
