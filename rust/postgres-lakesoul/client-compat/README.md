@@ -15,6 +15,7 @@ that ordinary PostgreSQL driver workflows can execute.
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | `test_types.py` | psycopg2 + psycopg3 semantic types: `uuid`, `uuid[]`, `money`, `numeric(60,10)`/`numeric(76,0)`, `varchar(n)`/`char(n)`, `time`/`timestamp(p)`/`timestamptz`, arrays of int/text/numeric/varchar/money, OIDs and `pg_attribute` metadata, plus explicit refusals |
+| `test_batch_insert.py` | the vector.dev sink shape `INSERT INTO t SELECT * FROM jsonb_populate_recordset(NULL::t, $1)` (plain, `DO NOTHING`, `DO UPDATE`, NULL values) and large multi-row `VALUES`, through both drivers; `BEGIN … COMMIT` folds several JSON inserts into one metadata commit |
 | `test_pgvector.py` | pgvector type discovery, `Vector` parameters and `<->`/`<#>`/`<=>` distance, vector column round trip, `format_type`, SQLAlchemy `Vector` reflection/select, and `CREATE TABLE`/`CREATE INDEX` DDL (including `vector_index_columns` declarations, refused index forms and SQLAlchemy index creation) |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT; semantic types and `ParameterMetaData` in `JdbcTypeSmoke`, pgvector type/query and `CREATE TABLE`/`CREATE INDEX` DDL via `com.pgvector:pgvector` in `JdbcVectorSmoke` |
 
@@ -95,6 +96,22 @@ recorded gap. The tests already cover:
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.
+
+## High-volume insert guidance
+
+For log/iot ingestion, send rows in batches rather than one statement per row:
+
+- The JSONB `jsonb_populate_recordset` shape used by vector.dev's PostgreSQL
+  sink is planned by a dedicated fast path: the array is decoded into one
+  `VALUES` batch, so a batch produces one data file and one metadata commit,
+  and the client is acknowledged only after publication. `DO NOTHING` and
+  `DO UPDATE` keep the same semantics as ordinary `INSERT`.
+- A large `INSERT INTO t VALUES (...), (...), …` follows the same path; 20k rows
+  were measured at roughly 0.6 s locally.
+- Several writes inside `BEGIN … COMMIT` are published by one
+  `commit_transaction`, which further reduces metadata round trips.
+- Long-running writes should still rely on the Spark compaction service to
+  merge files across batches.
 
 The remaining known gaps are:
 
