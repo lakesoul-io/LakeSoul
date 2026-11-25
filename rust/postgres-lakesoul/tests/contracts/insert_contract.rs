@@ -42,6 +42,111 @@ async fn insert_contract() -> Result<()> {
     support::run_suite(|h| Box::pin(async move { insert_scenarios(h).await })).await
 }
 
+/// One INSERT batch is one publication, but not necessarily one metadata row
+/// or one data file.
+///
+/// The write sink opens one writer per (input partition/bucket, range partition
+/// descriptor). With `hash_bucket_num = 1` and no range columns a batch is one
+/// file; with four hash buckets it is four, and a range-partitioned table gets
+/// one file per touched partition. The vector.dev JSON rewrite follows the same
+/// planner, so it must have the same shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_batch_file_count_contract() -> Result<()> {
+    support::run_suite(|h| Box::pin(async move { insert_batch_file_counts(h).await }))
+        .await
+}
+
+async fn insert_batch_file_counts(h: &Harness) -> Result<()> {
+    for (table, options, is_range, expected_files) in [
+        ("pg_files_bucket1", "WITH (hash_bucket_num = 1)", false, 1),
+        ("pg_files_bucket4", "WITH (hash_bucket_num = 4)", false, 4),
+        (
+            "pg_files_range4",
+            "PARTITIONED BY (part) WITH (hash_bucket_num = 1)",
+            true,
+            4,
+        ),
+    ] {
+        let columns = if is_range {
+            "id bigint primary key, part int, val text"
+        } else {
+            "id bigint primary key, val text"
+        };
+        h.lake
+            .simple_query(&format!("DROP TABLE IF EXISTS {table}"))
+            .await?;
+        h.lake
+            .simple_query(&format!("CREATE TABLE {table} ({columns}) {options}"))
+            .await?;
+        let tid = table_id(h, table).await?;
+
+        for (shape, offset) in [("values", 0), ("json", 1000)] {
+            let ids = offset + 1..=offset + 200;
+            let sql = if shape == "values" {
+                let rows = ids
+                    .map(|i| {
+                        if is_range {
+                            format!("({i}, {}, 'v{i}')", i % 4)
+                        } else {
+                            format!("({i}, 'v{i}')")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("INSERT INTO {table} VALUES {rows}")
+            } else {
+                let rows = ids
+                    .map(|i| {
+                        if is_range {
+                            format!("{{\"id\":{i},\"part\":{},\"val\":\"v{i}\"}}", i % 4)
+                        } else {
+                            format!("{{\"id\":{i},\"val\":\"v{i}\"}}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "INSERT INTO {table} SELECT * FROM jsonb_populate_recordset(NULL::{table}, '[{rows}]')"
+                )
+            };
+            ensure_eq(
+                &format!("{shape} row count on {table}"),
+                simple_rows(h, &sql).await?,
+                200,
+            )?;
+        }
+
+        // A range-partitioned INSERT publishes one metadata commit per touched
+        // partition, and each commit row lists all files of the statement.
+        // Count distinct commit ids and distinct paths.
+        let commit_ids: i64 = h
+            .reference
+            .query_one(
+                "SELECT count(DISTINCT commit_id) FROM public.data_commit_info WHERE table_id = $1",
+                &[&tid],
+            )
+            .await?
+            .get(0);
+        let files = commit_file_paths(h, &tid).await?;
+        let distinct_paths = files
+            .iter()
+            .map(|(_, path)| path.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        ensure_eq(
+            &format!("commit count on {table}"),
+            commit_ids,
+            if is_range { 8 } else { 2 },
+        )?;
+        ensure_eq(
+            &format!("files per INSERT on {table}"),
+            distinct_paths / 2,
+            expected_files,
+        )?;
+    }
+    Ok(())
+}
+
 /// The same statements, planned and executed by two real Flight workers.
 ///
 /// Local fallback is disabled for this harness, so a statement the distributed

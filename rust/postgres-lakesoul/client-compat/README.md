@@ -103,15 +103,34 @@ For log/iot ingestion, send rows in batches rather than one statement per row:
 
 - The JSONB `jsonb_populate_recordset` shape used by vector.dev's PostgreSQL
   sink is planned by a dedicated fast path: the array is decoded into one
-  `VALUES` batch, so a batch produces one data file and one metadata commit,
-  and the client is acknowledged only after publication. `DO NOTHING` and
-  `DO UPDATE` keep the same semantics as ordinary `INSERT`.
-- A large `INSERT INTO t VALUES (...), (...), …` follows the same path; 20k rows
-  were measured at roughly 0.6 s locally.
+  `VALUES` batch, and the client is acknowledged only after publication.
+  `DO NOTHING` and `DO UPDATE` keep the same semantics as ordinary `INSERT`.
+- A large `INSERT INTO t VALUES (...), (...), …` follows the same path.
 - Several writes inside `BEGIN … COMMIT` are published by one
-  `commit_transaction`, which further reduces metadata round trips.
+  `commit_transaction`, which reduces metadata round trips.
 - Long-running writes should still rely on the Spark compaction service to
   merge files across batches.
+
+File count is **not** one per batch: the write sink opens one writer per
+`(hash bucket, range partition descriptor)`. With `hash_bucket_num = 1` and no
+range columns a batch is one file; with four buckets it is four; a
+range-partitioned table writes one file per touched partition, and publishes
+one metadata commit per partition. The
+`insert_batch_file_count_contract` test pins these numbers for both the VALUES
+and JSON shapes.
+
+Single-frontend measurements (local disk, no workers, 1000 rows per statement):
+
+| Shape | Clients | Rows/s | p50 ACK | Result |
+| --- | --- | --- | --- | --- |
+| VALUES / JSON | 1 | 13k–16k | ~75–80 ms | all commits succeed |
+| VALUES / JSON | 8, same partition | 3k–6k | ~200–310 ms | most commits fail with `40001` |
+| VALUES, distinct partitions | 8 | ~18k | ~200 ms | all commits succeed |
+
+Concurrent writes to the same `(table, partition)` use optimistic CAS: only one
+writer wins and the rest get SQLSTATE `40001` (retryable). Clients must either
+retry, serialize per partition, or shard across partitions/tables; adding more
+pgwire processes does not remove this conflict.
 
 The remaining known gaps are:
 
