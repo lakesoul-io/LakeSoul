@@ -256,6 +256,31 @@ fn map_statement_error(error: PgWireError) -> PgWireError {
         {
             return cardinality_violation_error();
         }
+        let metadata = cause
+            .downcast_ref::<lakesoul_metadata::LakeSoulMetaDataError>()
+            .or_else(
+                || match cause.downcast_ref::<DataFusionError>()?.find_root() {
+                    DataFusionError::External(inner) => inner.downcast_ref(),
+                    _ => None,
+                },
+            );
+        if let Some(metadata) = metadata {
+            use lakesoul_metadata::LakeSoulMetaDataError;
+            let code = match metadata {
+                LakeSoulMetaDataError::NotFound(_) => Some("42P01"),
+                LakeSoulMetaDataError::CommitConflict(_)
+                | LakeSoulMetaDataError::InsertConflict { .. } => Some("40001"),
+                LakeSoulMetaDataError::PostgresError(error) => {
+                    error.code().map(|code| code.code()).filter(|code| {
+                        matches!(*code, "40001" | "40P01" | "55P03" | "57014")
+                    })
+                }
+                _ => None,
+            };
+            if let Some(code) = code {
+                return crate::insert::user_error(code, metadata.to_string());
+            }
+        }
         if let Some(incompatible) = incompatible_column_type(cause) {
             return incompatible_file_type_error(incompatible);
         }
@@ -2008,10 +2033,13 @@ impl PgWireServerHandlers for LakeSoulHandlers {
 struct LoggingErrorHandler;
 
 impl ErrorHandler for LoggingErrorHandler {
-    fn on_error<C>(&self, _client: &C, error: &mut PgWireError)
+    fn on_error<C>(&self, client: &C, error: &mut PgWireError)
     where
         C: ClientInfo,
     {
+        if let Ok(session) = connection_session(client) {
+            crate::transaction::abort_metadata(&session);
+        }
         warn!("Sending error: {error}")
     }
 }

@@ -401,7 +401,12 @@ impl DdlStatementHook {
         }
         if !if_exists {
             for table in &targets {
-                if !schema_provider.table_exist(table) {
+                if schema_provider
+                    .table(table)
+                    .await
+                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+                    .is_none()
+                {
                     return Err(user_error(
                         UNDEFINED_TABLE,
                         format!("table \"{table}\" does not exist"),

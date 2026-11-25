@@ -114,7 +114,7 @@ async fn stale_drop_cannot_reach_a_replacement(
         "rbac-stale-drop: team B's replacement must survive alice's DROP, \
          found domains {domains:?}"
     );
-    // The refused DROP refreshed the snapshot: the name is now team B's.
+    // Bob authorizes the live replacement even if catalog listings still lag.
     bob.batch_execute(&format!("DROP TABLE {REPLACED}"))
         .await
         .context("rbac-stale-drop: team B drops its own table")?;

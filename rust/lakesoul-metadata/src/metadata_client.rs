@@ -5,7 +5,6 @@
 //! The LakeSoul metadata client for the postgres database.
 
 use std::fmt::{Debug, Formatter};
-use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
@@ -107,7 +106,7 @@ impl TableIdentity {
 /// transaction that also publishes data files can change the definition in
 /// the same metadata transaction.
 pub(crate) async fn apply_table_definition(
-    transaction: &tokio_postgres::Transaction<'_>,
+    transaction: &(impl tokio_postgres::GenericClient + Sync),
     expected: &TableInfo,
     update: &TableDefinitionUpdate,
 ) -> Result<()> {
@@ -178,8 +177,8 @@ fn validate_and_sort_data_commits(commits: &mut [TransactionTableCommit]) -> Res
             )));
         }
     }
-    // Lock order: every transaction takes `table_info` rows in `table_id`
-    // order, so two blocks with overlapping table sets cannot deadlock.
+    // Use a stable lock order for publication-time acquisitions.
+    // Explicit client transactions may already hold locks at this point.
     commits
         .sort_by(|left, right| left.table_info.table_id.cmp(&right.table_info.table_id));
     if commits
@@ -258,7 +257,7 @@ fn validate_metadata_changes(
 /// Insert all `table_info`, `table_name_id` and `table_path_id` rows for one
 /// new table inside the caller's transaction.
 async fn insert_table_atomic_in_transaction(
-    transaction: &tokio_postgres::Transaction<'_>,
+    transaction: &(impl tokio_postgres::GenericClient + Sync),
     table: &TableInfo,
 ) -> Result<()> {
     let sql = "with inserted_name as (
@@ -328,7 +327,7 @@ async fn insert_table_atomic_in_transaction(
 /// Remove every row of one table inside the caller's transaction, after
 /// requiring the stored definition to still be `expected`.
 async fn delete_table_by_table_id_cascade_in_transaction(
-    transaction: &tokio_postgres::Transaction<'_>,
+    transaction: &(impl tokio_postgres::GenericClient + Sync),
     expected: &TableInfo,
 ) -> Result<()> {
     let locked = transaction
@@ -387,7 +386,7 @@ async fn delete_table_by_table_id_cascade_in_transaction(
 
 /// Publish data commits inside the caller's transaction.
 async fn commit_data_commits_in_transaction(
-    transaction: &tokio_postgres::Transaction<'_>,
+    transaction: &(impl tokio_postgres::GenericClient + Sync),
     commits: &[TransactionTableCommit],
 ) -> Result<Vec<String>> {
     if commits.is_empty() {
@@ -543,18 +542,6 @@ async fn commit_data_commits_in_transaction(
     Ok(commit_ids)
 }
 
-fn metadata_commit_error(error: tokio_postgres::Error) -> LakeSoulMetaDataError {
-    // Constraint/transaction-rollback errors prove the commit aborted. Other
-    // server errors can arrive after local durability.
-    if error.code().is_some_and(|code| {
-        matches!(&code.code()[..2], "23" | "40") && code.code() != "40003"
-    }) {
-        LakeSoulMetaDataError::PostgresError(error)
-    } else {
-        LakeSoulMetaDataError::InsertCommitOutcomeUnknown(error)
-    }
-}
-
 /// One coherent primary PostgreSQL view used for an entire batch request.
 /// File paths are immutable snapshot inputs; before reading index objects,
 /// acquire `IndexReadLeaseGuard` for the exact `index_views` commit IDs.
@@ -614,8 +601,8 @@ pub struct TableAlteration {
 
 /// Everything one PostgreSQL transaction block publishes at `COMMIT`.
 ///
-/// Data-only blocks use [`MetaDataClient::commit_transaction`]; blocks that
-/// also staged table DDL use [`MetaDataClient::commit_metadata_transaction`].
+/// Can be applied on a fresh connection or on a client transaction's
+/// connection that already holds table identity locks.
 #[derive(Debug, Clone, Default)]
 pub struct MetadataChangeSet {
     /// Tables created in the block, in statement order.
@@ -626,6 +613,15 @@ pub struct MetadataChangeSet {
     pub drops: Vec<TableInfo>,
     /// Staged data commits, already grouped per table.
     pub data: Vec<TransactionTableCommit>,
+}
+
+impl MetadataChangeSet {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.creates.is_empty()
+            && self.alters.is_empty()
+            && self.drops.is_empty()
+            && self.data.is_empty()
+    }
 }
 
 /// One table's partitions in a `TRUNCATE`.
@@ -1082,15 +1078,28 @@ impl MetaDataClient {
         table_id: &str,
         table_path: &str,
     ) -> Result<()> {
-        let guard = self.client.lock().await;
+        self.delete_table_by_table_id_cascade_if_exists(table_id, table_path)
+            .await
+            .map(|_| ())
+    }
+
+    /// Return whether this exact table identity was deleted. An absent old ID
+    /// must not trigger path-based cleanup of a replacement table's indexes.
+    pub async fn delete_table_by_table_id_cascade_if_exists(
+        &self,
+        table_id: &str,
+        table_path: &str,
+    ) -> Result<bool> {
+        let guard = self.client.lock().await.clone();
         let mut connection = guard.get(QueryType::RW).await?;
         let transaction = connection.transaction().await?;
-        transaction
-            .query_opt(
-                "select 1 from table_info where table_id = $1::TEXT for update",
-                &[&table_id],
-            )
-            .await?;
+        if transaction.query_opt(
+            "select 1 from table_info where table_id = $1::TEXT and table_path = $2::TEXT for update",
+            &[&table_id, &table_path],
+        ).await?.is_none() {
+            transaction.rollback().await?;
+            return Ok(false);
+        }
         transaction
             .execute(
                 "delete from table_name_id where table_id = $1::TEXT",
@@ -1123,7 +1132,7 @@ impl MetaDataClient {
             )
             .await?;
         transaction.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     pub async fn delete_table_path_id_by_table_id(&self, table_id: &str) -> Result<i32> {
@@ -1174,13 +1183,8 @@ impl MetaDataClient {
 
     async fn execute_insert(&self, insert_type: i32, wrapper: JniWrapper) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
-            match execute_insert(
-                self.client.lock().await.deref_mut(),
-                insert_type,
-                wrapper.clone(),
-            )
-            .await
-            {
+            let mut pool = self.client.lock().await.clone();
+            match execute_insert(&mut pool, insert_type, wrapper.clone()).await {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
@@ -1195,13 +1199,8 @@ impl MetaDataClient {
         joined_string: String,
     ) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
-            match execute_update(
-                self.client.lock().await.deref_mut(),
-                update_type,
-                joined_string.clone(),
-            )
-            .await
-            {
+            let mut pool = self.client.lock().await.clone();
+            match execute_update(&mut pool, update_type, joined_string.clone()).await {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
@@ -1218,11 +1217,10 @@ impl MetaDataClient {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         for times in 0..self.max_retry as i64 {
             let t_lock = std::time::Instant::now();
-            let locked = self.client.lock().await;
+            let pool = self.client.lock().await.clone();
             let lock_ms = t_lock.elapsed().as_secs_f64() * 1000.0;
             let t_query = std::time::Instant::now();
-            let executed =
-                execute_query(&locked, query_type, joined_string.clone()).await;
+            let executed = execute_query(&pool, query_type, joined_string.clone()).await;
             if profile {
                 tracing::debug!(
                     lock_ms,
@@ -1267,13 +1265,8 @@ impl MetaDataClient {
         joined_string: String,
     ) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
-            match execute_update(
-                self.client.lock().await.deref_mut(),
-                update_type,
-                joined_string.clone(),
-            )
-            .await
-            {
+            let mut pool = self.client.lock().await.clone();
+            match execute_update(&mut pool, update_type, joined_string.clone()).await {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
@@ -1403,7 +1396,8 @@ impl MetaDataClient {
     }
 
     pub async fn meta_cleanup(&self) -> Result<i32> {
-        clean_meta_for_test(self.client.lock().await.deref_mut()).await?;
+        let pool = self.client.lock().await.clone();
+        clean_meta_for_test(&pool).await?;
         self.insert_namespace(&Namespace {
             namespace: "default".to_string(),
             properties: "{}".to_string(),
@@ -1979,7 +1973,7 @@ impl MetaDataClient {
             .get_table_info_by_table_id(&table_id)
             .await?
             .ok_or_else(|| {
-                LakeSoulMetaDataError::Internal(format!(
+                LakeSoulMetaDataError::NotFound(format!(
                     "table {table_id} not found while publishing data commits"
                 ))
             })?;
@@ -1989,7 +1983,7 @@ impl MetaDataClient {
         // or hard-codes another value must not disagree with that: under
         // the RBAC row-level security policies an empty domain makes the
         // row invisible to every Postgres role.
-        let domain = self.get_table_domain(&table_id).await?.domain;
+        let domain = &table_info.domain;
         // Stage the new rows in one transaction; publication below flips them
         // to committed together with the partition versions.
         if !to_stage.is_empty() {
@@ -2453,7 +2447,7 @@ impl MetaDataClient {
             .duration_since(UNIX_EPOCH)
             .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
             .as_millis() as i64;
-        let guard = self.client.lock().await;
+        let guard = self.client.lock().await.clone();
         let mut connection = guard.get(QueryType::RW).await?;
         let transaction = connection.transaction().await?;
         // Share-lock the table identity row. A destructive DROP takes the
@@ -2633,6 +2627,12 @@ impl MetaDataClient {
         Ok(commit_ids)
     }
 
+    /// Allocate a connection-local transaction handle without checking out a
+    /// connection. Its first table lock starts a READ COMMITTED transaction.
+    pub async fn table_transaction(&self) -> crate::MetadataTransaction {
+        crate::MetadataTransaction::new(self.client.lock().await.clone())
+    }
+
     /// Publish the staged writes of a transaction block.
     ///
     /// Data-only wrapper around [`Self::commit_metadata_transaction`].
@@ -2648,25 +2648,24 @@ impl MetaDataClient {
     }
 
     /// Publish staged table DDL and data commits in one PostgreSQL transaction.
-    ///
-    /// The block's DDL is normalized by the front end into:
-    ///
-    /// * `creates`: tables that do not exist yet;
-    /// * `alters`: definition changes against the definition the statement
-    ///   was analysed against;
-    /// * `drops`: tables to remove.
-    ///
-    /// Drops are applied first (so a drop followed by a create of the same
-    /// name works), then creates, then alters, then data commits. Existing
-    /// `table_info` rows are locked in `table_id` order before anything is
-    /// written; drops and alters take `FOR UPDATE`, data-only tables `FOR
-    /// SHARE`, so two blocks with overlapping table sets cannot deadlock.
-    ///
-    /// Any conflict is reported as [`LakeSoulMetaDataError::CommitConflict`]
-    /// or [`LakeSoulMetaDataError::InsertConflict`]; the PostgreSQL front end
-    /// maps both to `40001`.
     pub async fn commit_metadata_transaction(
         &self,
+        changes: MetadataChangeSet,
+    ) -> Result<Vec<String>> {
+        if changes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pool = self.client.lock().await.clone();
+        let mut connection = pool.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+        let ids = Self::apply_metadata_changes(&transaction, changes).await?;
+        transaction.commit().await.map_err(commit_error)?;
+        Ok(ids)
+    }
+
+    /// Apply a changeset without ending the caller's PostgreSQL transaction.
+    pub(crate) async fn apply_metadata_changes(
+        transaction: &(impl tokio_postgres::GenericClient + Sync),
         changes: MetadataChangeSet,
     ) -> Result<Vec<String>> {
         let MetadataChangeSet {
@@ -2678,18 +2677,7 @@ impl MetaDataClient {
         validate_and_sort_data_commits(&mut data)?;
         validate_metadata_changes(&creates, &alters, &drops, &data)?;
 
-        if creates.is_empty() && alters.is_empty() && drops.is_empty() && data.is_empty()
-        {
-            return Ok(Vec::new());
-        }
-
-        let guard = self.client.lock().await;
-        let mut connection = guard.get(QueryType::RW).await?;
-        let transaction = connection.transaction().await?;
-
-        // Existing rows are locked in table_id order. A table that is created
-        // in this transaction has no row yet and is skipped; a data commit for
-        // it locks the freshly inserted row inside the data helper.
+        // A new table has no row to lock until its CREATE is applied.
         let create_ids = creates
             .iter()
             .map(|table| table.table_id.as_str())
@@ -2721,19 +2709,17 @@ impl MetaDataClient {
             }
         }
 
+        // DROP first permits DROP and CREATE of the same name in one block.
         for table in &drops {
-            delete_table_by_table_id_cascade_in_transaction(&transaction, table).await?;
+            delete_table_by_table_id_cascade_in_transaction(transaction, table).await?;
         }
         for table in &creates {
-            insert_table_atomic_in_transaction(&transaction, table).await?;
+            insert_table_atomic_in_transaction(transaction, table).await?;
         }
         for alter in &alters {
-            apply_table_definition(&transaction, &alter.expected, &alter.update).await?;
+            apply_table_definition(transaction, &alter.expected, &alter.update).await?;
         }
-
-        let commit_ids = commit_data_commits_in_transaction(&transaction, &data).await?;
-        transaction.commit().await.map_err(metadata_commit_error)?;
-        Ok(commit_ids)
+        commit_data_commits_in_transaction(transaction, &data).await
     }
 
     /// Commit data files for one table and publish all affected partitions together.
@@ -4257,7 +4243,7 @@ impl MetaDataClient {
         expected: &TableInfo,
         update: &TableDefinitionUpdate,
     ) -> Result<()> {
-        let guard = self.client.lock().await;
+        let guard = self.client.lock().await.clone();
         let mut connection = guard.get(QueryType::RW).await?;
         let transaction = connection.transaction().await?;
         // Dropping the transaction on an error rolls it back.
@@ -4294,6 +4280,11 @@ impl MetaDataClient {
                 }
             }
 
+            if serde_json::from_str::<serde_json::Value>(&table_info.properties)?
+                == serde_json::Value::Object(new_properties.clone())
+            {
+                return Ok(0);
+            }
             // 更新properties
             self.execute_update(
                 DaoType::UpdateTableInfoPropertiesById as i32,
@@ -4515,6 +4506,47 @@ fn data_commit_info_list_from_files(
             }
         })
         .collect()
+}
+
+pub(crate) fn commit_error(error: tokio_postgres::Error) -> LakeSoulMetaDataError {
+    // Constraint/transaction-rollback errors prove the commit aborted.
+    // Other server errors can arrive after local durability.
+    if error.code().is_some_and(|code| {
+        matches!(&code.code()[..2], "23" | "40") && code.code() != "40003"
+    }) {
+        LakeSoulMetaDataError::PostgresError(error)
+    } else {
+        LakeSoulMetaDataError::InsertCommitOutcomeUnknown(error)
+    }
+}
+
+pub(crate) async fn lock_table_identity<C: tokio_postgres::GenericClient + Sync>(
+    transaction: &C,
+    expected: &TableInfo,
+) -> Result<()> {
+    let row = transaction
+        .query_opt(
+            "select domain, table_name, table_namespace, table_schema, \
+         partitions, properties, table_schema_arrow_ipc_json_hash \
+         from table_info where table_id = $1::TEXT for share",
+            &[&expected.table_id],
+        )
+        .await?
+        .ok_or_else(|| {
+            LakeSoulMetaDataError::NotFound(format!(
+                "table {} no longer exists",
+                expected.table_id
+            ))
+        })?;
+    if TableIdentity::from_row(&row) != TableIdentity::from_table_info(expected)
+        || row.get::<_, String>(0) != expected.domain
+    {
+        return Err(LakeSoulMetaDataError::CommitConflict(format!(
+            "table {} changed before its transaction lock was acquired",
+            expected.table_id,
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

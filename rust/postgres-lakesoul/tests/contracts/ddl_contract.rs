@@ -112,7 +112,7 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             alter_refusal_matrix_changes_nothing(h).await?;
             alter_owned_tables_are_refused(h).await?;
             alter_is_refused_in_a_simple_query_batch(h).await?;
-            alter_conflicts_with_a_block_written_against_the_old_definition(h).await?;
+            alter_waits_for_a_block_using_the_definition(h).await?;
             alter_replans_prepared_statements(h).await?;
             alter_keeps_described_result_types(h).await?;
             Ok(())
@@ -2324,13 +2324,10 @@ async fn alter_is_refused_in_a_simple_query_batch(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// A transaction block that wrote against the old definition cannot commit
-/// after a peer's `ALTER TABLE`: its `COMMIT` fails with `40001` and nothing
-/// it staged is published.
-async fn alter_conflicts_with_a_block_written_against_the_old_definition(
-    h: &Harness,
-) -> Result<()> {
-    const CONTRACT: &str = "alter-concurrent-write-conflicts";
+/// The staged write commits under its original definition before the peer's
+/// ALTER publishes a new one.
+async fn alter_waits_for_a_block_using_the_definition(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-waits-for-client-transaction";
     command(
         h,
         "CREATE TABLE ddl_alter_race (id BIGINT NOT NULL PRIMARY KEY)",
@@ -2338,34 +2335,45 @@ async fn alter_conflicts_with_a_block_written_against_the_old_definition(
     .await?;
     command(h, "INSERT INTO ddl_alter_race VALUES (1)").await?;
     let peer = h.connect_lake().await?;
-    h.lake.simple_query("BEGIN").await?;
-    h.lake
-        .simple_query("INSERT INTO ddl_alter_race VALUES (2)")
+    command(h, "BEGIN").await?;
+    command(h, "INSERT INTO ddl_alter_race VALUES (2)").await?;
+    let pid: i32 = h
+        .reference
+        .query_one(
+            "SELECT a.pid FROM pg_stat_activity a JOIN public.table_info t \
+             ON a.application_name = 'lakesoul-tx:' || t.table_id \
+             WHERE t.table_namespace = $1 AND t.table_name = 'ddl_alter_race'",
+            &[&h.lake_namespace],
+        )
+        .await?
+        .get(0);
+    let alter = peer.simple_query("ALTER TABLE ddl_alter_race ADD COLUMN note TEXT");
+    tokio::pin!(alter);
+    tokio::select! {
+        result = &mut alter => anyhow::bail!("case={CONTRACT}: ALTER completed before COMMIT: {result:?}"),
+        result = h.wait_for_metadata_blocker(pid) => result?,
+    }
+    command(h, "COMMIT").await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), &mut alter)
         .await
-        .with_context(|| format!("case={CONTRACT}: INSERT in the block"))?;
-    peer.simple_query("ALTER TABLE ddl_alter_race ADD COLUMN note TEXT")
-        .await
-        .with_context(|| format!("case={CONTRACT}: peer ALTER"))?;
-    let error = h
-        .lake
-        .simple_query("COMMIT")
-        .await
-        .expect_err("COMMIT after a peer ALTER must fail");
-    ensure_server_sqlstate(&error, "40001", CONTRACT)?;
-    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_race").await?;
-    ensure!(
-        rows == 1,
-        "case={CONTRACT}: the failed block must publish nothing, rows={rows}"
-    );
-    // The retry, planned against the new definition, commits.
-    command(h, "INSERT INTO ddl_alter_race VALUES (2, 'retried')").await?;
-    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_race").await?;
+        .context("ALTER stayed blocked after COMMIT")??;
+    let rows = scalar(
+        &h.lake,
+        "SELECT count(*) FROM ddl_alter_race WHERE note IS NULL",
+    )
+    .await?;
     ensure!(
         rows == 2,
-        "case={CONTRACT}: retry expected 2 rows, actual {rows}"
+        "case={CONTRACT}: both old-schema rows must survive ALTER"
+    );
+    command(h, "INSERT INTO ddl_alter_race VALUES (3, 'new definition')").await?;
+    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_race").await?;
+    ensure!(
+        rows == 3,
+        "case={CONTRACT}: the new definition must be usable"
     );
     command(h, "DROP TABLE ddl_alter_race").await?;
-    eprintln!("PASS case={CONTRACT} commit=40001 retry=ok");
+    eprintln!("PASS case={CONTRACT} writer=committed alter=waited-and-published");
     Ok(())
 }
 

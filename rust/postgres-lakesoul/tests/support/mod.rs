@@ -27,6 +27,7 @@
 
 mod catalog;
 pub mod compare;
+mod peer;
 mod state;
 mod storage;
 pub mod tpch;
@@ -328,6 +329,7 @@ struct StartupState {
     lake_client: Option<Client>,
     lake_task: Option<JoinHandle<()>>,
     child: Option<ChildGuard>,
+    peers: parking_lot::Mutex<Vec<peer::PeerCoordinator>>,
     workers: Option<tpch_workers::Workers>,
     lake_addr: Option<SocketAddr>,
     metrics_addr: Option<SocketAddr>,
@@ -408,6 +410,7 @@ impl StartupState {
             lake_client: None,
             lake_task: None,
             child: None,
+            peers: parking_lot::Mutex::new(Vec::new()),
             workers: None,
             lake_addr: None,
             metrics_addr: None,
@@ -934,6 +937,10 @@ impl StartupState {
         for task in self.connections.get_mut().drain(..) {
             stop_connection_recorded(None, Some(task), "additional client", &mut outcome)
                 .await;
+        }
+
+        for peer in self.peers.get_mut().drain(..) {
+            peer.stop(&mut outcome);
         }
 
         if let Some(mut child) = self.child.take() {

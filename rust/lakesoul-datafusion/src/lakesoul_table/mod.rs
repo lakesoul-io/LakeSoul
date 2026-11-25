@@ -337,16 +337,11 @@ impl LakeSoulTable {
         &self,
         provider_options: LakeSoulProviderOptions,
     ) -> Result<Arc<dyn TableProvider>> {
-        let config_builder = create_io_config_builder(
-            self.client(),
-            Some(self.table_name()),
-            false,
-            self.table_namespace(),
+        let config_builder = create_io_config_builder_from_table_info(
+            self.table_info(),
             SecretMap::new(),
             provider_options.object_store_options.clone(),
-        )
-        .await?
-        .with_prefix(self.table_info.table_path.clone());
+        )?;
         Ok(Arc::new(
             LakeSoulTableProvider::try_new_without_session(
                 provider_options,

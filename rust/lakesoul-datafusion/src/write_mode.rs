@@ -421,7 +421,17 @@ pub struct StagedWrite {
 }
 
 /// Where a transaction block collects the writes it will publish.
+#[async_trait::async_trait]
 pub trait StagedWriteSink: Send + Sync {
+    /// Lock a resolved table for the lifetime of this client transaction.
+    async fn lock_table(
+        &self,
+        _client: &lakesoul_metadata::MetaDataClientRef,
+        _table: &lakesoul_metadata_proto::entity::TableInfo,
+    ) -> datafusion::error::Result<()> {
+        Ok(())
+    }
+
     /// Records one statement's output in the open block.
     ///
     /// Called once per statement, after its files are fully written. The block
