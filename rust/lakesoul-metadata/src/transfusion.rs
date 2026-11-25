@@ -350,7 +350,7 @@ impl DataFileInfo {
         })
     }
 
-    fn parse_bucket_id(filename: &str) -> Option<isize> {
+    pub fn parse_bucket_id(filename: &str) -> Option<isize> {
         let re = Regex::new(DataFileInfo::BUCKET_FILE_NAME_REGEX).unwrap();
         let Some(caps) = re.captures(filename) else {
             return Some(-1);
