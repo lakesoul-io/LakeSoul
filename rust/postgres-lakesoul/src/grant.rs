@@ -19,7 +19,6 @@
 
 use std::collections::HashSet;
 
-use async_trait::async_trait;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
@@ -271,54 +270,59 @@ impl AclStatementHook {
     }
 }
 
-#[async_trait]
 impl QueryHook for AclStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let parsed = match parse_acl(statement)? {
-            Ok(parsed) => parsed,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(self.execute(parsed, session_context, client).await)
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let parsed = match parse_acl(statement)? {
+                Ok(parsed) => parsed,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(self.execute(parsed, session_context, client).await)
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        // Only syntax and session-level checks run at Parse. Table lookup and
-        // authorization happen at Execute, like a normal PostgreSQL statement.
-        let parsed = match parse_acl(statement)? {
-            Ok(parsed) => parsed,
-            Err(error) => return Some(Err(error)),
-        };
-        let validated = validate_statement(
-            session_context,
-            client.transaction_status(),
-            parsed.verb(),
-        );
-        Some(validated.map(|()| SessionSettingsHook::placeholder_plan()))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            // Only syntax and session-level checks run at Parse. Table lookup and
+            // authorization happen at Execute, like a normal PostgreSQL statement.
+            let parsed = match parse_acl(statement)? {
+                Ok(parsed) => parsed,
+                Err(error) => return Some(Err(error)),
+            };
+            let validated = validate_statement(
+                session_context,
+                client.transaction_status(),
+                parsed.verb(),
+            );
+            Some(validated.map(|()| SessionSettingsHook::placeholder_plan()))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let parsed = match parse_acl(statement)? {
-            Ok(parsed) => parsed,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(self.execute(parsed, session_context, client).await)
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let parsed = match parse_acl(statement)? {
+                Ok(parsed) => parsed,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(self.execute(parsed, session_context, client).await)
+        })
     }
 }
 

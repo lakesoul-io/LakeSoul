@@ -26,7 +26,6 @@ use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion::arrow::array::{
     ArrayRef, BooleanArray, RecordBatch, StringArray, TimestampMicrosecondArray,
@@ -518,81 +517,86 @@ fn close(cursor: &CloseCursor, client: &mut dyn HookClient) -> Response {
 /// Cancellation-aware `DECLARE`/`FETCH`/`CLOSE`.
 pub(crate) struct CancellableCursorHook;
 
-#[async_trait]
 impl QueryHook for CancellableCursorHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Declare { stmts } => {
-                Some(declare(stmts, None, session_context, client).await)
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Declare { stmts } => {
+                    Some(declare(stmts, None, session_context, client).await)
+                }
+                Statement::Fetch {
+                    name,
+                    direction,
+                    into,
+                    ..
+                } => Some(fetch(name, direction, into, client).await),
+                Statement::Close { cursor } => Some(Ok(close(cursor, client))),
+                _ => None,
             }
-            Statement::Fetch {
-                name,
-                direction,
-                into,
-                ..
-            } => Some(fetch(name, direction, into, client).await),
-            Statement::Close { cursor } => Some(Ok(close(cursor, client))),
-            _ => None,
-        }
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        match statement {
-            Statement::Declare { .. } | Statement::Close { .. } => {
-                Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
-                    produce_one_row: false,
-                    schema: Arc::new(DFSchema::empty()),
-                })))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Declare { .. } | Statement::Close { .. } => {
+                    Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
+                        produce_one_row: false,
+                        schema: Arc::new(DFSchema::empty()),
+                    })))
+                }
+                Statement::Fetch { name, .. } => {
+                    let cursors = store(client);
+                    let schemas = cursors.cursors.lock();
+                    let schema = schemas
+                        .get(&name.value)
+                        .map(|cursor| cursor.schema.clone())
+                        .unwrap_or_else(|| Arc::new(Schema::empty()));
+                    drop(schemas);
+                    let schema = DFSchema::try_from(schema).ok()?;
+                    Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
+                        produce_one_row: false,
+                        schema: Arc::new(schema),
+                    })))
+                }
+                _ => None,
             }
-            Statement::Fetch { name, .. } => {
-                let cursors = store(client);
-                let schemas = cursors.cursors.lock();
-                let schema = schemas
-                    .get(&name.value)
-                    .map(|cursor| cursor.schema.clone())
-                    .unwrap_or_else(|| Arc::new(Schema::empty()));
-                drop(schemas);
-                let schema = DFSchema::try_from(schema).ok()?;
-                Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
-                    produce_one_row: false,
-                    schema: Arc::new(schema),
-                })))
-            }
-            _ => None,
-        }
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Declare { stmts } => {
-                Some(declare(stmts, Some(params), session_context, client).await)
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Declare { stmts } => {
+                    Some(declare(stmts, Some(params), session_context, client).await)
+                }
+                Statement::Fetch {
+                    name,
+                    direction,
+                    into,
+                    ..
+                } => Some(fetch(name, direction, into, client).await),
+                Statement::Close { cursor } => Some(Ok(close(cursor, client))),
+                _ => None,
             }
-            Statement::Fetch {
-                name,
-                direction,
-                into,
-                ..
-            } => Some(fetch(name, direction, into, client).await),
-            Statement::Close { cursor } => Some(Ok(close(cursor, client))),
-            _ => None,
-        }
+        })
     }
 }
 
@@ -906,49 +910,55 @@ fn cursor_response(schema: Schema, arrays: Vec<ArrayRef>) -> PgWireResult<Respon
     Ok(Response::Query(response))
 }
 
-#[async_trait]
 impl QueryHook for PgCursorsHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if !references_pg_cursors(statement) {
-            return None;
-        }
-        Some(self.respond(statement, client))
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if !references_pg_cursors(statement) {
+                return None;
+            }
+            Some(self.respond(statement, client))
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        if !references_pg_cursors(statement) {
-            return None;
-        }
-        let (projection, _) = cursor_projection(statement)?;
-        let schema = DFSchema::try_from(Schema::new(cursor_fields(&projection))).ok()?;
-        Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
-            produce_one_row: false,
-            schema: Arc::new(schema),
-        })))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            if !references_pg_cursors(statement) {
+                return None;
+            }
+            let (projection, _) = cursor_projection(statement)?;
+            let schema =
+                DFSchema::try_from(Schema::new(cursor_fields(&projection))).ok()?;
+            Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
+                produce_one_row: false,
+                schema: Arc::new(schema),
+            })))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if !references_pg_cursors(statement) {
-            return None;
-        }
-        Some(self.respond(statement, client))
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if !references_pg_cursors(statement) {
+                return None;
+            }
+            Some(self.respond(statement, client))
+        })
     }
 }
 

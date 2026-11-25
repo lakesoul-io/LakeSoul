@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
 use datafusion_postgres::QueryHook;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -401,43 +400,51 @@ async fn refresh_for(client: &(impl ClientInfo + ?Sized)) -> PgWireResult<()> {
 /// Refreshes the connection ACL view before every statement.
 pub(crate) struct AclRefreshHook;
 
-#[async_trait]
 impl QueryHook for AclRefreshHook {
-    async fn handle_simple_query(
-        &self,
-        _statement: &datafusion::sql::sqlparser::ast::Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match refresh_for(client).await {
-            Ok(()) => None,
-            Err(error) => Some(Err(error)),
-        }
+    fn handle_simple_query<'a>(
+        &'a self,
+        _statement: &'a datafusion::sql::sqlparser::ast::Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match refresh_for(client).await {
+                Ok(()) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        _statement: &datafusion::sql::sqlparser::ast::Statement,
-        _session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<datafusion::logical_expr::LogicalPlan>> {
-        match refresh_for(client).await {
-            Ok(()) => None,
-            Err(error) => Some(Err(error)),
-        }
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        _statement: &'a datafusion::sql::sqlparser::ast::Statement,
+        _session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<
+        'a,
+        Option<PgWireResult<datafusion::logical_expr::LogicalPlan>>,
+    > {
+        Box::pin(async move {
+            match refresh_for(client).await {
+                Ok(()) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        _statement: &datafusion::sql::sqlparser::ast::Statement,
-        _logical_plan: &datafusion::logical_expr::LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match refresh_for(client).await {
-            Ok(()) => None,
-            Err(error) => Some(Err(error)),
-        }
+    fn handle_extended_query<'a>(
+        &'a self,
+        _statement: &'a datafusion::sql::sqlparser::ast::Statement,
+        _logical_plan: &'a datafusion::logical_expr::LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match refresh_for(client).await {
+                Ok(()) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
     }
 }

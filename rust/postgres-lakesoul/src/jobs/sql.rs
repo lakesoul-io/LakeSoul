@@ -12,7 +12,6 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::common::{ParamValues, ScalarValue};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
@@ -187,47 +186,53 @@ impl JobStatementHook {
     }
 }
 
-#[async_trait]
 impl QueryHook for JobStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.answer(statement, client, None).await.transpose()
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { self.answer(statement, client, None).await.transpose() })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        for function in [JobFunction::Submit, JobFunction::Cancel, JobFunction::Wait] {
-            match call_match(statement, function.name()) {
-                // Let the stub function plan the call: its signature is what
-                // infers the parameter types, so a bound `$2` is decoded as an
-                // integer before Execute reaches the hook.
-                CallMatch::Call(_) => return None,
-                CallMatch::Mentioned => return Some(Err(shape_error(function.name()))),
-                CallMatch::NotMentioned => {}
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            for function in [JobFunction::Submit, JobFunction::Cancel, JobFunction::Wait]
+            {
+                match call_match(statement, function.name()) {
+                    // Let the stub function plan the call: its signature is what
+                    // infers the parameter types, so a bound `$2` is decoded as an
+                    // integer before Execute reaches the hook.
+                    CallMatch::Call(_) => return None,
+                    CallMatch::Mentioned => {
+                        return Some(Err(shape_error(function.name())));
+                    }
+                    CallMatch::NotMentioned => {}
+                }
             }
-        }
-        None
+            None
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        params: &ParamValues,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.answer(statement, client, Some(params))
-            .await
-            .transpose()
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            self.answer(statement, client, Some(params))
+                .await
+                .transpose()
+        })
     }
 }
 
@@ -758,35 +763,40 @@ fn identity_error() -> PgWireError {
     )
 }
 
-#[async_trait]
 impl QueryHook for JobIdentityGuard {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        changes_identity(statement).then(|| Err(identity_error()))
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(
+            async move { changes_identity(statement).then(|| Err(identity_error())) },
+        )
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        changes_identity(statement).then(|| Err(identity_error()))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(
+            async move { changes_identity(statement).then(|| Err(identity_error())) },
+        )
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        changes_identity(statement).then(|| Err(identity_error()))
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(
+            async move { changes_identity(statement).then(|| Err(identity_error())) },
+        )
     }
 }
 

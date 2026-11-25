@@ -16,7 +16,6 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::common::{Constraints, DFSchema, ParamValues};
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::dml::{DmlStatement, InsertOp, WriteOp};
@@ -143,117 +142,125 @@ pub(crate) fn set_enabled(context: &SessionContext, enabled: bool) -> PgWireResu
 /// `SET` / `SHOW` / `RESET lakesoul.ivm.enabled`.
 pub(crate) struct IvmSettingsHook;
 
-#[async_trait]
 impl QueryHook for IvmSettingsHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Set(Set::SingleAssignment {
-                scope,
-                hivevar,
-                variable,
-                values,
-            }) if !*hivevar && normalized_name(variable) == IVM_ENABLED => {
-                let result = (|| {
-                    match scope {
-                        None | Some(ContextModifier::Session) => {}
-                        Some(ContextModifier::Local) => {
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Set(Set::SingleAssignment {
+                    scope,
+                    hivevar,
+                    variable,
+                    values,
+                }) if !*hivevar && normalized_name(variable) == IVM_ENABLED => {
+                    let result = (|| {
+                        match scope {
+                            None | Some(ContextModifier::Session) => {}
+                            Some(ContextModifier::Local) => {
+                                return Err(feature_not_supported(
+                                    "SET LOCAL lakesoul.ivm.enabled is not supported: \
+                                     use SET or SET SESSION"
+                                        .to_string(),
+                                ));
+                            }
+                            Some(ContextModifier::Global) => {
+                                return Err(feature_not_supported(
+                                    "SET GLOBAL is not supported: use SET or SET SESSION"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                        if values.len() != 1 {
                             return Err(feature_not_supported(
-                                "SET LOCAL lakesoul.ivm.enabled is not supported: \
-                                 use SET or SET SESSION"
+                                "lakesoul.ivm.enabled takes one boolean value"
                                     .to_string(),
                             ));
                         }
-                        Some(ContextModifier::Global) => {
-                            return Err(feature_not_supported(
-                                "SET GLOBAL is not supported: use SET or SET SESSION"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                    if values.len() != 1 {
-                        return Err(feature_not_supported(
-                            "lakesoul.ivm.enabled takes one boolean value".to_string(),
-                        ));
-                    }
-                    let enabled = parse_bool(&values[0])?;
-                    settings_generation(client)?.bump();
-                    set_enabled(session_context, enabled)?;
-                    Ok(Response::Execution(Tag::new("SET")))
-                })();
-                Some(result)
+                        let enabled = parse_bool(&values[0])?;
+                        settings_generation(client)?.bump();
+                        set_enabled(session_context, enabled)?;
+                        Ok(Response::Execution(Tag::new("SET")))
+                    })();
+                    Some(result)
+                }
+                Statement::ShowVariable { variable }
+                    if show_name(variable) == IVM_ENABLED =>
+                {
+                    Some(show_response(
+                        IVM_ENABLED,
+                        if ivm_enabled(session_context) {
+                            "on"
+                        } else {
+                            "off"
+                        },
+                    ))
+                }
+                Statement::Reset(ResetStatement {
+                    reset: Reset::ConfigurationParameter(variable),
+                }) if normalized_name(variable) == IVM_ENABLED => {
+                    let result = (|| {
+                        settings_generation(client)?.bump();
+                        set_enabled(session_context, false)?;
+                        Ok(Response::Execution(Tag::new("RESET")))
+                    })();
+                    Some(result)
+                }
+                _ => None,
             }
-            Statement::ShowVariable { variable }
-                if show_name(variable) == IVM_ENABLED =>
-            {
-                Some(show_response(
-                    IVM_ENABLED,
-                    if ivm_enabled(session_context) {
-                        "on"
-                    } else {
-                        "off"
-                    },
-                ))
-            }
-            Statement::Reset(ResetStatement {
-                reset: Reset::ConfigurationParameter(variable),
-            }) if normalized_name(variable) == IVM_ENABLED => {
-                let result = (|| {
-                    settings_generation(client)?.bump();
-                    set_enabled(session_context, false)?;
-                    Ok(Response::Execution(Tag::new("RESET")))
-                })();
-                Some(result)
-            }
-            _ => None,
-        }
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        match statement {
-            Statement::Set(Set::SingleAssignment { variable, .. })
-                if normalized_name(variable) == IVM_ENABLED =>
-            {
-                None
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Set(Set::SingleAssignment { variable, .. })
+                    if normalized_name(variable) == IVM_ENABLED =>
+                {
+                    None
+                }
+                Statement::ShowVariable { variable }
+                    if show_name(variable) == IVM_ENABLED =>
+                {
+                    Some(text_column_plan(IVM_ENABLED))
+                }
+                Statement::Reset(ResetStatement {
+                    reset: Reset::ConfigurationParameter(variable),
+                }) if normalized_name(variable) == IVM_ENABLED => {
+                    Some(Ok(SessionSettingsHook::placeholder_plan()))
+                }
+                _ => None,
             }
-            Statement::ShowVariable { variable }
-                if show_name(variable) == IVM_ENABLED =>
-            {
-                Some(text_column_plan(IVM_ENABLED))
-            }
-            Statement::Reset(ResetStatement {
-                reset: Reset::ConfigurationParameter(variable),
-            }) if normalized_name(variable) == IVM_ENABLED => {
-                Some(Ok(SessionSettingsHook::placeholder_plan()))
-            }
-            _ => None,
-        }
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Set(_) | Statement::ShowVariable { .. } | Statement::Reset(_) => {
-                self.handle_simple_query(statement, session_context, client)
-                    .await
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Set(_)
+                | Statement::ShowVariable { .. }
+                | Statement::Reset(_) => {
+                    self.handle_simple_query(statement, session_context, client)
+                        .await
+                }
+                _ => None,
             }
-            _ => None,
-        }
+        })
     }
 }
 
@@ -392,62 +399,67 @@ impl IvmInsertHook {
     }
 }
 
-#[async_trait]
 impl QueryHook for IvmInsertHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let insert = extract(statement)?;
-        if !ivm_enabled(session_context) || !source_is_select(insert) {
-            return None;
-        }
-        Some(
-            async {
-                validate_statement(insert)?;
-                Self::run(statement, session_context, client).await
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let insert = extract(statement)?;
+            if !ivm_enabled(session_context) || !source_is_select(insert) {
+                return None;
             }
-            .await,
-        )
+            Some(
+                async {
+                    validate_statement(insert)?;
+                    Self::run(statement, session_context, client).await
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let insert = extract(statement)?;
-        if !ivm_enabled(session_context) || !source_is_select(insert) {
-            return None;
-        }
-        Some(
-            async {
-                refuse_ivm_under_domain_enforcement(client)?;
-                validate_statement(insert)?;
-                let (status, database) = request_context(client)?;
-                reject_transaction_strict(status, "INSERT")?;
-                Self::placeholder_plan(insert, &database, session_context).await
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let insert = extract(statement)?;
+            if !ivm_enabled(session_context) || !source_is_select(insert) {
+                return None;
             }
-            .await,
-        )
+            Some(
+                async {
+                    refuse_ivm_under_domain_enforcement(client)?;
+                    validate_statement(insert)?;
+                    let (status, database) = request_context(client)?;
+                    reject_transaction_strict(status, "INSERT")?;
+                    Self::placeholder_plan(insert, &database, session_context).await
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let LogicalPlan::Dml(dml) = logical_plan else {
-            return None;
-        };
-        dml.target.as_ref().downcast_ref::<IvmTargetSource>()?;
-        Some(Self::run(statement, session_context, client).await)
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let LogicalPlan::Dml(dml) = logical_plan else {
+                return None;
+            };
+            dml.target.as_ref().downcast_ref::<IvmTargetSource>()?;
+            Some(Self::run(statement, session_context, client).await)
+        })
     }
 }
 

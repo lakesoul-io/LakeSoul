@@ -63,7 +63,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::config::ConfigField;
@@ -593,76 +592,85 @@ impl SessionSettingsHook {
     }
 }
 
-#[async_trait]
 impl QueryHook for SessionSettingsHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        // Every `SET`/`RESET`/`DISCARD`, whichever hook ends up serving it,
-        // may change a setting a prepared plan embeds: bump before dispatch so
-        // the next `Execute` of an older plan replans.
-        if matches!(
-            statement,
-            Statement::Set(_) | Statement::Reset(_) | Statement::Discard { .. }
-        ) {
-            match settings_generation(client) {
-                Ok(settings) => settings.bump(),
-                Err(error) => return Some(Err(error)),
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            // Every `SET`/`RESET`/`DISCARD`, whichever hook ends up serving it,
+            // may change a setting a prepared plan embeds: bump before dispatch so
+            // the next `Execute` of an older plan replans.
+            if matches!(
+                statement,
+                Statement::Set(_) | Statement::Reset(_) | Statement::Discard { .. }
+            ) {
+                match settings_generation(client) {
+                    Ok(settings) => settings.bump(),
+                    Err(error) => return Some(Err(error)),
+                }
             }
-        }
-        match statement {
-            Statement::Set(set) => Self::handle_set(set, session_context, client).await,
-            Statement::ShowVariable { variable } => Self::handle_show(variable, client),
-            Statement::Reset(reset) => {
-                Some(Self::handle_reset(reset, session_context, client).await)
+            match statement {
+                Statement::Set(set) => {
+                    Self::handle_set(set, session_context, client).await
+                }
+                Statement::ShowVariable { variable } => {
+                    Self::handle_show(variable, client)
+                }
+                Statement::Reset(reset) => {
+                    Some(Self::handle_reset(reset, session_context, client).await)
+                }
+                Statement::Discard { object_type } => {
+                    Some(Self::handle_discard(object_type, session_context, client).await)
+                }
+                _ => None,
             }
-            Statement::Discard { object_type } => {
-                Some(Self::handle_discard(object_type, session_context, client).await)
-            }
-            _ => None,
-        }
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        match statement {
-            // The upstream `SetShowHook` plans every `SET` as a placeholder;
-            // the assignment is applied in `handle_extended_query`.
-            Statement::Set(_) => None,
-            Statement::Reset(_) => Some(Ok(Self::placeholder_plan())),
-            // `Describe` reads the plan the statement was parsed into, so a
-            // `SHOW` this hook answers must be claimed here as well: the
-            // upstream placeholder would describe a generic `show`/`TEXT`
-            // column while `Execute` returns the parameter's own name.
-            Statement::ShowVariable { variable } => Self::show_plan(variable),
-            Statement::Discard { object_type } => match object_type {
-                DiscardObject::ALL => Some(Ok(Self::placeholder_plan())),
-                other => Some(Err(feature_not_supported(format!(
-                    "DISCARD {other} is not supported: this server implements \
-                     DISCARD ALL only"
-                )))),
-            },
-            _ => None,
-        }
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            match statement {
+                // The upstream `SetShowHook` plans every `SET` as a placeholder;
+                // the assignment is applied in `handle_extended_query`.
+                Statement::Set(_) => None,
+                Statement::Reset(_) => Some(Ok(Self::placeholder_plan())),
+                // `Describe` reads the plan the statement was parsed into, so a
+                // `SHOW` this hook answers must be claimed here as well: the
+                // upstream placeholder would describe a generic `show`/`TEXT`
+                // column while `Execute` returns the parameter's own name.
+                Statement::ShowVariable { variable } => Self::show_plan(variable),
+                Statement::Discard { object_type } => match object_type {
+                    DiscardObject::ALL => Some(Ok(Self::placeholder_plan())),
+                    other => Some(Err(feature_not_supported(format!(
+                        "DISCARD {other} is not supported: this server implements \
+                         DISCARD ALL only"
+                    )))),
+                },
+                _ => None,
+            }
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.handle_simple_query(statement, session_context, client)
-            .await
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            self.handle_simple_query(statement, session_context, client)
+                .await
+        })
     }
 }
 

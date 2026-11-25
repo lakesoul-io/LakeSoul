@@ -359,6 +359,8 @@ The same real service process connects to two independent namespaces: both have 
 
 Query/catalog results run simple text and extended binary, checking column names, binary OIDs, and actual decoding. Cross-database/missing-table rejections cover simple execution and extended Parse respectively, both checking the current service's SQLSTATE `XX000`; after each rejection, the **first query** directly reads this connection's `public.mapping_items`, without reconnecting or sending a probe query first. This error code and the unknown-database `FATAL XX000` are recorded mapping boundaries, not claims of equivalence with PostgreSQL SQLSTATE.
 
+`psql`'s `\d <table>` lists column names and types. The compatibility parser rewrites its column metadata query to use joins and preserves the relation filter.
+
 `tests/support/catalog.rs` verifies that new tables' namespaces and published files really reside in the owned warehouse; the harness tracks the second namespace, every table in it, and all extra connection tasks, using the same normal/failure teardown. The connection helper retains the real `tokio-postgres::Error` source, and the startup SQLSTATE is not guessed from an error string. This only proves default public lookup, catalog ownership, and no-bypass; it does not promise arbitrary user schemas or full search_path resolution compatibility.
 
 ### Phase three · 3.3: vector codec, exact fallback, and ANN

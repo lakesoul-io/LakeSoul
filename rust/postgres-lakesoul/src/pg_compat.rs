@@ -35,7 +35,6 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-use async_trait::async_trait;
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Timelike};
 use datafusion::arrow::array::{
     Array, ArrayRef, BooleanArray, Date32Array, Date64Array, Int32Array, Int64Array,
@@ -1078,61 +1077,67 @@ async fn jdbc_primary_keys_sql(
     Some(result)
 }
 
-#[async_trait]
 impl QueryHook for JdbcPrimaryKeysHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let sql = jdbc_primary_keys_sql(statement, session_context).await?;
-        Some(
-            async move {
-                let dataframe = session_context
-                    .sql(&sql.map_err(|error| PgWireError::ApiError(Box::new(error)))?)
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-                let options =
-                    Arc::new(FormatOptions::from_client_metadata(client.metadata()));
-                let response =
-                    encode_dataframe(dataframe, &Format::UnifiedText, Some(options))
-                        .await?;
-                Ok(Response::Query(response))
-            }
-            .await,
-        )
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let sql = jdbc_primary_keys_sql(statement, session_context).await?;
+            Some(
+                async move {
+                    let dataframe = session_context
+                        .sql(
+                            &sql.map_err(|error| PgWireError::ApiError(Box::new(error)))?,
+                        )
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                    let options =
+                        Arc::new(FormatOptions::from_client_metadata(client.metadata()));
+                    let response =
+                        encode_dataframe(dataframe, &Format::UnifiedText, Some(options))
+                            .await?;
+                    Ok(Response::Query(response))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let sql = jdbc_primary_keys_sql(statement, session_context).await?;
-        Some(
-            async move {
-                let sql = sql.map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-                session_context
-                    .sql(&sql)
-                    .await
-                    .map(|dataframe| dataframe.logical_plan().clone())
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))
-            }
-            .await,
-        )
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let sql = jdbc_primary_keys_sql(statement, session_context).await?;
+            Some(
+                async move {
+                    let sql =
+                        sql.map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                    session_context
+                        .sql(&sql)
+                        .await
+                        .map(|dataframe| dataframe.logical_plan().clone())
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        _statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        None
+    fn handle_extended_query<'a>(
+        &'a self,
+        _statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { None })
     }
 }
 
@@ -1338,66 +1343,69 @@ async fn sqlalchemy_catalog_sql(
     }
 }
 
-#[async_trait]
 impl QueryHook for SqlAlchemyCatalogHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let query = sqlalchemy_catalog_query(statement)?;
-        Some(
-            async move {
-                let sql = sqlalchemy_catalog_sql(&query, session_context)
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-                let dataframe = session_context
-                    .sql(&sql)
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-                let options =
-                    Arc::new(FormatOptions::from_client_metadata(client.metadata()));
-                let response =
-                    encode_dataframe(dataframe, &Format::UnifiedText, Some(options))
-                        .await?;
-                Ok(Response::Query(response))
-            }
-            .await,
-        )
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let query = sqlalchemy_catalog_query(statement)?;
+            Some(
+                async move {
+                    let sql = sqlalchemy_catalog_sql(&query, session_context)
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                    let dataframe = session_context
+                        .sql(&sql)
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                    let options =
+                        Arc::new(FormatOptions::from_client_metadata(client.metadata()));
+                    let response =
+                        encode_dataframe(dataframe, &Format::UnifiedText, Some(options))
+                            .await?;
+                    Ok(Response::Query(response))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let query = sqlalchemy_catalog_query(statement)?;
-        Some(
-            async move {
-                let sql = sqlalchemy_catalog_sql(&query, session_context)
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-                session_context
-                    .sql(&sql)
-                    .await
-                    .map(|dataframe| dataframe.logical_plan().clone())
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))
-            }
-            .await,
-        )
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let query = sqlalchemy_catalog_query(statement)?;
+            Some(
+                async move {
+                    let sql = sqlalchemy_catalog_sql(&query, session_context)
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                    session_context
+                        .sql(&sql)
+                        .await
+                        .map(|dataframe| dataframe.logical_plan().clone())
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        _statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        None
+    fn handle_extended_query<'a>(
+        &'a self,
+        _statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { None })
     }
 }
 
@@ -1525,66 +1533,69 @@ impl VisitorMut for CatalogProjectionVisitor {
     }
 }
 
-#[async_trait]
 impl QueryHook for CatalogProjectionHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if !is_catalog_projection_query(statement) {
-            return None;
-        }
-        let sql = rewrite_catalog_projection(statement).to_string();
-        Some(
-            async move {
-                let dataframe = session_context
-                    .sql(&sql)
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-                let options =
-                    Arc::new(FormatOptions::from_client_metadata(client.metadata()));
-                let response =
-                    encode_dataframe(dataframe, &Format::UnifiedText, Some(options))
-                        .await?;
-                Ok(Response::Query(response))
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if !is_catalog_projection_query(statement) {
+                return None;
             }
-            .await,
-        )
+            let sql = rewrite_catalog_projection(statement).to_string();
+            Some(
+                async move {
+                    let dataframe = session_context
+                        .sql(&sql)
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                    let options =
+                        Arc::new(FormatOptions::from_client_metadata(client.metadata()));
+                    let response =
+                        encode_dataframe(dataframe, &Format::UnifiedText, Some(options))
+                            .await?;
+                    Ok(Response::Query(response))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        if !is_catalog_projection_query(statement) {
-            return None;
-        }
-        let rewritten = rewrite_catalog_projection(statement);
-        Some(
-            async move {
-                session_context
-                    .state()
-                    .statement_to_plan(DfStatement::Statement(Box::new(rewritten)))
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            if !is_catalog_projection_query(statement) {
+                return None;
             }
-            .await,
-        )
+            let rewritten = rewrite_catalog_projection(statement);
+            Some(
+                async move {
+                    session_context
+                        .state()
+                        .statement_to_plan(DfStatement::Statement(Box::new(rewritten)))
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        _statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        None
+    fn handle_extended_query<'a>(
+        &'a self,
+        _statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { None })
     }
 }
 
@@ -1654,35 +1665,38 @@ fn publication_plan() -> PgWireResult<LogicalPlan> {
     ))
 }
 
-#[async_trait]
 impl QueryHook for PgPublicationHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        is_publication_probe(statement).then(publication_response)
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(
+            async move { is_publication_probe(statement).then(publication_response) },
+        )
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        is_publication_probe(statement).then(publication_plan)
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move { is_publication_probe(statement).then(publication_plan) })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        is_publication_probe(statement).then(publication_response)
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(
+            async move { is_publication_probe(statement).then(publication_response) },
+        )
     }
 }
 

@@ -47,7 +47,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::TableProvider;
@@ -112,184 +111,195 @@ const NO_UNIQUE_CONSTRAINT: &str = "42P10";
 
 pub(crate) struct InsertStatementHook;
 
-#[async_trait]
 impl QueryHook for InsertStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let insert = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                if let Some(shape) = crate::json_insert::detect(insert) {
-                    let json = crate::json_insert::json_from_params(&shape, None)?;
-                    return crate::json_insert::execute(
-                        insert,
-                        &json,
-                        session_context,
-                        status,
-                        &database,
-                    )
-                    .await;
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let insert = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    if let Some(shape) = crate::json_insert::detect(insert) {
+                        let json = crate::json_insert::json_from_params(&shape, None)?;
+                        return crate::json_insert::execute(
+                            insert,
+                            &json,
+                            session_context,
+                            status,
+                            &database,
+                        )
+                        .await;
+                    }
+                    if is_do_update(insert) {
+                        run_upsert(insert, session_context, status, &database).await
+                    } else {
+                        run(insert, session_context, status, &database).await
+                    }
                 }
-                if is_do_update(insert) {
-                    run_upsert(insert, session_context, status, &database).await
-                } else {
-                    run(insert, session_context, status, &database).await
-                }
-            }
-            .await,
-        )
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let insert = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                if crate::json_insert::detect(insert).is_some() {
-                    return crate::json_insert::parse_plan(
-                        insert,
-                        session_context,
-                        status,
-                        &database,
-                    )
-                    .await;
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let insert = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    if crate::json_insert::detect(insert).is_some() {
+                        return crate::json_insert::parse_plan(
+                            insert,
+                            session_context,
+                            status,
+                            &database,
+                        )
+                        .await;
+                    }
+                    if is_do_update(insert) {
+                        reject_transaction(status, session_context, "INSERT")?;
+                        let planned = prepare_upsert(
+                            insert,
+                            session_context,
+                            &database,
+                            UpsertSnapshotMode::PlanOnly,
+                        )
+                        .await?;
+                        return Ok(planned.plan.clone());
+                    }
+                    let target =
+                        prepare(insert, session_context, status, &database).await?;
+                    if target.returning.is_some() {
+                        returning_plan(&target, session_context).await
+                    } else {
+                        plan_target(&target, session_context).await
+                    }
                 }
-                if is_do_update(insert) {
-                    reject_transaction(status, session_context, "INSERT")?;
-                    let planned = prepare_upsert(
-                        insert,
+                .await,
+            )
+        })
+    }
+
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        logical_plan: &'a LogicalPlan,
+        params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let insert = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    if let Some(shape) = crate::json_insert::detect(insert) {
+                        let json =
+                            crate::json_insert::json_from_params(&shape, Some(params))?;
+                        return crate::json_insert::execute(
+                            insert,
+                            &json,
+                            session_context,
+                            status,
+                            &database,
+                        )
+                        .await;
+                    }
+                    if is_do_update(insert) {
+                        reject_transaction(status, session_context, "INSERT")?;
+                        // The Parse-time plan names the table the client prepared.
+                        // The planner's own catalog lookup is the authoritative
+                        // one: comparing against the identity it captured closes
+                        // the window in which a concurrent DROP / same-name CREATE
+                        // could slip between a separate validation lookup and the
+                        // planner's lookup, validating one table and writing the
+                        // other.
+                        let parsed = plan_table_id(logical_plan);
+                        let (table_ref, table_name) =
+                            target_reference(&insert.table, &database)?;
+                        let planned = match prepare_upsert(
+                            insert,
+                            session_context,
+                            &database,
+                            UpsertSnapshotMode::Capture,
+                        )
+                        .await
+                        {
+                            Ok(planned) => planned,
+                            Err(error) => {
+                                // Some replacements are refused before the planner
+                                // can report an identity (missing, non-LakeSoul,
+                                // CDC, ...). The prepared target is still gone, so
+                                // report the stale identity instead of the new
+                                // table's error.
+                                if let Some(parsed) = parsed.as_deref() {
+                                    match resolved_table_id(session_context, &table_ref)
+                                        .await
+                                    {
+                                        Ok(Some(current)) if current == parsed => {}
+                                        Ok(_) => {
+                                            return Err(stale_upsert_error(&table_name));
+                                        }
+                                        // The catalog cannot tell: keep the
+                                        // planner's error rather than inventing a
+                                        // stale-target one.
+                                        Err(_) => {}
+                                    }
+                                }
+                                return Err(error);
+                            }
+                        };
+                        if let Some(parsed) = parsed.as_deref()
+                            && planned.identity.table_id != parsed
+                        {
+                            return Err(stale_upsert_error(&table_name));
+                        }
+                        return execute_upsert(&planned, Some(params), session_context)
+                            .await;
+                    }
+                    let target =
+                        prepare(insert, session_context, status, &database).await?;
+                    // The Parse-time plan carries the result schema for RETURNING
+                    // (`Describe` needs it), not the DML node to execute. Build the
+                    // write plan again only in that case; a plain prepared INSERT
+                    // keeps using the plan it parsed with.
+                    let write_plan = if target.returning.is_some() {
+                        plan_target(&target, session_context).await?
+                    } else {
+                        logical_plan.clone()
+                    };
+                    let returning = execute_returning(
+                        &target,
+                        &write_plan,
+                        Some(params),
+                        &current_result_format(client),
                         session_context,
-                        &database,
-                        UpsertSnapshotMode::PlanOnly,
                     )
                     .await?;
-                    return Ok(planned.plan.clone());
-                }
-                let target = prepare(insert, session_context, status, &database).await?;
-                if target.returning.is_some() {
-                    returning_plan(&target, session_context).await
-                } else {
-                    plan_target(&target, session_context).await
-                }
-            }
-            .await,
-        )
-    }
-
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        logical_plan: &LogicalPlan,
-        params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let insert = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                if let Some(shape) = crate::json_insert::detect(insert) {
-                    let json =
-                        crate::json_insert::json_from_params(&shape, Some(params))?;
-                    return crate::json_insert::execute(
-                        insert,
-                        &json,
-                        session_context,
-                        status,
-                        &database,
-                    )
-                    .await;
-                }
-                if is_do_update(insert) {
-                    reject_transaction(status, session_context, "INSERT")?;
-                    // The Parse-time plan names the table the client prepared.
-                    // The planner's own catalog lookup is the authoritative
-                    // one: comparing against the identity it captured closes
-                    // the window in which a concurrent DROP / same-name CREATE
-                    // could slip between a separate validation lookup and the
-                    // planner's lookup, validating one table and writing the
-                    // other.
-                    let parsed = plan_table_id(logical_plan);
-                    let (table_ref, table_name) =
-                        target_reference(&insert.table, &database)?;
-                    let planned = match prepare_upsert(
-                        insert,
-                        session_context,
-                        &database,
-                        UpsertSnapshotMode::Capture,
-                    )
-                    .await
-                    {
-                        Ok(planned) => planned,
-                        Err(error) => {
-                            // Some replacements are refused before the planner
-                            // can report an identity (missing, non-LakeSoul,
-                            // CDC, ...). The prepared target is still gone, so
-                            // report the stale identity instead of the new
-                            // table's error.
-                            if let Some(parsed) = parsed.as_deref() {
-                                match resolved_table_id(session_context, &table_ref).await
-                                {
-                                    Ok(Some(current)) if current == parsed => {}
-                                    Ok(_) => {
-                                        return Err(stale_upsert_error(&table_name));
-                                    }
-                                    // The catalog cannot tell: keep the
-                                    // planner's error rather than inventing a
-                                    // stale-target one.
-                                    Err(_) => {}
-                                }
-                            }
-                            return Err(error);
-                        }
-                    };
-                    if let Some(parsed) = parsed.as_deref()
-                        && planned.identity.table_id != parsed
-                    {
-                        return Err(stale_upsert_error(&table_name));
+                    if let TargetKind::LakeSoul(mode) = target.kind {
+                        write_mode(session_context)?.set(mode);
                     }
-                    return execute_upsert(&planned, Some(params), session_context).await;
+                    let (rows, tag) =
+                        execute_bound(&write_plan, params, session_context).await?;
+                    match returning {
+                        Some((fields, batches)) => {
+                            returning_response(fields, batches, rows)
+                        }
+                        None => Ok(Response::Execution(tag.with_rows(rows))),
+                    }
                 }
-                let target = prepare(insert, session_context, status, &database).await?;
-                // The Parse-time plan carries the result schema for RETURNING
-                // (`Describe` needs it), not the DML node to execute. Build the
-                // write plan again only in that case; a plain prepared INSERT
-                // keeps using the plan it parsed with.
-                let write_plan = if target.returning.is_some() {
-                    plan_target(&target, session_context).await?
-                } else {
-                    logical_plan.clone()
-                };
-                let returning = execute_returning(
-                    &target,
-                    &write_plan,
-                    Some(params),
-                    &current_result_format(client),
-                    session_context,
-                )
-                .await?;
-                if let TargetKind::LakeSoul(mode) = target.kind {
-                    write_mode(session_context)?.set(mode);
-                }
-                let (rows, tag) =
-                    execute_bound(&write_plan, params, session_context).await?;
-                match returning {
-                    Some((fields, batches)) => returning_response(fields, batches, rows),
-                    None => Ok(Response::Execution(tag.with_rows(rows))),
-                }
-            }
-            .await,
-        )
+                .await,
+            )
+        })
     }
 }
 

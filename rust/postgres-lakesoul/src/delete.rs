@@ -24,7 +24,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::arrow::array::{Array, Int64Array, UInt64Array};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{ParamValues, TableReference};
@@ -68,115 +67,120 @@ const UNDEFINED_TABLE: &str = "42P01";
 
 pub(crate) struct DeleteStatementHook;
 
-#[async_trait]
 impl QueryHook for DeleteStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let delete = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                let meta_client = meta_client(client)?;
-                let planned = plan_with(
-                    delete,
-                    session_context,
-                    &database,
-                    SnapshotMode::Capture,
-                    &meta_client,
-                )
-                .await?;
-                reject_for_strategy(status, session_context, planned.strategy)?;
-                let format = current_result_format(client);
-                execute(&planned, None, &format, session_context, &meta_client).await
-            }
-            .await,
-        )
-    }
-
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let delete = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                let meta_client = meta_client(client)?;
-                // Analysis only: the returned plan supplies parameter types
-                // and the Describe columns, but no snapshot is pinned.
-                let planned = plan_with(
-                    delete,
-                    session_context,
-                    &database,
-                    SnapshotMode::PlanOnly,
-                    &meta_client,
-                )
-                .await?;
-                reject_for_strategy(status, session_context, planned.strategy)?;
-                Ok(planned.describe)
-            }
-            .await,
-        )
-    }
-
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        logical_plan: &LogicalPlan,
-        params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let delete = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                let meta_client = meta_client(client)?;
-                // Execute re-plans from the live catalog. Compare the prepared
-                // statement's target identity first: a recreated table must
-                // not be written through the old binding.
-                let (table_ref, table_name) =
-                    target_reference(&table_object(delete)?, &database)?;
-                if let Some(parsed) = plan_identity(logical_plan, &table_ref) {
-                    let current =
-                        resolved_table_id(&meta_client, &table_ref, &database).await?;
-                    if current.as_deref() != Some(parsed.as_str()) {
-                        return Err(user_error(
-                            UNDEFINED_TABLE,
-                            format!(
-                                "relation \"{table_name}\" was dropped and recreated; \
-                                 reparse the statement"
-                            ),
-                        ));
-                    }
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let delete = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    let meta_client = meta_client(client)?;
+                    let planned = plan_with(
+                        delete,
+                        session_context,
+                        &database,
+                        SnapshotMode::Capture,
+                        &meta_client,
+                    )
+                    .await?;
+                    reject_for_strategy(status, session_context, planned.strategy)?;
+                    let format = current_result_format(client);
+                    execute(&planned, None, &format, session_context, &meta_client).await
                 }
-                let planned = plan_with(
-                    delete,
-                    session_context,
-                    &database,
-                    SnapshotMode::Capture,
-                    &meta_client,
-                )
-                .await?;
-                reject_for_strategy(status, session_context, planned.strategy)?;
-                let format = current_result_format(client);
-                execute(
-                    &planned,
-                    Some(params),
-                    &format,
-                    session_context,
-                    &meta_client,
-                )
-                .await
-            }
-            .await,
-        )
+                .await,
+            )
+        })
+    }
+
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let delete = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    let meta_client = meta_client(client)?;
+                    // Analysis only: the returned plan supplies parameter types
+                    // and the Describe columns, but no snapshot is pinned.
+                    let planned = plan_with(
+                        delete,
+                        session_context,
+                        &database,
+                        SnapshotMode::PlanOnly,
+                        &meta_client,
+                    )
+                    .await?;
+                    reject_for_strategy(status, session_context, planned.strategy)?;
+                    Ok(planned.describe)
+                }
+                .await,
+            )
+        })
+    }
+
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        logical_plan: &'a LogicalPlan,
+        params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let delete = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    let meta_client = meta_client(client)?;
+                    // Execute re-plans from the live catalog. Compare the prepared
+                    // statement's target identity first: a recreated table must
+                    // not be written through the old binding.
+                    let (table_ref, table_name) =
+                        target_reference(&table_object(delete)?, &database)?;
+                    if let Some(parsed) = plan_identity(logical_plan, &table_ref) {
+                        let current =
+                            resolved_table_id(&meta_client, &table_ref, &database).await?;
+                        if current.as_deref() != Some(parsed.as_str()) {
+                            return Err(user_error(
+                                UNDEFINED_TABLE,
+                                format!(
+                                    "relation \"{table_name}\" was dropped and recreated; \
+                                     reparse the statement"
+                                ),
+                            ));
+                        }
+                    }
+                    let planned = plan_with(
+                        delete,
+                        session_context,
+                        &database,
+                        SnapshotMode::Capture,
+                        &meta_client,
+                    )
+                    .await?;
+                    reject_for_strategy(status, session_context, planned.strategy)?;
+                    let format = current_result_format(client);
+                    execute(
+                        &planned,
+                        Some(params),
+                        &format,
+                        session_context,
+                        &meta_client,
+                    )
+                    .await
+                }
+                .await,
+            )
+        })
     }
 }
 

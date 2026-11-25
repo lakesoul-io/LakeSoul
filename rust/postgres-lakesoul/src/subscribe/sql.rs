@@ -13,7 +13,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
@@ -617,57 +616,60 @@ impl SubscriptionStatementHook {
     }
 }
 
-#[async_trait]
 impl QueryHook for SubscriptionStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let original = match original_ddl(statement) {
-            Ok(Some(original)) => original,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(self.execute(&original, client).await)
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let original = match original_ddl(statement) {
+                Ok(Some(original)) => original,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(self.execute(&original, client).await)
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let original = match original_ddl(statement) {
-            Ok(Some(original)) => original,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        if client.transaction_status() != TransactionStatus::Idle {
-            return Some(Err(active_transaction()));
-        }
-        Some(
-            parse_statement(&original).map(|_| {
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let original = match original_ddl(statement) {
+                Ok(Some(original)) => original,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            if client.transaction_status() != TransactionStatus::Idle {
+                return Some(Err(active_transaction()));
+            }
+            Some(parse_statement(&original).map(|_| {
                 crate::session_settings::SessionSettingsHook::placeholder_plan()
-            }),
-        )
+            }))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let original = match original_ddl(statement) {
-            Ok(Some(original)) => original,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(self.execute(&original, client).await)
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let original = match original_ddl(statement) {
+                Ok(Some(original)) => original,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(self.execute(&original, client).await)
+        })
     }
 }
 

@@ -32,7 +32,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::common::{DFSchema, ExprSchema, ParamValues, ScalarValue};
 use datafusion::error::{DataFusionError, Result as DFResult};
@@ -369,59 +368,63 @@ fn is_probes_variable(variable: &[Ident]) -> bool {
         == PROBES_VARIABLE
 }
 
-#[async_trait]
 impl QueryHook for VectorProbesHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Set(set) => Self::handle_set(set, session_context),
-            Statement::ShowVariable { variable } => {
-                Self::handle_show(variable, session_context)
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Set(set) => Self::handle_set(set, session_context),
+                Statement::ShowVariable { variable } => {
+                    Self::handle_show(variable, session_context)
+                }
+                _ => None,
             }
-            _ => None,
-        }
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        match statement {
-            // The upstream `SetShowHook` plans `SET` as a placeholder; the
-            // assignment is applied in `handle_extended_query`.
-            Statement::Set(_) => None,
-            // `Describe` reports the schema of the parsed plan, so the `SHOW`
-            // this hook answers must carry its own column here: the upstream
-            // placeholder describes a generic `show`/`TEXT` column while the
-            // response carries `ivfflat.probes`.
-            Statement::ShowVariable { variable } => {
-                is_probes_variable(variable).then(|| text_column_plan(PROBES_VARIABLE))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            match statement {
+                // The upstream `SetShowHook` plans `SET` as a placeholder; the
+                // assignment is applied in `handle_extended_query`.
+                Statement::Set(_) => None,
+                // `Describe` reports the schema of the parsed plan, so the `SHOW`
+                // this hook answers must carry its own column here: the upstream
+                // placeholder describes a generic `show`/`TEXT` column while the
+                // response carries `ivfflat.probes`.
+                Statement::ShowVariable { variable } => is_probes_variable(variable)
+                    .then(|| text_column_plan(PROBES_VARIABLE)),
+                _ => None,
             }
-            _ => None,
-        }
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Set(set) => Self::handle_set(set, session_context),
-            Statement::ShowVariable { variable } => {
-                Self::handle_show(variable, session_context)
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            match statement {
+                Statement::Set(set) => Self::handle_set(set, session_context),
+                Statement::ShowVariable { variable } => {
+                    Self::handle_show(variable, session_context)
+                }
+                _ => None,
             }
-            _ => None,
-        }
+        })
     }
 }
 

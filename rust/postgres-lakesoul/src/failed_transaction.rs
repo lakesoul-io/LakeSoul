@@ -30,7 +30,6 @@
 //!
 //! [`TransactionStatementHook`]: datafusion_postgres::hooks::transactions::TransactionStatementHook
 
-use async_trait::async_trait;
 use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
@@ -75,48 +74,53 @@ fn failed_transaction_error() -> PgWireError {
     )))
 }
 
-#[async_trait]
 impl QueryHook for FailedTransactionGuard {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if Self::rejects(client.transaction_status(), statement) {
-            return Some(Err(failed_transaction_error()));
-        }
-        None
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if Self::rejects(client.transaction_status(), statement) {
+                return Some(Err(failed_transaction_error()));
+            }
+            None
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        // PostgreSQL rejects `Parse` in a failed block as well, with the same
-        // code; parsing the text already happened, so a syntax error keeps
-        // precedence.
-        if Self::rejects(client.transaction_status(), statement) {
-            return Some(Err(failed_transaction_error()));
-        }
-        None
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            // PostgreSQL rejects `Parse` in a failed block as well, with the same
+            // code; parsing the text already happened, so a syntax error keeps
+            // precedence.
+            if Self::rejects(client.transaction_status(), statement) {
+                return Some(Err(failed_transaction_error()));
+            }
+            None
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        // A statement prepared while the block was healthy must still be
-        // refused when it executes after the block failed.
-        if Self::rejects(client.transaction_status(), statement) {
-            return Some(Err(failed_transaction_error()));
-        }
-        None
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            // A statement prepared while the block was healthy must still be
+            // refused when it executes after the block failed.
+            if Self::rejects(client.transaction_status(), statement) {
+                return Some(Err(failed_transaction_error()));
+            }
+            None
+        })
     }
 }
