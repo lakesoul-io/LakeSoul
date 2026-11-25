@@ -46,7 +46,7 @@ impl Default for DiscoveryConfig {
 
 #[derive(Debug)]
 pub enum SnapshotLoad {
-    Ready(LoadedSnapshot),
+    Ready(Box<LoadedSnapshot>),
     NotReady {
         table_info_missing: bool,
         missing_commits: Vec<Uuid>,
@@ -358,7 +358,7 @@ impl CompactionCoordinator {
                     table_schema_arrow_ipc: match r.value("table_schema_arrow_ipc")? {
                         ScalarValue::Binary(v)
                         | ScalarValue::BinaryView(v)
-                        | ScalarValue::LargeBinary(v) => v.unwrap_or_default().into(),
+                        | ScalarValue::LargeBinary(v) => v.unwrap_or_default(),
                         _ => return Err(invalid("expected binary Arrow schema")),
                     },
                     table_schema_arrow_ipc_json_hash: r
@@ -489,11 +489,11 @@ impl CompactionCoordinator {
         }
         // Preserve every surviving add, including repeated paths, as in Spark replay.
         active_files.sort_by_key(|file| Reverse(file.level));
-        Ok(SnapshotLoad::Ready(LoadedSnapshot {
+        Ok(SnapshotLoad::Ready(Box::new(LoadedSnapshot {
             table,
             partition: partition.clone(),
             active_files,
-        }))
+        })))
     }
 }
 
