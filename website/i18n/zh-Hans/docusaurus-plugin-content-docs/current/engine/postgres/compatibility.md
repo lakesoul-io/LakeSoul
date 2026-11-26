@@ -27,7 +27,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | --- | --- |
 | 查询 | 带 join、聚合、窗口、CTE、`UNION`/`INTERSECT`/`EXCEPT`、子查询的 `SELECT` |
 | DDL | `CREATE TABLE`、`DROP TABLE`、`ALTER TABLE` schema evolution（加列/加宽列、`SET`/`RESET` 支持的选项）、向量/文本索引的 `CREATE INDEX`、`REINDEX TABLE`、主键、`PARTITIONED BY`、`WITH (...)` |
-| 写入 | `INSERT ... VALUES`（包括 `RETURNING *`/列引用）、`INSERT ... SELECT`、`COPY ... FROM STDIN`（TEXT、CSV 和 binary）和 `COPY ... TO STDOUT`（TEXT 和 CSV）、非 CDC 主键表上的 `UPDATE`、`DELETE`（CDC tombstone、分区清空或分区重写）和 `TRUNCATE`（含 `PARTITION (...)`）、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
+| 写入 | `INSERT ... VALUES` 与 `INSERT ... SELECT`（均支持 `RETURNING *`/列引用）、`COPY ... FROM STDIN`（TEXT、CSV 和 binary）和 `COPY ... TO STDOUT`（TEXT 和 CSV）、非 CDC 主键表上的 `UPDATE`、`DELETE`（CDC tombstone、分区清空或分区重写）和 `TRUNCATE`（含 `PARTITION (...)`）、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | 订阅 | `CREATE SUBSCRIPTION`、`ALTER SUBSCRIPTION ... ENABLE/DISABLE`、`DROP SUBSCRIPTION`，把源 PostgreSQL 逻辑复制到 LakeSoul CDC 表 |
 | 事务 | Autocommit、`READ COMMITTED`；LakeSoul 写入使用 deferred publication 的 `BEGIN`/`COMMIT`/`ROLLBACK` |
 | 目录 | `pg_catalog`、`information_schema`、`psql \d`/`\dt`/`\l`/`\dn`、`pg_cursors`、`pg_settings`、`pg_roles`、`current_database()`、`current_user`/`session_user`、`to_regtype`、`current_setting`/`set_config`、`psycopg2` dialect 下的 SQLAlchemy reflection |
@@ -97,8 +97,8 @@ reflection、forward-only named cursor、fetch-size cursor 和 Metabase 风格�
 核心 Python 和 JDBC 工作流已通过基线，包括 psql `\d`、`bytea` 往返和
 `psycopg2` dialect 下的 SQLAlchemy reflection。Named cursor 目前只支持
 forward-only、非 holdable；`WITH HOLD`、`SCROLL` 和 backward fetch 会显式拒绝。
-已知缺口会显式保留，而不是隐藏：`INSERT ... SELECT`/`ON CONFLICT`/`UPDATE` 上
-的 `RETURNING`，以及 `pg_dump --data-only`（它使用 REPEATABLE READ 事务和
+已知缺口会显式保留，而不是隐藏：`ON CONFLICT` 上的 `RETURNING` 以及 `RETURNING`
+表达式，以及 `pg_dump --data-only`（它使用 REPEATABLE READ 事务和
 `OPERATOR(pg_catalog.=)` 语法，当前 parser 不接受）。数字 `to_char`
 pattern 未实现，会显式报错；在同一个 projection 里同时选择 `current_user` 和
 `session_user` 仍受兼容 parser 的 `current_user -> session_user` 重写限制；

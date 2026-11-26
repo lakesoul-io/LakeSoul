@@ -235,6 +235,7 @@ async fn insert_scenarios(h: &Harness) -> Result<()> {
     parameterized_insert_executes_twice(h).await?;
     jsonb_insert_and_returning(h).await?;
     returning_returns_inserted_rows(h).await?;
+    returning_from_select(h).await?;
     cdc_delete_marker_hides_the_key(h).await?;
     duplicate_key_leaves_no_state(h).await?;
     not_null_violation_is_23502(h).await?;
@@ -666,6 +667,93 @@ async fn returning_returns_inserted_rows(h: &Harness) -> Result<()> {
         "PASS case=insert-returning simple=rows extended=rows \
          transaction=rolled-back"
     );
+    Ok(())
+}
+
+/// `INSERT ... SELECT ... RETURNING` reports the rows the write consumed,
+/// with the same column names and NULL handling as a `VALUES` source.
+async fn returning_from_select(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute("CREATE TABLE returning_src (id INTEGER, val INTEGER, label TEXT)")
+        .await
+        .context("CREATE TABLE returning_src")?;
+    h.lake
+        .batch_execute(
+            "INSERT INTO returning_src VALUES \
+             (5601, 61, 'from-select'), (5602, NULL, NULL)",
+        )
+        .await
+        .context("seed returning_src")?;
+
+    let messages = h
+        .lake
+        .simple_query(
+            "INSERT INTO empty_items (id, val, label) \
+             SELECT id, val, label FROM returning_src \
+             RETURNING id, val, label",
+        )
+        .await
+        .context("simple INSERT ... SELECT ... RETURNING")?;
+    let rows = messages
+        .iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ensure_eq("SELECT RETURNING row count", rows.len(), 2)?;
+    ensure_eq("SELECT RETURNING id", rows[0].get("id"), Some("5601"))?;
+    ensure_eq("SELECT RETURNING val", rows[0].get("val"), Some("61"))?;
+    ensure_eq("SELECT RETURNING label", rows[1].get("label"), None)?;
+
+    h.lake
+        .batch_execute("TRUNCATE TABLE returning_src")
+        .await
+        .context("truncate returning_src")?;
+    h.lake
+        .batch_execute("INSERT INTO returning_src VALUES (5603, 63, 'extended')")
+        .await?;
+    let statement = h
+        .lake
+        .prepare_typed(
+            "INSERT INTO empty_items (id, val, label) \
+             SELECT id, $1, label FROM returning_src \
+             RETURNING id AS new_id, val, label AS new_label",
+            &[Type::INT4],
+        )
+        .await
+        .context("prepare INSERT ... SELECT ... RETURNING")?;
+    let row = h
+        .lake
+        .query_one(&statement, &[&63_i32])
+        .await
+        .context("extended INSERT ... SELECT ... RETURNING")?;
+    ensure_eq(
+        "extended SELECT RETURNING alias",
+        row.get::<_, i32>("new_id"),
+        5603,
+    )?;
+    ensure_eq(
+        "extended SELECT RETURNING param",
+        row.get::<_, i32>("val"),
+        63,
+    )?;
+    ensure_eq(
+        "extended SELECT RETURNING text",
+        row.get::<_, String>("new_label"),
+        "extended".to_string(),
+    )?;
+
+    ensure_eq(
+        "SELECT RETURNING rows committed",
+        lake_i64(
+            h,
+            "SELECT count(*) FROM empty_items WHERE id BETWEEN 5601 AND 5603",
+        )
+        .await?,
+        3,
+    )?;
+    eprintln!("PASS case=insert-returning-select simple=rows extended=rows aliases=ok");
     Ok(())
 }
 

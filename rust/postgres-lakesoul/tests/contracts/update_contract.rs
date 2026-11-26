@@ -37,9 +37,9 @@
 //! Refusals cover the tables LakeSoul cannot update — CDC tables (identified
 //! by their effective properties: `use_cdc = true` or a declared change
 //! column), append-only tables and tables without a primary key — plus
-//! primary-key/partition-column changes, `RETURNING`, `UPDATE ... FROM`,
-//! data-modifying CTEs, `MERGE`, transaction blocks and multi-statement
-//! simple-query batches.
+//! primary-key/partition-column changes, `UPDATE ... FROM`, data-modifying
+//! CTEs, `MERGE`, transaction blocks and multi-statement simple-query batches.
+//! `UPDATE ... RETURNING` is covered separately and reports the new rows.
 //!
 //! A table with a custom (non-default) merge operator has no wire-reachable
 //! fixture in this tree: the verdict reads the provider's io-config merge
@@ -131,6 +131,7 @@ async fn update_scenarios(h: &Harness) -> Result<()> {
     constants_expressions_and_null_match_postgres(h).await?;
     multi_column_assignment_reads_one_old_row(h).await?;
     zero_match_publishes_nothing(h).await?;
+    returning_reports_new_rows(h).await?;
     historical_versions_do_not_supply_the_predicate(h).await?;
     hash_buckets_and_range_partitions(h).await?;
     prepared_update_rebinds_and_reads_new_commits(h).await?;
@@ -1000,6 +1001,95 @@ async fn late_failures_publish_nothing(h: &Harness) -> Result<()> {
 /// Every table LakeSoul cannot update is refused before reading or writing,
 /// including CDC tables that match no row, and the refusals leave no metadata
 /// row, file or row change behind.
+/// `UPDATE ... RETURNING` projects the new rows from the same read-modify-write
+/// plan the write commits, in both protocols, including `*` and zero matches.
+async fn returning_reports_new_rows(h: &Harness) -> Result<()> {
+    let ddl = "CREATE TABLE update_returning (\
+                 id BIGINT PRIMARY KEY, n BIGINT, label TEXT\
+               )";
+    let seed = "INSERT INTO update_returning VALUES \
+                  (1, 10, 'one'), (2, 20, 'two'), (3, 30, 'three')";
+    create_mirrored_table(h, ddl, ddl, seed).await?;
+
+    let messages = h
+        .lake
+        .simple_query(
+            "UPDATE update_returning SET n = n + 1 WHERE id = 1 \
+             RETURNING id, n, label",
+        )
+        .await
+        .context("simple UPDATE ... RETURNING")?;
+    let rows = messages
+        .iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ensure_eq("simple UPDATE RETURNING row count", rows.len(), 1)?;
+    ensure_eq("simple UPDATE RETURNING id", rows[0].get("id"), Some("1"))?;
+    ensure_eq(
+        "simple UPDATE RETURNING new n",
+        rows[0].get("n"),
+        Some("11"),
+    )?;
+    ensure_eq(
+        "simple UPDATE RETURNING label",
+        rows[0].get("label"),
+        Some("one"),
+    )?;
+
+    let statement = h
+        .lake
+        .prepare_typed(
+            "UPDATE update_returning SET n = $1, label = $2 WHERE id = $3 \
+             RETURNING *",
+            &[Type::INT8, Type::TEXT, Type::INT8],
+        )
+        .await
+        .context("prepare UPDATE ... RETURNING")?;
+    let row = h
+        .lake
+        .query_one(&statement, &[&99_i64, &"changed", &2_i64])
+        .await
+        .context("extended UPDATE ... RETURNING")?;
+    ensure_eq("extended UPDATE RETURNING * id", row.get::<_, i64>("id"), 2)?;
+    ensure_eq("extended UPDATE RETURNING * n", row.get::<_, i64>("n"), 99)?;
+    ensure_eq(
+        "extended UPDATE RETURNING * label",
+        row.get::<_, String>("label"),
+        "changed".to_string(),
+    )?;
+
+    let none = h
+        .lake
+        .query(
+            "UPDATE update_returning SET n = 0 WHERE id = -1 RETURNING id",
+            &[],
+        )
+        .await
+        .context("zero-match UPDATE ... RETURNING")?;
+    ensure_eq("zero-match UPDATE RETURNING rows", none.len(), 0)?;
+
+    // The reference server sees the same final relation.
+    h.reference
+        .simple_query("UPDATE update_returning SET n = n + 1 WHERE id = 1")
+        .await?;
+    h.reference
+        .simple_query(
+            "UPDATE update_returning SET n = 99, label = 'changed' WHERE id = 2",
+        )
+        .await?;
+    ensure_relation_parity(
+        h,
+        "SELECT id, n, label FROM update_returning ORDER BY id",
+        "UPDATE RETURNING parity",
+    )
+    .await?;
+    eprintln!("PASS case=update-returning simple=row extended=star zero=empty parity=ok");
+    Ok(())
+}
+
 async fn refused_updates_change_nothing(h: &Harness) -> Result<()> {
     // CDC configuration is two distinct effective shapes: an explicit change
     // column, and `use_cdc = true` resolving the declared default column.
@@ -1110,11 +1200,6 @@ async fn refused_updates_change_nothing(h: &Harness) -> Result<()> {
             "UPDATE update_ranges SET part = 2 WHERE part = 0 AND id = 1",
             FEATURE_NOT_SUPPORTED,
             "range partition column change",
-        ),
-        (
-            "UPDATE update_counters SET n = 1 WHERE id = 1 RETURNING id",
-            FEATURE_NOT_SUPPORTED,
-            "RETURNING",
         ),
         (
             "UPDATE update_counters SET n = s.a FROM update_swap s \

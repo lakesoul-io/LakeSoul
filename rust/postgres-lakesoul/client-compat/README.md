@@ -31,9 +31,10 @@ The suite asserts **explicit refusal** for currently unsupported paths:
 
 Named cursors are forward-only and non-holdable. `WITH HOLD`, `SCROLL`, binary
 cursors and backward fetches are explicitly refused instead of being silently
-downgraded. `INSERT ... RETURNING` currently covers `INSERT ... VALUES` with
-`*`, column references and aliases; expressions, `INSERT ... SELECT`,
-`ON CONFLICT` and `UPDATE ... RETURNING` remain explicit `0A000` gaps.
+downgraded. `INSERT ... RETURNING` covers `INSERT ... VALUES` and
+`INSERT ... SELECT`, and `UPDATE ... RETURNING` covers the new rows, with `*`,
+column references and aliases; expressions and `ON CONFLICT ... RETURNING`
+remain explicit `0A000` gaps.
 
 If one of these starts working, the test fails and the compatibility contract
 must be updated rather than silently widening the claim.
@@ -93,7 +94,8 @@ recorded gap. The tests already cover:
   column list, one-commit atomicity, transaction rollback, driver-side
   encoders (`copy_from`, `write_row`, `CopyManager.copyIn`/`copyOut`), psql
   `\copy TO` and CopyFail aborts;
-- `INSERT ... VALUES ... RETURNING` for `*`, column references and aliases, including SQLAlchemy Core;
+- `INSERT ... VALUES ... RETURNING`, `INSERT ... SELECT ... RETURNING` and
+  `UPDATE ... RETURNING` for `*`, column references and aliases, including SQLAlchemy Core;
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.

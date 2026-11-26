@@ -98,13 +98,18 @@ general upserts in autocommit statements.
 | `42601` | Source and target columns do not line up |
 | `42804` | An expression is not assignment-castable to the target column |
 | `22P02` | A string literal does not convert to the target type |
-| `0A000` | `RETURNING` with `ON CONFLICT` or a non-`VALUES` source, `ON CONFLICT` on a range-partitioned or CDC table, an assignment list that misses a non-key column, or a general `DO UPDATE` inside a transaction block |
+| `0A000` | `RETURNING` with `ON CONFLICT`, a `RETURNING` expression, `ON CONFLICT` on a range-partitioned or CDC table, an assignment list that misses a non-key column, or a general `DO UPDATE` inside a transaction block |
 
-`INSERT ... VALUES ... RETURNING` returns the inserted rows. `RETURNING *`,
-column references and column aliases are supported; expressions, `INSERT ...
-SELECT ... RETURNING`, `ON CONFLICT ... RETURNING` and `UPDATE ... RETURNING`
-are not supported yet. `RETURNING` on foreign and external-file tables is also
-refused.
+`INSERT ... VALUES ... RETURNING`, `INSERT ... SELECT ... RETURNING` and
+`UPDATE ... RETURNING` return the rows the write consumes. `RETURNING *`,
+column references and column aliases are supported; expressions and
+`ON CONFLICT ... RETURNING` are not supported yet. `RETURNING` on foreign and
+external-file tables is also refused. A prepared write whose parameters appear
+in a `SELECT` source or an `UPDATE` assignment must give them explicit types
+(`$1::integer`) or use the driver's typed-prepare API; only `INSERT ... VALUES`
+infers parameter types from the target columns. A volatile source expression
+would be evaluated twice (once for the returned rows, once for the write) and
+is therefore refused.
 
 ## Index maintenance
 

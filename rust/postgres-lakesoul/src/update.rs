@@ -25,11 +25,12 @@
 //! scan, so an empty table or `WHERE false` does not slip through), tables
 //! without a primary key, `appendOnly` tables, tables with a non-overwrite
 //! merge operator, assignments to a primary-key or range-partition column,
-//! `RETURNING`, `UPDATE ... FROM`, and a multi-statement simple-query batch.
-//! Inside a transaction block an `UPDATE` is staged and published by `COMMIT`.
-//! `UPDATE ... RETURNING` has no row
-//! stream, and changing a key would leave the old row behind without a delete
-//! path.
+//! `UPDATE ... FROM`, and a multi-statement simple-query batch. Inside a
+//! transaction block an `UPDATE` is staged and published by `COMMIT`.
+//! `UPDATE ... RETURNING` returns the new rows projected from the same
+//! read-modify-write plan the sink commits (columns and `*`, not expressions);
+//! changing a key is still refused because it would leave the old row behind
+//! without a delete path.
 
 use datafusion::common::ParamValues;
 use datafusion::datasource::source_as_provider;
@@ -42,6 +43,7 @@ use datafusion_postgres::QueryHook;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire::api::ClientInfo;
+use datafusion_postgres::pgwire::api::portal::Format;
 use datafusion_postgres::pgwire::api::results::{Response, Tag};
 use datafusion_postgres::pgwire::error::{PgWireError, PgWireResult};
 
@@ -51,7 +53,9 @@ use lakesoul_datafusion::planner::update::{
 };
 
 use crate::insert::{
-    insert_error, request_context, rows_affected, target_reference, user_error,
+    ReturnedRows, ReturningSpec, carry_parameter_types, current_result_format,
+    insert_error, request_context, returning_projection_from, returning_response_tagged,
+    returning_rows_from, rows_affected, target_reference, user_error,
 };
 
 /// SQLSTATE `undefined_table` (a prepared statement's target identity is gone).
@@ -73,7 +77,15 @@ impl QueryHook for UpdateStatementHook {
                     let (status, database) = request_context(client)?;
                     crate::insert::reject_transaction(status, session_context, "UPDATE")?;
                     let planned = prepare(update, session_context, &database).await?;
-                    execute(&planned, None, session_context).await
+                    let returning = returning_rows(
+                        update,
+                        &planned,
+                        None,
+                        &Format::UnifiedText,
+                        session_context,
+                    )
+                    .await?;
+                    execute(&planned, None, session_context, returning).await
                 }
                 .await,
             )
@@ -101,7 +113,19 @@ impl QueryHook for UpdateStatementHook {
                         SnapshotMode::PlanOnly,
                     )
                     .await?;
-                    Ok(planned.plan)
+                    // Describe must advertise the RETURNING fields, like an
+                    // INSERT with RETURNING; Execute re-plans with a captured
+                    // snapshot and produces the rows.
+                    if let (Some(items), Some((input, target_schema))) =
+                        (update.returning.as_deref(), planned.returning())
+                    {
+                        let spec = ReturningSpec::new(items, target_schema)?;
+                        let projection =
+                            returning_projection_from(input, target_schema, &spec)?;
+                        carry_parameter_types(&planned.plan, projection)
+                    } else {
+                        Ok(planned.plan)
+                    }
                 }
                 .await,
             )
@@ -147,7 +171,17 @@ impl QueryHook for UpdateStatementHook {
                         SnapshotMode::Capture,
                     )
                     .await?;
-                    execute(&planned, Some(params), session_context).await
+                    // Evaluate RETURNING against the same pinned snapshot the
+                    // write uses, before the write commits.
+                    let returning = returning_rows(
+                        update,
+                        &planned,
+                        Some(params),
+                        &current_result_format(client),
+                        session_context,
+                    )
+                    .await?;
+                    execute(&planned, Some(params), session_context, returning).await
                 }
                 .await,
             )
@@ -210,10 +244,32 @@ fn rewrite_update_literals(
     }
 }
 
+/// Build the UPDATE RETURNING rows from the planner's full-new-row
+/// projection. The write and this projection share the captured snapshot, so
+/// the returned values are the ones the sink consumes on a successful commit.
+async fn returning_rows(
+    update: &Update,
+    planned: &PlannedUpdate,
+    params: Option<&ParamValues>,
+    format: &Format,
+    session_context: &SessionContext,
+) -> PgWireResult<Option<ReturnedRows>> {
+    let (Some(items), Some((input, target_schema))) =
+        (update.returning.as_deref(), planned.returning())
+    else {
+        return Ok(None);
+    };
+    let spec = ReturningSpec::new(items, target_schema)?;
+    returning_rows_from(input, target_schema, &spec, params, format, session_context)
+        .await
+        .map(Some)
+}
+
 async fn execute(
     planned: &PlannedUpdate,
     params: Option<&ParamValues>,
     session_context: &SessionContext,
+    returning: Option<ReturnedRows>,
 ) -> PgWireResult<Response> {
     let plan = match params {
         Some(params) => planned.plan.clone().replace_params_with_values(params),
@@ -227,11 +283,17 @@ async fn execute(
         .await
         .map_err(update_error)?;
     let batches = dataframe.collect().await.map_err(update_error)?;
-    Ok(Response::Execution(
-        // PostgreSQL's tag is `UPDATE <rows>`; the `0` oid field belongs to
-        // INSERT only.
-        Tag::new("UPDATE").with_rows(rows_affected(&batches)?),
-    ))
+    let rows = rows_affected(&batches)?;
+    match returning {
+        Some((fields, batches)) => {
+            returning_response_tagged(fields, batches, format!("UPDATE {rows}"))
+        }
+        None => Ok(Response::Execution(
+            // PostgreSQL's tag is `UPDATE <rows>`; the `0` oid field belongs
+            // to INSERT only.
+            Tag::new("UPDATE").with_rows(rows),
+        )),
+    }
 }
 
 /// Map execution failures: a value that failed to convert at runtime is

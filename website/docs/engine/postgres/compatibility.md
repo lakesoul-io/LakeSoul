@@ -28,7 +28,7 @@ covered today.
 | --- | --- |
 | Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
 | DDL | `CREATE DATABASE [IF NOT EXISTS]` for LakeSoul namespaces, `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` schema evolution (add/widen columns, `SET`/`RESET` supported options), `CREATE INDEX` for vector/text declarations, `REINDEX TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` |
-| Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `COPY ... FROM STDIN` (TEXT, CSV and binary) and `COPY ... TO STDOUT` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstone, partition clear or partition rewrite) and `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
+| Writes | `INSERT ... VALUES` and `INSERT ... SELECT` (both with `RETURNING *`/column references), `COPY ... FROM STDIN` (TEXT, CSV and binary) and `COPY ... TO STDOUT` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstone, partition clear or partition rewrite) and `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
 | Catalog | `pg_catalog`, `information_schema`, `psql \d`/`\dt`/`\l`/`\dn`, `pg_cursors`, `pg_settings`, `pg_roles`, `current_database()`, `current_user`/`session_user`, `to_regtype`, `current_setting`/`set_config`, SQLAlchemy reflection through the `psycopg2` dialect |
@@ -107,8 +107,8 @@ The current baseline passes the core Python and JDBC workflows, including psql
 `\d`, `bytea` round-trips and SQLAlchemy reflection through the `psycopg2`
 dialect. Named cursors are forward-only and non-holdable; `WITH HOLD`,
 `SCROLL` and backward fetches are explicitly refused. Known gaps are kept
-visible rather than hidden: `RETURNING` for `INSERT ... SELECT`/`ON CONFLICT`/
-`UPDATE`, and `pg_dump --data-only` (it opens a REPEATABLE READ transaction and
+visible rather than hidden: `RETURNING` for `ON CONFLICT` and `RETURNING`
+expressions, and `pg_dump --data-only` (it opens a REPEATABLE READ transaction and
 uses `OPERATOR(pg_catalog.=)` syntax this parser does not accept). Numeric
 `to_char` patterns are not
 implemented and fail explicitly; selecting `current_user` and `session_user`

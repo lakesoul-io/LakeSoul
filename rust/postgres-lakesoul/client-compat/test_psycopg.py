@@ -817,6 +817,36 @@ def test_insert_returning(driver, connector, table_factory):
             assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
 
 
+def test_returning_from_select_and_update(driver, connector, table_factory):
+    """INSERT ... SELECT and UPDATE return the new rows to real drivers."""
+    table = table_factory(
+        "id bigint primary key, name text, n integer", "client_returning_select"
+    )
+    source = table_factory("id bigint, name text, n integer", "client_returning_src")
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"INSERT INTO {source} (id, name, n) VALUES (%s, %s, %s), (%s, %s, %s)",
+                (1, "a", 10, 2, None, None),
+            )
+            cursor.execute(
+                f"INSERT INTO {table} (id, name, n) "
+                f"SELECT id, name, n FROM {source} RETURNING id, name, n"
+            )
+            assert rows(cursor) == [(1, "a", 10), (2, None, None)]
+
+            cursor.execute(
+                f"UPDATE {table} SET n = %s WHERE id = %s RETURNING id, n, name",
+                (99, 1),
+            )
+            assert rows(cursor) == [(1, 99, "a")]
+            cursor.execute(
+                f"UPDATE {table} SET n = %s WHERE id = %s RETURNING *",
+                (0, -1),
+            )
+            assert rows(cursor) == []
+
+
 def test_insert_returning_unsupported_forms(driver, connector, table_factory):
     table = table_factory("id bigint primary key, name text", "client_returning_gap")
     with closing(connector(driver)) as connection:
@@ -830,10 +860,6 @@ def test_insert_returning_unsupported_forms(driver, connector, table_factory):
                 (
                     f"INSERT INTO {table} (id, name) VALUES (%s, %s) RETURNING id + 1",
                     (2, "b"),
-                ),
-                (
-                    f"INSERT INTO {table} (id, name) SELECT 3, 'c' RETURNING id",
-                    (),
                 ),
             ]:
                 with pytest.raises(Exception) as caught:
