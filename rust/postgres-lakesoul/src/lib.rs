@@ -50,6 +50,7 @@ mod index_runner;
 mod insert;
 mod ivm;
 mod jobs;
+mod json_insert;
 mod limits;
 mod pg_compat;
 mod pg_numeric;

@@ -15,6 +15,7 @@ that ordinary PostgreSQL driver workflows can execute.
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | `test_types.py` | psycopg2 + psycopg3 semantic types: `uuid`, `uuid[]`, `money`, `numeric(60,10)`/`numeric(76,0)`, `varchar(n)`/`char(n)`, `time`/`timestamp(p)`/`timestamptz`, arrays of int/text/numeric/varchar/money, OIDs and `pg_attribute` metadata, plus explicit refusals |
+| `test_batch_insert.py` | the vector.dev sink shape `INSERT INTO t SELECT * FROM jsonb_populate_recordset(NULL::t, $1)` (plain, `DO NOTHING`, `DO UPDATE`, NULL values) and large multi-row `VALUES`, through both drivers; `BEGIN … COMMIT` folds several JSON inserts into one metadata commit |
 | `test_pgvector.py` | pgvector type discovery, `Vector` parameters and `<->`/`<#>`/`<=>` distance, vector column round trip, `format_type`, SQLAlchemy `Vector` reflection/select, and `CREATE TABLE`/`CREATE INDEX` DDL (including `vector_index_columns` declarations, refused index forms and SQLAlchemy index creation) |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT; semantic types and `ParameterMetaData` in `JdbcTypeSmoke`, pgvector type/query and `CREATE TABLE`/`CREATE INDEX` DDL via `com.pgvector:pgvector` in `JdbcVectorSmoke` |
 
@@ -95,6 +96,46 @@ recorded gap. The tests already cover:
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.
+
+## High-volume insert guidance
+
+For log/iot ingestion, send rows in batches rather than one statement per row:
+
+- The JSONB `jsonb_populate_recordset` shape used by vector.dev's PostgreSQL
+  sink is planned by a dedicated fast path: the array is decoded into one
+  `VALUES` batch, and the client is acknowledged only after publication.
+  `DO NOTHING` and `DO UPDATE` keep the same semantics as ordinary `INSERT`.
+- A large `INSERT INTO t VALUES (...), (...), …` follows the same path.
+- Several writes inside `BEGIN … COMMIT` are published by one
+  `commit_transaction`, which reduces metadata round trips.
+- Long-running writes should still rely on the Spark compaction service to
+  merge files across batches.
+
+File count is **not** one per batch: the write sink opens one writer per
+`(hash bucket, range partition descriptor)`. With `hash_bucket_num = 1` and no
+range columns a batch is one file; with four buckets it is four; a
+range-partitioned table writes one file per touched partition, and publishes
+one metadata commit per partition. The
+`insert_batch_file_count_contract` test pins these numbers for both the VALUES
+and JSON shapes.
+
+Single-frontend measurements (local disk, no workers, 1000 rows per statement):
+
+| Shape | Clients | Rows/s | p50 ACK | Result |
+| --- | --- | --- | --- | --- |
+| VALUES / JSON | 1 | 13k–16k | ~75–80 ms | all commits succeed |
+| VALUES / JSON | 8, same partition | 3k–6k | ~200–310 ms | most commits fail with `40001` |
+| VALUES, distinct partitions | 8 | ~18k | ~200 ms | all commits succeed |
+
+Concurrent writes to the same `(table, partition)` use optimistic CAS. A plain
+INSERT or UPDATE/DELETE still returns SQLSTATE `40001` on a stale version and
+must be retried by the client. An `ON CONFLICT DO UPDATE` (upsert) instead
+retries its commit inside the metadata client: it re-reads the current partition
+version and regenerates the snapshot without recomputing or re-uploading the
+rows. Compaction, append and merge commits that landed in between are rebased
+into the new snapshot; an intervening update or delete is reported as a
+conflict. A writer still needs to retry when the five-attempt budget is
+exhausted under heavy contention, or shard across partitions/tables.
 
 The remaining known gaps are:
 

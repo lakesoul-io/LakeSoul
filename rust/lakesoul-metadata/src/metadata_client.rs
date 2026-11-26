@@ -31,6 +31,15 @@ use crate::{
     create_connection, execute_insert, execute_query, execute_update,
 };
 
+/// Per-partition publication locks shared by all clones of one metadata
+/// client. A metadata commit claims one version slot `(table, partition,
+/// version)` per partition; without a lock, concurrent writers all plan the
+/// same slot and only one wins, so N writers need up to N retry rounds. Holding
+/// a lock across read-plan-publish serializes same-process writers on the
+/// slot they already contend on, so they succeed without burning the retry
+/// budget. Different partitions and tables still commit concurrently.
+type CommitLocks = Arc<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>>;
+
 /// The metadata client for the postgres database.
 pub struct MetaDataClient {
     /// The pooled client for the postgres database.
@@ -39,6 +48,8 @@ pub struct MetaDataClient {
     max_retry: usize,
     /// The encoded secret for the postgres database.
     secret: String,
+    /// Per-partition publication locks, shared by every clone.
+    commit_locks: CommitLocks,
 }
 
 impl Clone for MetaDataClient {
@@ -47,6 +58,7 @@ impl Clone for MetaDataClient {
             client: self.client.clone(),
             max_retry: self.max_retry,
             secret: self.secret.clone(),
+            commit_locks: Arc::clone(&self.commit_locks),
         }
     }
 }
@@ -940,6 +952,7 @@ impl MetaDataClient {
             client: Arc::new(Mutex::new(pooled)),
             max_retry: MAX_COMMIT_ATTEMPTS,
             secret: String::new(),
+            commit_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -957,6 +970,7 @@ impl MetaDataClient {
             client,
             max_retry,
             secret,
+            commit_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -966,6 +980,7 @@ impl MetaDataClient {
             client: Arc::new(Mutex::new(self.client.lock().await.primary_only())),
             max_retry: self.max_retry,
             secret: self.secret.clone(),
+            commit_locks: Arc::clone(&self.commit_locks),
         }
     }
 
@@ -1413,9 +1428,50 @@ impl MetaDataClient {
         meta_info: MetaInfo,
         commit_op: CommitOp,
     ) -> Result<CommitOutcome> {
+        self.commit_data_inner(meta_info, commit_op, false).await
+    }
+
+    /// `reject_rewrite_conflicts` is set only by the upsert publication: a
+    /// full-row replacement computed from a stale snapshot must not be
+    /// published over an intervening update/delete. Other MergeCommit callers
+    /// (IVM rebuilds, SDK hash-keyed appends) treat merge as an append and
+    /// legitimately rebase over those ops.
+    async fn commit_data_inner(
+        &self,
+        meta_info: MetaInfo,
+        commit_op: CommitOp,
+        reject_rewrite_conflicts: bool,
+    ) -> Result<CommitOutcome> {
         let table_info = meta_info.table_info.ok_or(LakeSoulMetaDataError::Internal(
             "table info missing".to_string(),
         ))?;
+
+        // Serialize same-process writers that would otherwise claim the same
+        // `(table, partition, version)` slot. Acquire in sorted order so a
+        // multi-partition commit cannot deadlock against another one that
+        // names the same partitions in a different order. Guards live until
+        // the end of this call, covering the fresh read, the plan and every
+        // publication attempt. Cross-process writers still use the CAS retry.
+        let partition_desc_list = meta_info
+            .list_partition
+            .iter()
+            .map(|partition_info| partition_info.partition_desc.clone())
+            .collect::<Vec<_>>();
+        let mut lock_keys = partition_desc_list
+            .iter()
+            .map(|desc| format!("{}|{}", table_info.table_id, desc))
+            .collect::<Vec<_>>();
+        lock_keys.sort();
+        lock_keys.dedup();
+        let mut guards = Vec::with_capacity(lock_keys.len());
+        for key in lock_keys {
+            let mutex = {
+                let mut locks =
+                    self.commit_locks.lock().unwrap_or_else(|p| p.into_inner());
+                Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
+            };
+            guards.push(mutex.lock_owned().await);
+        }
 
         // Table metadata mutations are part of the commit contract and are
         // applied identically to the JVM coordinator (`DBManager.commitData`).
@@ -1435,11 +1491,6 @@ impl MetaDataClient {
             .get_table_domain(table_info.table_id.as_str())
             .await?
             .domain;
-        let partition_desc_list = meta_info
-            .list_partition
-            .iter()
-            .map(|partition_info| partition_info.partition_desc.clone())
-            .collect::<Vec<String>>();
         let read_partition_map = meta_info
             .read_partition_info
             .iter()
@@ -1505,6 +1556,7 @@ impl MetaDataClient {
                     &read_partition_map,
                     &cur_map,
                     &mut planned,
+                    reject_rewrite_conflicts,
                 )
                 .await
             {
@@ -1611,6 +1663,7 @@ impl MetaDataClient {
         read_partition_map: &HashMap<String, PartitionInfo>,
         cur_map: &HashMap<String, PartitionInfo>,
         planned: &mut HashMap<String, PartitionInfo>,
+        reject_rewrite_conflicts: bool,
     ) -> Result<Vec<PartitionInfo>> {
         match commit_op {
             CommitOp::AppendCommit | CommitOp::MergeCommit => {
@@ -1640,10 +1693,45 @@ impl MetaDataClient {
                         },
                     };
 
-                    // Append and merge extend the current head snapshot
-                    // unconditionally, exactly like the JDBC coordinator: the
-                    // writer layer (Spark/Flink) owns table-type restrictions
-                    // such as rejecting a second append on a hash table.
+                    // A merge rebases over commits the caller could not see:
+                    // compaction, append or another merge only add/rewrite
+                    // files and are folded into the current head. An update or
+                    // delete in between replaced the file set this upsert's
+                    // rows were computed against, so reusing it would
+                    // resurrect stale rows; report a conflict instead.
+                    if commit_op == CommitOp::MergeCommit && reject_rewrite_conflicts {
+                        let read_version = read_partition_map
+                            .get(partition_desc)
+                            .map(|info| i64::from(info.version))
+                            .unwrap_or(0);
+                        if read_version < cur_version {
+                            let middle_ops = self
+                                .get_commit_ops_between_versions(
+                                    &table_info.table_id,
+                                    partition_desc,
+                                    read_version + 1,
+                                    cur_version,
+                                )
+                                .await?;
+                            if middle_ops.contains(&CommitOp::UpdateCommit)
+                                || middle_ops.contains(&CommitOp::DeleteCommit)
+                            {
+                                return Err(LakeSoulMetaDataError::CommitConflict(
+                                    format!(
+                                        "merge commit conflicts with a concurrent update or \
+                                     delete on table {} partition {} (read version \
+                                     {read_version}, current version {cur_version}, middle \
+                                     commits {middle_ops:?})",
+                                        table_info.table_id, partition_desc
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    // Append and merge extend the current head snapshot, exactly
+                    // like the JDBC coordinator: the writer layer (Spark/Flink)
+                    // owns table-type restrictions such as rejecting a second
+                    // append on a hash table.
                     cur_partition_info
                         .snapshot
                         .extend_from_slice(&partition_info.snapshot);
@@ -2066,6 +2154,84 @@ impl MetaDataClient {
     ) -> Result<Vec<String>> {
         self.commit_append_files(table_info, expected_partitions, files, true)
             .await
+    }
+
+    /// Publish a hash-keyed upsert's rewritten files, rebasing on a stale
+    /// partition version when the commits in between are compatible.
+    ///
+    /// This is the commit-only retry of `INSERT ... ON CONFLICT DO UPDATE`.
+    /// The rows were computed from `expected_partitions`; nothing is recomputed
+    /// or re-uploaded here. Each attempt of [`Self::commit_data`] re-reads the
+    /// current partition heads and rebuilds the snapshot from them:
+    /// compaction, append and merge commits that landed in between are folded
+    /// in (`head.snapshot ++ submitted`), while an intervening update or
+    /// delete replaces the file set the rows were computed against and is
+    /// reported as a conflict instead of silently resurrecting old rows.
+    ///
+    /// Commit ids are generated once and staged before the first attempt, so a
+    /// publication that raced with another writer is idempotently replayed
+    /// rather than minting a second version. Identity is verified against the
+    /// primary before staging, like the other read-modify-write commits.
+    pub async fn commit_merge_with_retry(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.verify_table_definition(table_info).await?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
+            .as_millis() as i64;
+        let domain = self.get_table_domain(&table_info.table_id).await?.domain;
+
+        let data_commits = data_commit_info_list_from_files(
+            table_info,
+            files,
+            CommitOp::MergeCommit,
+            timestamp,
+            &domain,
+        );
+        let commit_ids = data_commits
+            .iter()
+            .filter_map(|info| info.commit_id)
+            .map(|id| uuid::Uuid::from_u64_pair(id.high, id.low).to_string())
+            .collect::<Vec<_>>();
+        let list_partition = data_commits
+            .iter()
+            .map(|data_commit| PartitionInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: data_commit.partition_desc.clone(),
+                commit_op: CommitOp::MergeCommit.into(),
+                snapshot: data_commit.commit_id.into_iter().collect(),
+                domain: domain.clone(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        self.transaction_insert_data_commit_info(data_commits)
+            .await?;
+        match self
+            .commit_data_inner(
+                MetaInfo {
+                    table_info: Some(table_info.clone()),
+                    list_partition,
+                    read_partition_info: expected_partitions.to_vec(),
+                },
+                CommitOp::MergeCommit,
+                true,
+            )
+            .await?
+        {
+            CommitOutcome::Committed | CommitOutcome::AlreadyCommitted => Ok(commit_ids),
+            CommitOutcome::Superseded => Err(LakeSoulMetaDataError::CommitConflict(
+                "the merge was superseded by a concurrent update; retry the statement"
+                    .to_string(),
+            )),
+        }
     }
 
     /// Replace the current file set of the touched partitions with `files`.

@@ -124,6 +124,17 @@ impl QueryHook for InsertStatementHook {
         Some(
             async {
                 let (status, database) = request_context(client)?;
+                if let Some(shape) = crate::json_insert::detect(insert) {
+                    let json = crate::json_insert::json_from_params(&shape, None)?;
+                    return crate::json_insert::execute(
+                        insert,
+                        &json,
+                        session_context,
+                        status,
+                        &database,
+                    )
+                    .await;
+                }
                 if is_do_update(insert) {
                     run_upsert(insert, session_context, status, &database).await
                 } else {
@@ -144,6 +155,15 @@ impl QueryHook for InsertStatementHook {
         Some(
             async {
                 let (status, database) = request_context(client)?;
+                if crate::json_insert::detect(insert).is_some() {
+                    return crate::json_insert::parse_plan(
+                        insert,
+                        session_context,
+                        status,
+                        &database,
+                    )
+                    .await;
+                }
                 if is_do_update(insert) {
                     reject_transaction(status, session_context, "INSERT")?;
                     let planned = prepare_upsert(
@@ -178,6 +198,18 @@ impl QueryHook for InsertStatementHook {
         Some(
             async {
                 let (status, database) = request_context(client)?;
+                if let Some(shape) = crate::json_insert::detect(insert) {
+                    let json =
+                        crate::json_insert::json_from_params(&shape, Some(params))?;
+                    return crate::json_insert::execute(
+                        insert,
+                        &json,
+                        session_context,
+                        status,
+                        &database,
+                    )
+                    .await;
+                }
                 if is_do_update(insert) {
                     reject_transaction(status, session_context, "INSERT")?;
                     // The Parse-time plan names the table the client prepared.
@@ -269,7 +301,7 @@ pub(crate) fn extract(statement: &Statement) -> Option<&Insert> {
 }
 
 /// Whether the statement is the general upsert path (`DO UPDATE`).
-fn is_do_update(insert: &Insert) -> bool {
+pub(crate) fn is_do_update(insert: &Insert) -> bool {
     matches!(
         &insert.on,
         Some(OnInsert::OnConflict(conflict))
@@ -277,7 +309,7 @@ fn is_do_update(insert: &Insert) -> bool {
     )
 }
 
-async fn prepare_upsert(
+pub(crate) async fn prepare_upsert(
     insert: &Insert,
     session_context: &SessionContext,
     database: &str,
@@ -294,7 +326,7 @@ async fn prepare_upsert(
         .map_err(upsert_plan_error)
 }
 
-async fn run_upsert(
+pub(crate) async fn run_upsert(
     insert: &Insert,
     session_context: &SessionContext,
     status: TransactionStatus,
@@ -1325,6 +1357,19 @@ pub(crate) fn split_partitions(partitions: &str) -> (Vec<String>, Vec<String>) {
 
 /// Plan the checked statement: `ON CONFLICT` is already dropped and `DO
 /// UPDATE` already rewritten to a replace.
+/// Plan a rewritten INSERT through the same ACL/status/type checks the wire
+/// path uses, without the ON CONFLICT / RETURNING rewriting (the JSON fast
+/// path already produced a plain VALUES statement).
+pub(crate) async fn plan_checked(
+    insert: &Insert,
+    session_context: &SessionContext,
+    status: TransactionStatus,
+    database: &str,
+) -> PgWireResult<LogicalPlan> {
+    let target = prepare(insert, session_context, status, database).await?;
+    plan_target(&target, session_context).await
+}
+
 async fn plan_target(
     target: &Target,
     session_context: &SessionContext,
@@ -1505,7 +1550,7 @@ pub(crate) async fn execute_copy_write(
     rows_affected(&batches)
 }
 
-async fn run(
+pub(crate) async fn run(
     insert: &Insert,
     session_context: &SessionContext,
     status: TransactionStatus,

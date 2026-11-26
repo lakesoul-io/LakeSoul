@@ -42,6 +42,176 @@ async fn insert_contract() -> Result<()> {
     support::run_suite(|h| Box::pin(async move { insert_scenarios(h).await })).await
 }
 
+/// Concurrent upserts to distinct keys rebase their commit on the partition
+/// head instead of failing with `40001`.
+///
+/// The rows are computed once from the captured snapshot. A compatible commit
+/// that lands in between (another append or merge) is folded into the new
+/// snapshot inside the metadata commit, with no statement re-execution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_rebases_concurrent_commits() -> Result<()> {
+    support::run_suite(|h| Box::pin(async move { upsert_rebase(h).await })).await
+}
+
+async fn upsert_rebase(h: &Harness) -> Result<()> {
+    let table = "upsert_rebase";
+    simple_rows(
+        h,
+        &format!("CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY, val TEXT)"),
+    )
+    .await?;
+    simple_rows(h, &format!("INSERT INTO {table} VALUES (0, 'base')")).await?;
+
+    // More clients than the five-attempt retry budget: without per-partition
+    // publication locking most of these would exhaust the budget with 40001.
+    // Twelve stays under the harness's 16-connection limit (two are held by
+    // the suite itself).
+    let clients = futures::future::try_join_all((0..12).map(|_| h.connect_lake()))
+        .await
+        .context("connect twelve upsert clients")?;
+    let sql = format!(
+        "INSERT INTO {table} VALUES ($1, $2) \
+         ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val"
+    );
+    let mut tasks = Vec::new();
+    for (index, client) in clients.iter().enumerate() {
+        let id = (index + 1) as i64;
+        let sql = sql.clone();
+        tasks.push(async move {
+            client
+                .query(&sql, &[&id, &format!("c{index}")])
+                .await
+                .map(|_| ())
+        });
+    }
+    for result in futures::future::join_all(tasks).await {
+        result.with_context(|| "concurrent upsert rebased on the partition head")?;
+    }
+
+    ensure_eq(
+        "all upserted keys are visible",
+        lake_i64(h, &format!("SELECT count(*) FROM {table}")).await?,
+        13,
+    )?;
+    for index in 0..12 {
+        ensure_eq(
+            &format!("upserted key {}", index + 1),
+            lake_text(
+                h,
+                &format!("SELECT val FROM {table} WHERE id = {}", index + 1),
+            )
+            .await?,
+            Some(format!("c{index}")),
+        )?;
+    }
+    Ok(())
+}
+
+/// One INSERT batch is one publication, but not necessarily one metadata row
+/// or one data file.
+///
+/// The write sink opens one writer per (input partition/bucket, range partition
+/// descriptor). With `hash_bucket_num = 1` and no range columns a batch is one
+/// file; with four hash buckets it is four, and a range-partitioned table gets
+/// one file per touched partition. The vector.dev JSON rewrite follows the same
+/// planner, so it must have the same shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_batch_file_count_contract() -> Result<()> {
+    support::run_suite(|h| Box::pin(async move { insert_batch_file_counts(h).await }))
+        .await
+}
+
+async fn insert_batch_file_counts(h: &Harness) -> Result<()> {
+    for (table, options, is_range, expected_files) in [
+        ("pg_files_bucket1", "WITH (hash_bucket_num = 1)", false, 1),
+        ("pg_files_bucket4", "WITH (hash_bucket_num = 4)", false, 4),
+        (
+            "pg_files_range4",
+            "PARTITIONED BY (part) WITH (hash_bucket_num = 1)",
+            true,
+            4,
+        ),
+    ] {
+        let columns = if is_range {
+            "id bigint primary key, part int, val text"
+        } else {
+            "id bigint primary key, val text"
+        };
+        h.lake
+            .simple_query(&format!("DROP TABLE IF EXISTS {table}"))
+            .await?;
+        h.lake
+            .simple_query(&format!("CREATE TABLE {table} ({columns}) {options}"))
+            .await?;
+        let tid = table_id(h, table).await?;
+
+        for (shape, offset) in [("values", 0), ("json", 1000)] {
+            let ids = offset + 1..=offset + 200;
+            let sql = if shape == "values" {
+                let rows = ids
+                    .map(|i| {
+                        if is_range {
+                            format!("({i}, {}, 'v{i}')", i % 4)
+                        } else {
+                            format!("({i}, 'v{i}')")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("INSERT INTO {table} VALUES {rows}")
+            } else {
+                let rows = ids
+                    .map(|i| {
+                        if is_range {
+                            format!("{{\"id\":{i},\"part\":{},\"val\":\"v{i}\"}}", i % 4)
+                        } else {
+                            format!("{{\"id\":{i},\"val\":\"v{i}\"}}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "INSERT INTO {table} SELECT * FROM jsonb_populate_recordset(NULL::{table}, '[{rows}]')"
+                )
+            };
+            ensure_eq(
+                &format!("{shape} row count on {table}"),
+                simple_rows(h, &sql).await?,
+                200,
+            )?;
+        }
+
+        // A range-partitioned INSERT publishes one metadata commit per touched
+        // partition, and each commit row lists all files of the statement.
+        // Count distinct commit ids and distinct paths.
+        let commit_ids: i64 = h
+            .reference
+            .query_one(
+                "SELECT count(DISTINCT commit_id) FROM public.data_commit_info WHERE table_id = $1",
+                &[&tid],
+            )
+            .await?
+            .get(0);
+        let files = commit_file_paths(h, &tid).await?;
+        let distinct_paths = files
+            .iter()
+            .map(|(_, path)| path.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        ensure_eq(
+            &format!("commit count on {table}"),
+            commit_ids,
+            if is_range { 8 } else { 2 },
+        )?;
+        ensure_eq(
+            &format!("files per INSERT on {table}"),
+            distinct_paths / 2,
+            expected_files,
+        )?;
+    }
+    Ok(())
+}
+
 /// The same statements, planned and executed by two real Flight workers.
 ///
 /// Local fallback is disabled for this harness, so a statement the distributed
