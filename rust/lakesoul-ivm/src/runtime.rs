@@ -4215,6 +4215,12 @@ pub(crate) fn project_batch_columns(
 /// tables (a different file format) and views with a consumer that needs the
 /// old row: a direct `SUM`/`COUNT` view or the target sink (a target partition
 /// move must delete the old partition's row).
+///
+/// When the full changelog is kept, the union is delete-first: merge-on-read
+/// keeps the last row for a key and a tombstone written last would hide the
+/// updated row. The union only fixes the plan order, so callers that build the
+/// two frames separately must finalize it with a `(key, rowKinds)` sort; see
+/// [`collapse_update_delta`] for a frame that is already ordered.
 pub(crate) async fn collapse_update_deletes(
     metadata: &IvmMetadata,
     context: &SessionContext,
@@ -4226,7 +4232,10 @@ pub(crate) async fn collapse_update_deletes(
         return Ok(inserts.union(deletes)?);
     }
     if metadata.has_changelog_consumer(&table.table_id).await? {
-        return Ok(inserts.union(deletes)?);
+        // Keep both rows of an update, with the tombstone first. The union
+        // alone does not serialize the two branches, so callers finalize with
+        // a (key, rowKinds) sort before writing.
+        return Ok(deletes.union(inserts)?);
     }
     let mut identity = table.primary_keys.clone();
     for column in table
@@ -4260,6 +4269,13 @@ pub(crate) async fn collapse_update_deletes(
 /// insert-only and must skip the extra distinct.  The frame order is not
 /// significant after the collapse: at most one row remains per physical
 /// identity (a partition move keeps its two rows in different partitions).
+///
+/// A table with a changelog consumer keeps both rows of an update, and their
+/// order matters: merge-on-read keeps the last row for a key and the logical
+/// reader hides a tombstone, so a delete written last would make the updated
+/// row disappear. The refresh SQL already orders the frame by
+/// `(keys, "rowKinds")` with `"delete" < "insert"`, so keep it intact instead of
+/// splitting it and unioning the two sides back (which loses that order).
 pub(crate) async fn collapse_update_delta(
     metadata: &IvmMetadata,
     context: &SessionContext,
@@ -4267,6 +4283,9 @@ pub(crate) async fn collapse_update_delta(
     frame: DataFrame,
 ) -> Result<DataFrame> {
     if table.primary_keys.is_empty() || table.file_format != internal_file_format() {
+        return Ok(frame);
+    }
+    if metadata.has_changelog_consumer(&table.table_id).await? {
         return Ok(frame);
     }
     let kinds = Expr::Column(Column::from_name(IVM_ROW_KINDS_COLUMN));
@@ -7445,5 +7464,146 @@ mod parse_aggregate_columns_test {
         .unwrap();
         assert!(columns.contains(&"v".to_string()), "{columns:?}");
         assert!(columns.contains(&"k".to_string()), "{columns:?}");
+    }
+}
+
+#[cfg(test)]
+mod collapse_update_tests {
+    use super::*;
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use datafusion::datasource::memory::MemTable;
+    use futures::StreamExt;
+    use tempfile::tempdir;
+
+    const EPOCH: i64 = 7;
+
+    fn delta_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("g", DataType::Utf8, false),
+            Field::new("sum_v", DataType::Int64, false),
+            Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+            Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+        ]))
+    }
+
+    /// One update of key `b`: delete(5) followed by insert(20), in that order.
+    async fn delta_frame(context: &SessionContext) -> DataFrame {
+        let schema = delta_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["b", "b"])),
+                Arc::new(Int64Array::from(vec![5, 20])),
+                Arc::new(StringArray::from(vec!["delete", "insert"])),
+                Arc::new(Int64Array::from(vec![EPOCH, EPOCH])),
+            ],
+        )
+        .unwrap();
+        let provider = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        context.register_table("delta", Arc::new(provider)).unwrap();
+        context.sql("select * from delta").await.unwrap()
+    }
+
+    async fn rows_in_order(frame: DataFrame) -> Vec<(String, i64, String, i64)> {
+        let mut stream = frame.execute_stream().await.unwrap();
+        let mut rows = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let keys = batch
+                .column(batch.schema().index_of("g").unwrap())
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let values = batch
+                .column(batch.schema().index_of("sum_v").unwrap())
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let kinds = batch
+                .column(batch.schema().index_of(IVM_ROW_KINDS_COLUMN).unwrap())
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let epochs = batch
+                .column(batch.schema().index_of(IVM_EPOCH_COLUMN).unwrap())
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..keys.len() {
+                rows.push((
+                    keys.value(row).to_string(),
+                    values.value(row),
+                    kinds.value(row).to_string(),
+                    epochs.value(row),
+                ));
+            }
+        }
+        rows
+    }
+
+    async fn create_mv(runtime: &IvmRuntime, dir: &tempfile::TempDir) -> IvmTable {
+        let name = format!("ivm_collapse_{}", uuid::Uuid::new_v4().simple());
+        runtime
+            .create_table(
+                IvmTableOptions::new(
+                    name.clone(),
+                    format!("file://{}", dir.path().join(name).display()),
+                    delta_schema(),
+                )
+                .with_primary_keys(vec!["g".to_string()]),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_changelog_consumer_keeps_delete_before_insert() {
+        let runtime = IvmRuntime::from_env().await.unwrap();
+        runtime.init_schema().await.unwrap();
+        let dir = tempdir().unwrap();
+        let mv = create_mv(&runtime, &dir).await;
+        // A registered sum_count view over the MV is a changelog consumer.
+        runtime
+            .metadata()
+            .upsert_view(
+                &mv.table_id,
+                &serde_json::json!({
+                    "kind": "sum_count",
+                    "source_table_id": mv.table_id,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let context = refresh_session();
+        let frame = delta_frame(&context).await;
+        let collapsed = collapse_update_delta(runtime.metadata(), &context, &mv, frame)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows_in_order(collapsed).await,
+            vec![
+                ("b".to_string(), 5, "delete".to_string(), EPOCH),
+                ("b".to_string(), 20, "insert".to_string(), EPOCH),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_consumer_the_delete_is_collapsed() {
+        let runtime = IvmRuntime::from_env().await.unwrap();
+        runtime.init_schema().await.unwrap();
+        let dir = tempdir().unwrap();
+        let mv = create_mv(&runtime, &dir).await;
+
+        let context = refresh_session();
+        let frame = delta_frame(&context).await;
+        let collapsed = collapse_update_delta(runtime.metadata(), &context, &mv, frame)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows_in_order(collapsed).await,
+            vec![("b".to_string(), 20, "insert".to_string(), EPOCH)]
+        );
     }
 }
