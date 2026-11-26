@@ -20,6 +20,7 @@ use datafusion::{
     logical_expr::LogicalPlanBuilder,
 };
 use datafusion_common::TableReference;
+use futures::future::BoxFuture;
 use helpers::{case_fold_table_name, create_io_config_builder_from_table_info};
 use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::file_format::LakeSoulFormatRegistry;
@@ -270,13 +271,14 @@ impl LakeSoulTable {
     /// A parallel snapshot creates several writers; passing one shared pool to
     /// all of them keeps their combined memory under a single process-wide
     /// limit instead of N independent 1 GiB limits.
-    pub async fn get_writer_with_memory_pool(
-        &self,
+    pub fn get_writer_with_memory_pool<'a>(
+        &'a self,
         object_store_options: SecretMap,
         memory_pool: Arc<dyn MemoryPool>,
-    ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
-        self.build_writer(object_store_options, Some(memory_pool))
-            .await
+    ) -> BoxFuture<'a, Result<Box<dyn AsyncBatchWriter + Send>>> {
+        let future: BoxFuture<'a, Result<Box<dyn AsyncBatchWriter + Send>>> =
+            Box::pin(self.build_writer(object_store_options, Some(memory_pool)));
+        future
     }
 
     async fn build_writer(

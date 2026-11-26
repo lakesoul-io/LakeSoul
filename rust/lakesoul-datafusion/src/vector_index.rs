@@ -27,6 +27,7 @@
 //! longer represents that cluster's contents.  [`rebuild_vector_index`]
 //! exposes the same operation explicitly.
 
+use futures::future::LocalBoxFuture;
 use lakesoul_common::misc::SecretMap;
 use object_store::ObjectStore;
 use object_store::ObjectStoreExt;
@@ -1086,7 +1087,27 @@ fn to_catalog_segments(
 /// with one the new vectors are appended as delta segments, and when any
 /// cluster has drifted past `max_delta_ratio` the whole shard is rebuilt
 /// from all of its active data files.
-pub async fn auto_build_vector_index(
+pub fn auto_build_vector_index<'a>(
+    configs: &'a [VectorIndexTableConfig],
+    primary_keys: &'a [String],
+    object_store_options: &'a HashMap<String, String>,
+    partition_files: &'a HashMap<String, (Vec<String>, u64)>,
+    all_active_files: Option<&'a [String]>,
+    catalog: &'a VectorCatalog,
+) -> LocalBoxFuture<'a, Result<usize>> {
+    let future: LocalBoxFuture<'a, Result<usize>> =
+        Box::pin(auto_build_vector_index_impl(
+            configs,
+            primary_keys,
+            object_store_options,
+            partition_files,
+            all_active_files,
+            catalog,
+        ));
+    future
+}
+
+async fn auto_build_vector_index_impl(
     configs: &[VectorIndexTableConfig],
     primary_keys: &[String],
     object_store_options: &HashMap<String, String>,
@@ -1316,7 +1337,24 @@ async fn drift_exceeds_threshold(
 ///
 /// Returns the number of rebuilt shards.  Fails loudly when any shard of a
 /// configured column fails.
-pub async fn rebuild_vector_index(
+pub fn rebuild_vector_index<'a>(
+    client: &'a lakesoul_metadata::MetaDataClient,
+    table_name: &'a str,
+    namespace: &'a str,
+    primary_keys: &'a [String],
+    object_store_options: SecretMap,
+) -> LocalBoxFuture<'a, Result<usize>> {
+    let future: LocalBoxFuture<'a, Result<usize>> = Box::pin(rebuild_vector_index_impl(
+        client,
+        table_name,
+        namespace,
+        primary_keys,
+        object_store_options,
+    ));
+    future
+}
+
+async fn rebuild_vector_index_impl(
     client: &lakesoul_metadata::MetaDataClient,
     table_name: &str,
     namespace: &str,

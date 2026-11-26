@@ -33,6 +33,8 @@ use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::ast::{
     ObjectName, ObjectNamePart, Query, Statement, TableObject, Visit, Visitor,
 };
+use futures::FutureExt;
+use futures::future::BoxFuture;
 
 use crate::error::Result;
 use crate::metadata::StateRole;
@@ -1177,19 +1179,24 @@ impl IvmSqlExecutor {
     }
 
     /// Execute one incremental statement.
-    pub async fn execute(&self, sql: &str) -> Result<IvmExecution> {
-        let started = std::time::Instant::now();
-        // Boxed: the statement future nests the refresh, the lakesoul-io
-        // reader and its moka file cache by value, which puts its layout just
-        // under rustc's default query depth limit (128). Without the box any
-        // caller awaiting `execute` overflows it.
-        let result = Box::pin(self.execute_inner(sql)).await;
-        let action = match &result {
-            Ok(execution) => execution.action.label(),
-            Err(_) => "error",
-        };
-        crate::observability::record_statement(action, started.elapsed());
-        result
+    ///
+    /// The returned future is erased at this API boundary: the statement
+    /// future nests the refresh, the lakesoul-io reader and its moka file
+    /// cache by value, so naming it in every caller puts that whole type into
+    /// each caller's state machine (and pushes its layout to rustc's query
+    /// depth limit).
+    pub fn execute<'a>(&'a self, sql: &'a str) -> BoxFuture<'a, Result<IvmExecution>> {
+        async move {
+            let started = std::time::Instant::now();
+            let result = self.execute_inner(sql).await;
+            let action = match &result {
+                Ok(execution) => execution.action.label(),
+                Err(_) => "error",
+            };
+            crate::observability::record_statement(action, started.elapsed());
+            result
+        }
+        .boxed()
     }
 
     async fn execute_inner(&self, sql: &str) -> Result<IvmExecution> {

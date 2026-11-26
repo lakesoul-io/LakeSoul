@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use datafusion::error::{DataFusionError, Result};
+use futures::future::LocalBoxFuture;
 use lakesoul_common::IndexKind;
 use lakesoul_common::index::pending_shard_files;
 use lakesoul_common::misc::SecretMap;
@@ -31,7 +32,17 @@ use crate::index::build::group_files_by_shard;
 /// The function is a no-op for tables without declared index columns, for
 /// shards whose commits carry no coverage information (legacy), and while
 /// another writer/index build holds the shard.
-pub async fn build_pending_indices(
+pub fn build_pending_indices<'a>(
+    client: MetaDataClientRef,
+    table_name: &'a str,
+    namespace: &'a str,
+) -> LocalBoxFuture<'a, Result<usize>> {
+    let future: LocalBoxFuture<'a, Result<usize>> =
+        Box::pin(build_pending_indices_impl(client, table_name, namespace));
+    future
+}
+
+async fn build_pending_indices_impl(
     client: MetaDataClientRef,
     table_name: &str,
     namespace: &str,
@@ -49,7 +60,23 @@ pub async fn build_pending_indices(
 /// session uses.  The background maintenance runner has no `SessionContext`,
 /// so it passes the server's `fs.s3a.*` options explicitly; without them an
 /// S3 table cannot resolve `fs.s3a.bucket` while building.
-pub async fn build_pending_indices_with_options(
+pub fn build_pending_indices_with_options<'a>(
+    client: MetaDataClientRef,
+    table_name: &'a str,
+    namespace: &'a str,
+    object_store_options: SecretMap,
+) -> LocalBoxFuture<'a, Result<usize>> {
+    let future: LocalBoxFuture<'a, Result<usize>> =
+        Box::pin(build_pending_indices_with_options_impl(
+            client,
+            table_name,
+            namespace,
+            object_store_options,
+        ));
+    future
+}
+
+async fn build_pending_indices_with_options_impl(
     client: MetaDataClientRef,
     table_name: &str,
     namespace: &str,

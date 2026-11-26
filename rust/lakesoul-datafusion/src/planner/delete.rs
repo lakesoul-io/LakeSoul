@@ -38,6 +38,7 @@ use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     BinaryOperator, Delete, Expr, FromTable, ObjectName, Statement, TableFactor, Value,
 };
+use futures::future::BoxFuture;
 use lakesoul_metadata_proto::entity::PartitionInfo;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
@@ -162,7 +163,18 @@ impl From<DataFusionError> for DeletePlanError {
 }
 
 /// Plan one `DELETE` statement.
-pub async fn plan_delete(
+pub fn plan_delete<'a>(
+    session: &'a SessionContext,
+    delete: &'a Delete,
+    table_ref: TableReference,
+    mode: SnapshotMode,
+) -> BoxFuture<'a, Result<PlannedDelete, DeletePlanError>> {
+    let future: BoxFuture<'a, Result<PlannedDelete, DeletePlanError>> =
+        Box::pin(plan_delete_impl(session, delete, table_ref, mode));
+    future
+}
+
+async fn plan_delete_impl(
     session: &SessionContext,
     delete: &Delete,
     table_ref: TableReference,

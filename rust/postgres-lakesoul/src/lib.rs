@@ -12,6 +12,7 @@ use clap::Parser;
 use datafusion_postgres::{
     ServerOptions, TcpKeepalive, auth::AuthManager, serve_with_handlers,
 };
+use futures::future::BoxFuture;
 use lakesoul_common::misc::{JiffTime, SecretMap};
 use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs, IvmArgs};
 use lakesoul_datafusion::session::{ExecutionMemoryArgs, IvmRefreshSessionFactory};
@@ -448,7 +449,12 @@ async fn start_subscription_supervisor(
     subscriptions
 }
 
-async fn main_inner(cli: Cli) -> Result<()> {
+fn main_inner(cli: Cli) -> BoxFuture<'static, Result<()>> {
+    let future: BoxFuture<'static, Result<()>> = Box::pin(main_inner_impl(cli));
+    future
+}
+
+async fn main_inner_impl(cli: Cli) -> Result<()> {
     // Installed first: constructing the session factory below starts the
     // catalog refresher, whose first refresh would otherwise run without a
     // subscriber and export its queries as parentless root traces.

@@ -42,9 +42,6 @@ jobs:
   verify-hash-consistency:
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
-      RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
     services:
       # Label used to access the service container
@@ -80,6 +77,8 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
+          cache: maven
+
       - name: Set up Python 3.9
         uses: actions/setup-python@v5
         with:
@@ -101,18 +100,11 @@ jobs:
         with:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
-      - name: Restore sccache
-        uses: actions/cache/restore@v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            sccache-gnu217-testfast-${{ runner.os }}-${{ github.job }}-
-            sccache-gnu217-testfast-${{ runner.os }}-
-
-      - uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.19.0"
+          workspaces: ". -> rust/target"
+          shared-key: "gnu217-testfast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:

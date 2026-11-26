@@ -54,6 +54,8 @@ jobs:
         with:
           java-version: "11"
           distribution: temurin
+          cache: maven
+
       - name: Validate synchronized versions
         run: python script/release.py check
       - name: Validate effective Maven coordinates
@@ -103,9 +105,6 @@ jobs:
     needs: validate-release
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
-      RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
       # Match the main Rust CI test cache. Release workflows only restore it.
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
@@ -158,18 +157,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
           command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
-      - name: Restore sccache
-        uses: actions/cache/restore@v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
-            sccache-host-testfast-${{ runner.os }}-
-
-      - uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.19.0"
+          workspaces: ". -> rust/target"
+          shared-key: "host-testfast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install PostgreSQL client
         run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
       - name: Initialize metadata database
@@ -368,6 +360,8 @@ jobs:
         with:
           java-version: "11"
           distribution: temurin
+          cache: maven
+
       - name: Install Gluten Maven dependencies
         run: |
           archive="$RUNNER_TEMP/gluten-maven-deps-1.6.0-spark35.tar.gz"
@@ -547,6 +541,8 @@ jobs:
         with:
           java-version: "11"
           distribution: temurin
+          cache: maven
+
       - name: Build Spark and Flink E2E artifacts
         run: >-
           mvn -q -B install -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12
@@ -740,6 +736,8 @@ jobs:
           server-password: MAVEN_PASSWORD
           gpg-private-key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
           gpg-passphrase: GPG_PASSPHRASE
+          cache: maven
+
       - name: Publish Core reactor except Presto
         env:
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}

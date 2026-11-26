@@ -46,6 +46,7 @@ use datafusion::sql::sqlparser::ast::{
     TableWithJoins, Value, WindowSpec, WindowType,
 };
 use datafusion::sql::sqlparser::ast::{VisitMut, VisitorMut};
+use futures::future::BoxFuture;
 use lakesoul_metadata_proto::entity::PartitionInfo;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
@@ -273,7 +274,18 @@ impl From<arrow::error::ArrowError> for UpsertPlanError {
 }
 
 /// Plan one `INSERT ... ON CONFLICT ... DO UPDATE`.
-pub async fn plan_upsert(
+pub fn plan_upsert<'a>(
+    session: &'a SessionContext,
+    insert: &'a datafusion::sql::sqlparser::ast::Insert,
+    table_ref: TableReference,
+    mode: SnapshotMode,
+) -> BoxFuture<'a, Result<PlannedUpsert, UpsertPlanError>> {
+    let future: BoxFuture<'a, Result<PlannedUpsert, UpsertPlanError>> =
+        Box::pin(plan_upsert_impl(session, insert, table_ref, mode));
+    future
+}
+
+async fn plan_upsert_impl(
     session: &SessionContext,
     insert: &datafusion::sql::sqlparser::ast::Insert,
     table_ref: TableReference,

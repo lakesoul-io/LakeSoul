@@ -50,9 +50,6 @@ jobs:
   client-compat:
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
-      RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
@@ -92,6 +89,8 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
+          cache: maven
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -103,18 +102,11 @@ jobs:
       # Share rust-ci's test cache: rust-ci already builds and tests
       # postgres-lakesoul with the same test-fast profile and RUSTFLAGS.
       # Only main's rust-ci job updates this cache.
-      - name: Restore sccache
-        uses: actions/cache/restore@v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
-            sccache-host-testfast-${{ runner.os }}-
-
-      - uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.19.0"
+          workspaces: ". -> rust/target"
+          shared-key: "host-testfast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build postgres-lakesoul and lakesoul-console
         run: cargo build --profile test-fast -p postgres-lakesoul -p lakesoul-console
       - name: Run psycopg, pgjdbc and pgvector baselines

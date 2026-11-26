@@ -263,6 +263,36 @@ pub struct LakeSoulTableProvider {
     /// published metadata row.
     pub(crate) pending_definition: bool,
 }
+
+// SAFETY: every field is `Send + Sync`, enforced by the test below. Hand-written
+// impls stop rustc from re-proving `ListingOptions`' expression-tree type graph
+// in every async `TableProvider` method that captures this provider.
+unsafe impl Send for LakeSoulTableProvider {}
+unsafe impl Sync for LakeSoulTableProvider {}
+
+#[cfg(test)]
+mod send_sync_tests {
+    use super::*;
+
+    #[test]
+    fn lake_soul_table_provider_fields_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+        assert_send_sync::<ListingOptions>();
+        assert_send_sync::<Vec<ListingTableUrl>>();
+        assert_send_sync::<MetaDataClientRef>();
+        assert_send_sync::<Arc<TableInfo>>();
+        assert_send_sync::<SchemaRef>();
+        assert_send_sync::<Vec<String>>();
+        assert_send_sync::<bool>();
+        assert_send_sync::<lakesoul_io::config::LakeSoulIOConfig>();
+        assert_send_sync::<Vec<crate::vector_index::VectorIndexTableConfig>>();
+        assert_send_sync::<Vec<crate::text_index::TextIndexTableConfig>>();
+        assert_send_sync::<Arc<LakeSoulFormatRegistry>>();
+        assert_send_sync::<Option<TableReadSnapshot>>();
+        assert_send_sync::<Option<Arc<crate::write_mode::LakeSoulDeferredCommit>>>();
+    }
+}
+
 impl LakeSoulTableProvider {
     /// Build a copy of this provider that reads a pinned snapshot.
     ///
@@ -2996,12 +3026,19 @@ impl TableProvider for LakeSoulTableProvider {
         ),
         err
     )]
-    async fn insert_into(
-        &self,
-        state: &dyn Session,
+    // The async wrapper is needed to coerce the inner future to 'async_trait.
+    #[allow(clippy::redundant_async_block)]
+    fn insert_into<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        state: &'life1 dyn Session,
         input: Arc<dyn ExecutionPlan>,
         insert_op: InsertOp,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+    ) -> futures::future::BoxFuture<'async_trait, DFResult<Arc<dyn ExecutionPlan>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
         let state = state.as_any().downcast_ref::<SessionState>().unwrap();
         // Sink related option, apart from format
         let config = FileSinkConfig {
@@ -3025,10 +3062,13 @@ impl TableProvider for LakeSoulTableProvider {
         // todo: fix this
         let order_requirements = None;
 
-        self.options()
-            .format
-            .create_writer_physical_plan(input, state, config, order_requirements)
-            .await
+        let future = self.options().format.create_writer_physical_plan(
+            input,
+            state,
+            config,
+            order_requirements,
+        );
+        Box::pin(async move { future.await })
     }
 }
 

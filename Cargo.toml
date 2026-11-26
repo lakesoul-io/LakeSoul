@@ -23,6 +23,7 @@ members = [
   "rust/lakesoul-es-gateway",
   "python",
   "rust/postgres-lakesoul",
+  "rust/postgres-pgcompat-visitors",
   "rust/lakesoul-worker",
 ]
 default-members = [

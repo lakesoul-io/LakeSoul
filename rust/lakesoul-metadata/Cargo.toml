@@ -29,6 +29,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 # async
 async-trait = { workspace = true }
+futures = { workspace = true }
 # runtime
 tokio = { workspace = true }
 # serialization

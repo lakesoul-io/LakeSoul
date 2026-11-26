@@ -55,6 +55,7 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
+          cache: maven
 
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
@@ -112,6 +113,8 @@ jobs:
         with:
           java-version: "11"
           distribution: "temurin"
+          cache: maven
+
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
       - name: Build with Maven
@@ -126,6 +129,8 @@ jobs:
         with:
           java-version: "17"
           distribution: "temurin"
+          cache: maven
+
       - name: Build Presto with Java 17
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -B package --file pom.xml -pl :lakesoul-presto-0.296 -Pcross-build -DskipTests -Dmaven.test.skip=true -e

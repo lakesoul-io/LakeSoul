@@ -41,6 +41,7 @@ use datafusion::sql::sqlparser::ast::{DiscardObject, Statement};
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
+use futures::FutureExt;
 use lakesoul_datafusion::catalog::LakeSoulProviderOptions;
 use lakesoul_datafusion::write_mode::{
     LakeSoulDeferredCommit, StagedWrite, StagedWriteSink, WriteViolation,
@@ -666,31 +667,34 @@ impl LakeSoulTransactionHook {
         metadata: Arc<tokio::sync::Mutex<Option<lakesoul_metadata::MetadataTransaction>>>,
     ) -> tokio::task::JoinHandle<Result<Vec<StagedWrite>, LakeSoulMetaDataError>> {
         let (context, writes) = staged.into_parts();
-        tokio::spawn(async move {
-            match Self::publish(&writes, &ddl, &client, &metadata).await {
-                Ok((published, discarded)) => {
-                    if !discarded.is_empty() {
-                        StagedFiles::delete(&context, &discarded).await;
+        tokio::spawn(
+            async move {
+                match Self::publish(&writes, &ddl, &client, &metadata).await {
+                    Ok((published, discarded)) => {
+                        if !discarded.is_empty() {
+                            StagedFiles::delete(&context, &discarded).await;
+                        }
+                        if !ddl.is_empty() {
+                            session.refresh_after_ddl(&ddl).await;
+                        }
+                        Ok(published)
                     }
-                    if !ddl.is_empty() {
-                        session.refresh_after_ddl(&ddl).await;
+                    Err(error) => {
+                        // Only a definitive failure deletes the files: an unknown
+                        // outcome may be visible, and an unwind out of the
+                        // publication (a panic) keeps them for GC as well.
+                        if !matches!(
+                            error,
+                            LakeSoulMetaDataError::InsertCommitOutcomeUnknown(_)
+                        ) {
+                            StagedFiles::delete(&context, &writes).await;
+                        }
+                        Err(error)
                     }
-                    Ok(published)
-                }
-                Err(error) => {
-                    // Only a definitive failure deletes the files: an unknown
-                    // outcome may be visible, and an unwind out of the
-                    // publication (a panic) keeps them for GC as well.
-                    if !matches!(
-                        error,
-                        LakeSoulMetaDataError::InsertCommitOutcomeUnknown(_)
-                    ) {
-                        StagedFiles::delete(&context, &writes).await;
-                    }
-                    Err(error)
                 }
             }
-        })
+            .boxed(),
+        )
     }
 
     /// Builds the indexes of every table the block published.

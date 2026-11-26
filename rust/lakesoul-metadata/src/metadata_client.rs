@@ -12,6 +12,7 @@ use std::{
     env, fs, vec,
 };
 
+use futures::future::BoxFuture;
 use postgres::Config;
 use prost::Message;
 use tokio::sync::Mutex;
@@ -1000,7 +1001,16 @@ impl MetaDataClient {
     }
 
     /// Atomically creates all metadata rows for a table.
-    pub async fn create_table(&self, table_info: TableInfo) -> Result<()> {
+    pub fn create_table<'a>(
+        &'a self,
+        table_info: TableInfo,
+    ) -> BoxFuture<'a, Result<()>> {
+        let future: BoxFuture<'a, Result<()>> =
+            Box::pin(Self::create_table_impl(self, table_info));
+        future
+    }
+
+    async fn create_table_impl(&self, table_info: TableInfo) -> Result<()> {
         info!("create_table: {}", table_log_summary(&table_info));
         let inserted = self.insert_table_atomic(&table_info, false).await?;
         if inserted != 1 {
@@ -1015,7 +1025,16 @@ impl MetaDataClient {
     ///
     /// PostgreSQL's unique constraint on `(table_name, table_namespace)` is the
     /// arbiter, so concurrent callers cannot both decide to create the table.
-    pub async fn create_table_if_not_exists(
+    pub fn create_table_if_not_exists<'a>(
+        &'a self,
+        table_info: TableInfo,
+    ) -> BoxFuture<'a, Result<bool>> {
+        let future: BoxFuture<'a, Result<bool>> =
+            Box::pin(Self::create_table_if_not_exists_impl(self, table_info));
+        future
+    }
+
+    async fn create_table_if_not_exists_impl(
         &self,
         table_info: TableInfo,
     ) -> Result<bool> {
@@ -1423,7 +1442,17 @@ impl MetaDataClient {
         .await
     }
 
-    pub async fn commit_data(
+    pub fn commit_data<'a>(
+        &'a self,
+        meta_info: MetaInfo,
+        commit_op: CommitOp,
+    ) -> BoxFuture<'a, Result<CommitOutcome>> {
+        let future: BoxFuture<'a, Result<CommitOutcome>> =
+            Box::pin(Self::commit_data_impl(self, meta_info, commit_op));
+        future
+    }
+
+    async fn commit_data_impl(
         &self,
         meta_info: MetaInfo,
         commit_op: CommitOp,
@@ -2006,7 +2035,17 @@ impl MetaDataClient {
     /// is marked published, or none of them is. Rows whose commit is already
     /// published are left alone, and rows staged by an earlier attempt are
     /// reused instead of inserted twice.
-    pub async fn commit_data_commit_infos(
+    pub fn commit_data_commit_infos<'a>(
+        &'a self,
+        data_commit_info_list: Vec<DataCommitInfo>,
+    ) -> BoxFuture<'a, Result<CommitOutcome>> {
+        let future: BoxFuture<'a, Result<CommitOutcome>> = Box::pin(
+            Self::commit_data_commit_infos_impl(self, data_commit_info_list),
+        );
+        future
+    }
+
+    async fn commit_data_commit_infos_impl(
         &self,
         data_commit_info_list: Vec<DataCommitInfo>,
     ) -> Result<CommitOutcome> {
@@ -2243,7 +2282,25 @@ impl MetaDataClient {
     /// were removed). The table definition is re-checked against the primary
     /// before publication, so a concurrent `ALTER TABLE` is reported as a
     /// retryable conflict.
-    pub async fn commit_replace(
+    pub fn commit_replace<'a>(
+        &'a self,
+        table_info: &'a TableInfo,
+        expected_partitions: &'a [PartitionInfo],
+        files: Vec<DataFileInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+    ) -> BoxFuture<'a, Result<Vec<String>>> {
+        let future: BoxFuture<'a, Result<Vec<String>>> =
+            Box::pin(Self::commit_replace_impl(
+                self,
+                table_info,
+                expected_partitions,
+                files,
+                empty_partitions,
+            ));
+        future
+    }
+
+    async fn commit_replace_impl(
         &self,
         table_info: &TableInfo,
         expected_partitions: &[PartitionInfo],
@@ -2349,7 +2406,22 @@ impl MetaDataClient {
     /// `DeleteCommit` advances the partition version and clears its snapshot.
     /// Old commits and files stay in place, so a pinned snapshot can still read
     /// the pre-truncate relation; GC reclaims the files later.
-    pub async fn commit_delete(
+    pub fn commit_delete<'a>(
+        &'a self,
+        table_info: &'a TableInfo,
+        expected_partitions: &'a [PartitionInfo],
+        partitions: Vec<PartitionInfo>,
+    ) -> BoxFuture<'a, Result<()>> {
+        let future: BoxFuture<'a, Result<()>> = Box::pin(Self::commit_delete_impl(
+            self,
+            table_info,
+            expected_partitions,
+            partitions,
+        ));
+        future
+    }
+
+    async fn commit_delete_impl(
         &self,
         table_info: &TableInfo,
         expected_partitions: &[PartitionInfo],
@@ -2387,7 +2459,16 @@ impl MetaDataClient {
     /// Every selected partition gets a new version with an empty snapshot and
     /// `DeleteCommit`. Every table row is locked and re-checked first, so a
     /// concurrent DROP or redefinition aborts the whole statement.
-    pub async fn commit_truncate(&self, mut targets: Vec<TruncateTarget>) -> Result<()> {
+    pub fn commit_truncate<'a>(
+        &'a self,
+        targets: Vec<TruncateTarget>,
+    ) -> BoxFuture<'a, Result<()>> {
+        let future: BoxFuture<'a, Result<()>> =
+            Box::pin(Self::commit_truncate_impl(self, targets));
+        future
+    }
+
+    async fn commit_truncate_impl(&self, mut targets: Vec<TruncateTarget>) -> Result<()> {
         targets.retain(|target| !target.partitions.is_empty());
         if targets.is_empty() {
             return Ok(());

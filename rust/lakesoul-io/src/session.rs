@@ -273,6 +273,12 @@ struct IOSessionInner {
     pub partition_schema: OnceCell<Arc<Schema>>,
     pub table_schema: OnceCell<Arc<TableSchema>>,
 }
+// SAFETY: every field of `IOSessionInner` is `Send + Sync`, enforced by the
+// `io_session_inner_fields_are_send_sync` test below. Hand-written impls stop
+// rustc from re-proving the whole DataFusion session type graph in every async
+// method that captures this type.
+unsafe impl Send for IOSessionInner {}
+unsafe impl Sync for IOSessionInner {}
 
 impl LakeSoulIOSession {
     pub fn try_new(io_config: LakeSoulIOConfig) -> Result<Self, Report> {
@@ -1459,6 +1465,26 @@ mod tests {
     use crate::config::LakeSoulIOConfigBuilder;
 
     use super::*;
+
+    /// Keeps the hand-written `Send`/`Sync` impls above honest: if a field is
+    /// changed to a non-`Send` or non-`Sync` type, this test fails to compile.
+    #[test]
+    fn io_session_inner_fields_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+        assert_send_sync::<String>();
+        assert_send_sync::<SessionConfig>();
+        assert_send_sync::<RuntimeEnv>();
+        assert_send_sync::<HashMap<String, Arc<ScalarUDF>>>();
+        assert_send_sync::<HashMap<String, Arc<HigherOrderUDF>>>();
+        assert_send_sync::<HashMap<String, Arc<AggregateUDF>>>();
+        assert_send_sync::<HashMap<String, Arc<WindowUDF>>>();
+        assert_send_sync::<ExtensionTypeRegistryRef>();
+        assert_send_sync::<Option<Arc<TaskContext>>>();
+        assert_send_sync::<OnceCell<ListingMetas>>();
+        assert_send_sync::<OnceCell<Arc<LakeSoulFormatRegistry>>>();
+        assert_send_sync::<OnceCell<Arc<Schema>>>();
+        assert_send_sync::<OnceCell<Arc<TableSchema>>>();
+    }
 
     #[test]
     fn test_path_normalize() {

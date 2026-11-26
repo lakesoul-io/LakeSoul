@@ -263,39 +263,35 @@ When searching the repository, exclude generated or lock files where possible: `
 
 ### Rust build cache
 
-Rust jobs use `mozilla-actions/sccache-action` for the sccache binary, but the
-cache itself is a local disk directory (`SCCACHE_DIR`) persisted with
-`actions/cache/restore` + `actions/cache/save`. One cache entry per job per
-stream, so the 200 uploads/minute GitHub cache API limit is not hit. Only
-`main` runs save; other refs only restore. `SCCACHE_IDLE_TIMEOUT=0` keeps the
-server alive so the post-step stats are accurate, and `CARGO_INCREMENTAL=0`
-is required by sccache.
+CI Rust jobs use `Swatinem/rust-cache@v2` pinned to a commit, with
+`workspaces: ". -> rust/target"`. Do not enable `cache-all-crates`: caching the
+whole workspace's crates adds entries without helping these jobs, and entry
+sizes are comparable either way. Only `main` saves (`save-if`), PRs restore
+only. `shared-key` separates the three streams that produce different
+artifacts:
 
-- `sccache-host-testfast-main`: host `test-fast` builds (`rust-ci`,
-  `pg-client-compat`, `tpch-compat`, `ivm-bench`, release Rust gates)
-- `sccache-gnu217-testfast-main`: `cargo zigbuild --profile test-fast --target
+- `host-testfast`: host `test-fast` builds (`rust-ci` legacy/v2/clippy,
+  `pg-client-compat`, `tpch-compat`, `ivm-bench`)
+- `host-ivm-testfast`: the `rust-ci` IVM suite, whose feature set changes the
+  artifacts of several large crates
+- `gnu217-testfast`: `cargo zigbuild --profile test-fast --target
   x86_64-unknown-linux-gnu.2.17` builds (`maven-test`, `compatibility-ci`,
   `consistency-ci`, `compaction-clean-e2e`, `python-ci`, CDC suites)
 
-Host and cross builds do not share entries because `--target` is part of the
-sccache key. There are three producers on `main`: `rust_test (legacy)` for the
-default host stream, `rust_test (ivm)` for the IVM-feature host stream (the
-feature set changes rustc's command line, so those entries miss the default
-stream), and `python-ci` for cross-target. Other jobs only restore; PRs never
-save. To keep the cache total small, only these three entries are written per
-run.
+`native-build` and the release jobs keep the release profile and the
+`native-glibc217-v2` entry because they produce shipped artifacts. GitHub CI no
+longer uses sccache: restoring a target directory lets cargo skip compilation
+entirely, while sccache still had to start many rustc processes and download
+crates for every job. Local development keeps sccache through
+`~/.cargo/config.toml` because many worktrees share one cache.
 
-`native-build` and the release jobs keep the release profile and the Swatinem
-`native-glibc217-v2` cache because they produce shipped artifacts.
-
-sccache cannot cache `bin`/`dylib`/`cdylib`/proc-macro crates (they invoke the
-system linker), so those still compile on every run. To keep the non-cacheable
-part small, `postgres-lakesoul` puts all server logic in its lib target
-(`src/lib.rs`) and leaves `src/main.rs` as a thin `run()` shim, and the PG wire
-contracts are modules of one integration-test binary (`tests/contracts.rs`)
-instead of 24 separate targets that each recompiled the `support` harness. The
-same pattern is used by `lakesoul-ivm` (`tests/ivm_contracts.rs`), `lakesoul-io`
-(`tests/io_contracts.rs`) and `lakesoul-datafusion`
+Merging test harnesses still matters with a target-directory cache: each
+non-test binary has to be code-generated and linked once per restored cache.
+`postgres-lakesoul` keeps all server logic in its lib target (`src/lib.rs`) with
+a thin `src/main.rs` shim, and the PG wire contracts are modules of one
+integration-test binary (`tests/contracts.rs`) instead of 24 separate targets.
+The same pattern is used by `lakesoul-ivm` (`tests/ivm_contracts.rs`),
+`lakesoul-io` (`tests/io_contracts.rs`) and `lakesoul-datafusion`
 (`tests/datafusion_contracts.rs`); suites that need a distinct thread count are
 selected by module-name filter from `.github/scripts/run_ivm_tests.py`.
 

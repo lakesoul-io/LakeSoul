@@ -38,18 +38,14 @@ concurrency:
 jobs:
   rust_test:
     runs-on: ubuntu-24.04
-    # The three suites run in parallel. legacy/v2 share the default host sccache
-    # entry; ivm has its own entry because IVM_FEATURES change rustc's command
-    # line (and therefore sccache's key) for several large crates. Both host
-    # entries are written on main only; PRs restore without writing.
+    # The three suites run in parallel. legacy/v2 share one target cache;
+    # ivm has its own cache because IVM_FEATURES change the artifacts of
+    # several large crates. Both caches are written on main only.
     strategy:
       fail-fast: false
       matrix:
         suite: [legacy, v2, ivm]
     env:
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
-      RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       # Metadata PostgreSQL used by the postgres-lakesoul contract tests.
@@ -150,34 +146,20 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
-      # sccache keeps compiled units in a local disk cache; actions/cache
-      # persists that directory as one entry, written on main only.
-      - name: Restore sccache
+      # legacy and v2 share the default test-fast target cache; IVM builds a
+      # different feature set and keeps its own entry.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.suite != 'ivm'
-        uses: actions/cache/restore@v4
         with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
-            sccache-host-testfast-${{ runner.os }}-
-      # IVM compiles a different feature set, so its cache entries do not
-      # match the default host stream. Restore the IVM stream first and fall
-      # back to the default one.
-      - name: Restore IVM sccache
+          workspaces: ". -> rust/target"
+          shared-key: "host-testfast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: matrix.suite == 'ivm'
-        uses: actions/cache/restore@v4
         with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-host-ivm-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            sccache-host-ivm-testfast-${{ runner.os }}-${{ github.job }}-
-            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
-            sccache-host-testfast-${{ runner.os }}-
-
-      - uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.19.0"
+          workspaces: ". -> rust/target"
+          shared-key: "host-ivm-testfast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
@@ -260,30 +242,12 @@ jobs:
           RUST_LOG: info
           RUST_BACKTRACE: full
         run: python3 .github/scripts/run_ivm_tests.py --full
-      - name: Save sccache
-        if: github.ref == 'refs/heads/main' && matrix.suite == 'legacy'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
-      # Persist the IVM feature-set entries too; otherwise every run recompiles
-      # the same ~12 crates whose feature combination differs from legacy/v2.
-      - name: Save IVM sccache
-        if: github.ref == 'refs/heads/main' && matrix.suite == 'ivm'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-host-ivm-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
   clippy_check:
     runs-on: ubuntu-24.04
     env:
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
-      RUSTC_WRAPPER: "sccache"
       CARGO_INCREMENTAL: "0"
-      # Match the test job's compiler flags so both jobs read the same sccache
-      # entries. Warnings are denied on the clippy command line instead of
-      # RUSTFLAGS, because RUSTFLAGS participates in the sccache key.
+      # Match the test job's compiler flags so both jobs share a target cache.
+      # Warnings are denied on the clippy command line instead of RUSTFLAGS.
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v5
@@ -299,18 +263,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
           command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
-      - name: Restore sccache
-        uses: actions/cache/restore@v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-host-testfast-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            sccache-host-testfast-${{ runner.os }}-${{ github.job }}-
-            sccache-host-testfast-${{ runner.os }}-
-
-      - uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.19.0"
+          workspaces: ". -> rust/target"
+          shared-key: "host-testfast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run Clippy
         # Keep every cargo invocation in this workflow on `test-fast` so all
         # artifacts stay in a single profile directory (rust/target/test-fast).

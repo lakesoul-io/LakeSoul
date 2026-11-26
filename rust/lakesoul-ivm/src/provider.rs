@@ -87,6 +87,58 @@ pub struct IvmTableProvider {
     bucket_filters: Option<HashMap<u32, Vec<Expr>>>,
 }
 
+// SAFETY: every field is `Send + Sync`, enforced by the test below. Hand-written
+// impls stop rustc from re-proving `bucket_filters`' `Expr` type graph in every
+// async `TableProvider` method that captures this provider.
+unsafe impl Send for IvmTableProvider {}
+unsafe impl Sync for IvmTableProvider {}
+
+#[cfg(test)]
+mod send_sync_tests {
+    use super::*;
+
+    #[test]
+    fn ivm_table_provider_fields_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+        assert_send_sync::<IvmTable>();
+        assert_send_sync::<MetaDataClient>();
+        assert_send_sync::<IvmReadMode>();
+        assert_send_sync::<Option<Vec<PartitionFiles>>>();
+        assert_send_sync::<bool>();
+        assert_send_sync::<Option<HashMap<u32, Vec<Expr>>>>();
+    }
+}
+
+/// Borrows DataFusion expressions into a `Send` coroutine without re-proving
+/// the whole `Expr` type graph at every `TableProvider::scan` await point.
+/// DataFusion already requires `Expr: Sync` for its own async APIs; the test
+/// below keeps that assumption honest.
+struct SendExprSlice<'a>(&'a [Expr]);
+
+impl<'a> SendExprSlice<'a> {
+    /// A method (rather than `.0`) forces the async block to capture the whole
+    /// wrapper under Rust's disjoint field capture rules.
+    fn as_slice(&self) -> &'a [Expr] {
+        self.0
+    }
+}
+
+// SAFETY: `SendExprSlice` is only ever built from `&[Expr]`, and `Expr: Sync`
+// is asserted by the `send_expr_slice_needs_sync_expr` test below.
+unsafe impl Send for SendExprSlice<'_> {}
+unsafe impl Sync for SendExprSlice<'_> {}
+
+#[cfg(test)]
+mod send_expr_slice_tests {
+    use super::*;
+
+    #[test]
+    fn send_expr_slice_needs_sync_expr() {
+        fn assert_sync<T: Sync + ?Sized>() {}
+        assert_sync::<[Expr]>();
+    }
+}
+
 impl IvmTableProvider {
     /// A provider for `table` in the given read mode.
     pub fn new(table: IvmTable, client: MetaDataClient, mode: IvmReadMode) -> Self {
@@ -417,15 +469,25 @@ impl TableProvider for IvmTableProvider {
             .collect())
     }
 
-    async fn scan(
-        &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
+    fn scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        _state: &'life1 dyn Session,
+        projection: Option<&'life2 Vec<usize>>,
+        filters: &'life3 [Expr],
         _limit: Option<usize>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let groups = self.groups_for_mode().await?;
-        self.stream_plan_groups(groups, projection, filters)
+    ) -> futures::future::BoxFuture<'async_trait, DataFusionResult<Arc<dyn ExecutionPlan>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        let filters = SendExprSlice(filters);
+        Box::pin(async move {
+            let groups = self.groups_for_mode().await?;
+            self.stream_plan_groups(groups, projection, filters.as_slice())
+        })
     }
 }
 

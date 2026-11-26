@@ -29,7 +29,7 @@
 //! engines and deliberately keeps a conservative PostgreSQL baseline; see the
 //! compatibility page for the version policy.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -55,9 +55,8 @@ use datafusion::scalar::ScalarValue;
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     DataType as SqlDataType, Expr, Function, FunctionArg, FunctionArgExpr,
-    FunctionArgumentList, FunctionArguments, Ident, LimitClause, ObjectName, Query,
-    SetExpr, Statement, TableFactor, Value, ValueWithSpan, Visit, VisitMut, Visitor,
-    VisitorMut,
+    FunctionArgumentList, FunctionArguments, Ident, ObjectName, Statement, Value,
+    VisitMut, VisitorMut,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::arrow_pg::encode_dataframe;
@@ -1414,118 +1413,6 @@ impl QueryHook for SqlAlchemyCatalogHook {
 /// already rewrites psql `\d`'s default and collation lookups as joins.
 pub struct CatalogProjectionHook;
 
-fn is_catalog_projection_query(statement: &Statement) -> bool {
-    if !matches!(statement, Statement::Query(_)) {
-        return false;
-    }
-    let lower = statement.to_string().to_ascii_lowercase();
-    lower.contains("pg_attribute")
-        && (lower.contains("format_type") || lower.contains("json_build_object"))
-}
-
-fn rewrite_catalog_projection(statement: &Statement) -> Statement {
-    let mut statement = statement.clone();
-    let mut visitor = CatalogProjectionVisitor;
-    let _ = VisitMut::visit(&mut statement, &mut visitor);
-    statement
-}
-
-struct CatalogProjectionVisitor;
-
-impl CatalogProjectionVisitor {
-    fn has_correlation(&self, query: &Query) -> bool {
-        if let SetExpr::Select(select) = &*query.body {
-            let table_aliases: HashSet<String> = select
-                .from
-                .iter()
-                .flat_map(|twj| {
-                    let mut aliases = HashSet::new();
-                    Self::collect_table_aliases_from_table_factor(
-                        &twj.relation,
-                        &mut aliases,
-                    );
-                    for join in &twj.joins {
-                        Self::collect_table_aliases_from_table_factor(
-                            &join.relation,
-                            &mut aliases,
-                        );
-                    }
-                    aliases
-                })
-                .collect();
-
-            let mut has_correlation = false;
-            let mut visitor =
-                CorrelationCheckVisitor(&mut has_correlation, &table_aliases);
-            let _ = Visit::visit(query, &mut visitor);
-            has_correlation
-        } else {
-            false
-        }
-    }
-
-    fn has_limit(&self, query: &Query) -> bool {
-        query.limit_clause.is_some() || query.fetch.is_some()
-    }
-
-    fn collect_table_aliases_from_table_factor(
-        table_factor: &TableFactor,
-        aliases: &mut HashSet<String>,
-    ) {
-        if let TableFactor::Table {
-            alias: Some(alias), ..
-        } = table_factor
-        {
-            aliases.insert(alias.name.value.clone());
-        }
-    }
-}
-
-struct CorrelationCheckVisitor<'a>(&'a mut bool, &'a HashSet<String>);
-
-impl Visitor for CorrelationCheckVisitor<'_> {
-    type Break = ();
-
-    fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
-        match expr {
-            Expr::Value(ValueWithSpan {
-                value: Value::Placeholder(_),
-                ..
-            }) => {
-                *self.0 = true;
-            }
-            Expr::CompoundIdentifier(idents)
-                if !idents.is_empty() && !self.1.contains(&idents[0].value) =>
-            {
-                *self.0 = true;
-            }
-            _ => {}
-        }
-        ControlFlow::Continue(())
-    }
-}
-
-impl VisitorMut for CatalogProjectionVisitor {
-    type Break = ();
-
-    fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
-        if let Expr::Subquery(subquery) = expr {
-            if self.has_correlation(subquery) {
-                *expr = Expr::Value(Value::Null.with_empty_span());
-            } else if !self.has_limit(subquery) {
-                subquery.limit_clause = Some(LimitClause::LimitOffset {
-                    limit: Some(Expr::Value(
-                        Value::Number("1".to_string(), false).with_empty_span(),
-                    )),
-                    offset: None,
-                    limit_by: vec![],
-                });
-            }
-        }
-        ControlFlow::Continue(())
-    }
-}
-
 impl QueryHook for CatalogProjectionHook {
     fn handle_simple_query<'a>(
         &'a self,
@@ -1534,10 +1421,11 @@ impl QueryHook for CatalogProjectionHook {
         client: &'a mut dyn HookClient,
     ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
         Box::pin(async move {
-            if !is_catalog_projection_query(statement) {
+            if !postgres_pgcompat_visitors::is_catalog_projection_query(statement) {
                 return None;
             }
-            let sql = rewrite_catalog_projection(statement).to_string();
+            let sql = postgres_pgcompat_visitors::rewrite_catalog_projection(statement)
+                .to_string();
             Some(
                 async move {
                     let dataframe = session_context
@@ -1563,10 +1451,11 @@ impl QueryHook for CatalogProjectionHook {
         _client: &'a (dyn ClientInfo + Send + Sync),
     ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
         Box::pin(async move {
-            if !is_catalog_projection_query(statement) {
+            if !postgres_pgcompat_visitors::is_catalog_projection_query(statement) {
                 return None;
             }
-            let rewritten = rewrite_catalog_projection(statement);
+            let rewritten =
+                postgres_pgcompat_visitors::rewrite_catalog_projection(statement);
             Some(
                 async move {
                     session_context
@@ -1781,6 +1670,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rewrites_psql_describe_columns_query() {
+        use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
+
+        let sql = "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), \
+            (SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid, true) FROM pg_catalog.pg_attrdef d \
+             WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef), \
+            a.attnotnull, (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t \
+             WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation, \
+            a.attidentity, a.attgenerated FROM pg_catalog.pg_attribute a \
+            WHERE a.attrelid = '16455' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum";
+        let statement = PostgresCompatibilityParser::new()
+            .parse(sql)
+            .expect("parse psql query")
+            .remove(0);
+        assert!(postgres_pgcompat_visitors::is_catalog_projection_query(
+            &statement
+        ));
+        let rewritten =
+            postgres_pgcompat_visitors::rewrite_catalog_projection(&statement)
+                .to_string();
+        // The correlated pg_attrdef subquery becomes a CASE expression; the
+        // LEFT JOIN itself stays so the reflected columns keep their values.
+        assert!(
+            rewritten.to_ascii_lowercase().contains("case when"),
+            "{rewritten}"
+        );
+    }
+
+    #[test]
     fn version_is_postgresql_compatible() {
         let version = compatibility_version();
         assert!(version.starts_with("PostgreSQL 14.0 "), "{version}");
@@ -1868,8 +1786,12 @@ mod tests {
             .parse(sql)
             .expect("parse SQLAlchemy reflection query")
             .remove(0);
-        assert!(is_catalog_projection_query(&statement));
-        let rewritten = rewrite_catalog_projection(&statement).to_string();
+        assert!(postgres_pgcompat_visitors::is_catalog_projection_query(
+            &statement
+        ));
+        let rewritten =
+            postgres_pgcompat_visitors::rewrite_catalog_projection(&statement)
+                .to_string();
         assert!(!rewritten.contains("json_build_object"), "{rewritten}");
     }
 

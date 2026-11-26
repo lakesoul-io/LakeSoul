@@ -32,6 +32,7 @@ use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{Expr, Set, Statement, Value};
 use datafusion_postgres::pgwire::error::PgWireError;
+use futures::FutureExt;
 use futures::StreamExt;
 use lakesoul_common::misc::TimeZone;
 use object_store::ObjectStoreExt;
@@ -114,9 +115,9 @@ impl JobRunner {
     /// Starts the queue consumer and the lease/retention reaper.
     pub fn spawn(self: Arc<Self>) {
         let queue = Arc::clone(&self);
-        tokio::spawn(async move { queue.run_loop().await });
+        tokio::spawn(async move { queue.run_loop().await }.boxed());
         let reaper = Arc::clone(&self);
-        tokio::spawn(async move { reaper.reaper_loop().await });
+        tokio::spawn(async move { reaper.reaper_loop().await }.boxed());
     }
 
     async fn run_loop(self: Arc<Self>) {
@@ -135,10 +136,13 @@ impl JobRunner {
                 None => None,
             };
             let runner = Arc::clone(&self);
-            tokio::spawn(async move {
-                runner.run_one(query_id).await;
-                drop(permit);
-            });
+            tokio::spawn(
+                async move {
+                    runner.run_one(query_id).await;
+                    drop(permit);
+                }
+                .boxed(),
+            );
         }
     }
 

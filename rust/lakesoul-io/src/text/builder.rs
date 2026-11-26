@@ -10,6 +10,7 @@
 //! generation, an incremental build appends a split for the newly written
 //! files.
 
+use futures::future::LocalBoxFuture;
 use lakesoul_common::misc::SecretMap;
 use std::sync::Arc;
 
@@ -101,7 +102,13 @@ impl TextShardIndexBuilder {
     ///
     /// The caller decides the file set: all active files for a fresh build
     /// or a rebuild, only the newly written files for an incremental build.
-    pub async fn build(self) -> Result<TextBuildOutcome> {
+    pub fn build(self) -> LocalBoxFuture<'static, Result<TextBuildOutcome>> {
+        let future: LocalBoxFuture<'static, Result<TextBuildOutcome>> =
+            Box::pin(Self::build_impl(self));
+        future
+    }
+
+    async fn build_impl(self) -> Result<TextBuildOutcome> {
         let index_prefix = self.index_prefix();
         let header = serde_json::to_vec(&self.config).map_err(|error| {
             report!("failed to serialize text index config: {}", error)
@@ -148,7 +155,13 @@ impl TextShardIndexBuilder {
         })
     }
 
-    async fn read_documents(&self) -> Result<Vec<(u64, String)>> {
+    fn read_documents<'a>(&'a self) -> LocalBoxFuture<'a, Result<Vec<(u64, String)>>> {
+        let future: LocalBoxFuture<'a, Result<Vec<(u64, String)>>> =
+            Box::pin(Self::read_documents_impl(self));
+        future
+    }
+
+    async fn read_documents_impl(&self) -> Result<Vec<(u64, String)>> {
         let batches = read_shard_batches(
             &self.file_paths,
             std::slice::from_ref(&self.pk_column),
