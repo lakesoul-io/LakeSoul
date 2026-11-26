@@ -184,6 +184,12 @@ pub struct LakeSoulIOConfig {
     pub(crate) explicit_pk_columns: Vec<String>,
     pub(crate) explicit_pk_keys: Vec<lakesoul_vector::IndexKey>,
 }
+// SAFETY: every field of `LakeSoulIOConfig` is `Send + Sync`, enforced by the
+// `lakesoul_io_config_fields_are_send_sync` test below. Hand-written impls stop
+// rustc from re-proving the whole config (including DataFusion `Expr` and
+// substrait `Plan` trees) in every async method that captures it.
+unsafe impl Send for LakeSoulIOConfig {}
+unsafe impl Sync for LakeSoulIOConfig {}
 
 impl LakeSoulIOConfig {
     /// Returns a builder for LakeSoulIOConfig
@@ -1102,6 +1108,29 @@ impl From<LakeSoulIOConfig> for LakeSoulIOConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keeps the hand-written `Send`/`Sync` impls above honest: if a field is
+    /// changed to a non-`Send` or non-`Sync` type, this test fails to compile.
+    #[test]
+    fn lakesoul_io_config_fields_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+        assert_send_sync::<String>();
+        assert_send_sync::<Vec<String>>();
+        assert_send_sync::<HashMap<String, ColumnPolicy>>();
+        assert_send_sync::<Vec<crate::index::commit::ResolvedIndex>>();
+        assert_send_sync::<Vec<Arc<crate::index::IndexLease>>>();
+        assert_send_sync::<Vec<Expr>>();
+        assert_send_sync::<Vec<Plan>>();
+        assert_send_sync::<Vec<Vec<u8>>>();
+        assert_send_sync::<IOSchema>();
+        assert_send_sync::<SecretMap>();
+        assert_send_sync::<HashMap<String, String>>();
+        assert_send_sync::<usize>();
+        assert_send_sync::<u64>();
+        assert_send_sync::<bool>();
+        assert_send_sync::<Option<u64>>();
+        assert_send_sync::<Vec<lakesoul_vector::IndexKey>>();
+    }
 
     #[test]
     fn with_hash_bucket_num_sets_config_field() {

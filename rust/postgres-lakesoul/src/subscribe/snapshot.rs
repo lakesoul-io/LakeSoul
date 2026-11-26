@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use datafusion::common::ScalarValue;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::try_join_all;
 use pg_walstream::{
@@ -191,9 +192,12 @@ pub(crate) async fn primary_slot_exists(url: &str, slot: &str) -> Result<bool> {
     let (client, connection) = tokio_postgres::connect(url, NoTls)
         .await
         .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
-    let handle = tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let handle = tokio::spawn(
+        async move {
+            let _ = connection.await;
+        }
+        .boxed(),
+    );
     let result = client
         .query_opt(
             "select 1 from pg_replication_slots \
@@ -212,9 +216,12 @@ async fn primary_slot_lsn(url: &str, slot: &str) -> Result<u64> {
     let (client, connection) = tokio_postgres::connect(url, NoTls)
         .await
         .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
-    let handle = tokio::spawn(async move {
-        let _ = connection.await;
-    });
+    let handle = tokio::spawn(
+        async move {
+            let _ = connection.await;
+        }
+        .boxed(),
+    );
     let result = async {
         let row = client
             .query_opt(
@@ -558,9 +565,12 @@ async fn open_readers(
         let (client, connection) = tokio_postgres::connect(url, NoTls)
             .await
             .map_err(|error| report!("connect snapshot reader: {error}"))?;
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        tokio::spawn(
+            async move {
+                let _ = connection.await;
+            }
+            .boxed(),
+        );
         client
             .batch_execute(
                 "set statement_timeout = 0; \
@@ -767,11 +777,14 @@ async fn drop_slot_if_exists(url: &str, slot: &str) -> Result<()> {
     let (client, connection) = tokio_postgres::connect(url, NoTls)
         .await
         .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
-    let handle = tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::warn!(%error, "source PostgreSQL connection closed");
+    let handle = tokio::spawn(
+        async move {
+            if let Err(error) = connection.await {
+                tracing::warn!(%error, "source PostgreSQL connection closed");
+            }
         }
-    });
+        .boxed(),
+    );
     let result = async {
         let row = client
             .query_opt(

@@ -26,6 +26,7 @@ use datafusion_postgres::pgwire::api::ClientInfo;
 use datafusion_postgres::pgwire::api::results::{Response, Tag};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::response::TransactionStatus;
+use futures::FutureExt;
 use lakesoul_datafusion::session::parse_memory_limit;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::report;
@@ -1491,11 +1492,14 @@ async fn ensure_slot_absent(url: &str, slot: &str) -> Result<()> {
     let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
         .await
         .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
-    let handle = tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::warn!(%error, "source PostgreSQL connection closed");
+    let handle = tokio::spawn(
+        async move {
+            if let Err(error) = connection.await {
+                tracing::warn!(%error, "source PostgreSQL connection closed");
+            }
         }
-    });
+        .boxed(),
+    );
     let result = async {
         let row = client
             .query_opt(

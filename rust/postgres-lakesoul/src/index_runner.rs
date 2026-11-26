@@ -19,6 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::ValueEnum;
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use lakesoul_common::misc::SecretMap;
 use lakesoul_metadata::{MetaDataClientRef, QueryType};
 use tokio::process::{Child, Command};
@@ -44,7 +46,24 @@ pub enum IndexMaintenanceExecutor {
 const LEASE_NAME: &str = "index-maintenance";
 
 /// Run the standalone worker.  No PG wire server is started.
-pub async fn run(
+pub fn run(
+    meta: MetaDataClientRef,
+    object_store_options: SecretMap,
+    owner: String,
+    poll_interval: Duration,
+    lease_ttl: Duration,
+) -> BoxFuture<'static, Result<()>> {
+    let future: BoxFuture<'static, Result<()>> = Box::pin(run_impl(
+        meta,
+        object_store_options,
+        owner,
+        poll_interval,
+        lease_ttl,
+    ));
+    future
+}
+
+async fn run_impl(
     meta: MetaDataClientRef,
     object_store_options: SecretMap,
     owner: String,
@@ -221,7 +240,7 @@ pub fn spawn_local_supervisor(
                 _ = shutdown_rx.changed() => break,
             }
         }
-    });
+    }.boxed());
     LocalSupervisor { shutdown, handle }
 }
 
@@ -346,24 +365,27 @@ fn spawn_heartbeat(
     owner: String,
     ttl: Duration,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let interval = (ttl / 3).max(Duration::from_secs(1));
-        let mut ticker = tokio::time::interval(interval);
-        ticker.tick().await;
-        loop {
+    tokio::spawn(
+        async move {
+            let interval = (ttl / 3).max(Duration::from_secs(1));
+            let mut ticker = tokio::time::interval(interval);
             ticker.tick().await;
-            match acquire_lease(&meta, &owner, ttl).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    warn!("index maintenance lease was taken over");
-                    return;
-                }
-                Err(error) => {
-                    warn!(%error, "renewing the index maintenance lease failed");
+            loop {
+                ticker.tick().await;
+                match acquire_lease(&meta, &owner, ttl).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        warn!("index maintenance lease was taken over");
+                        return;
+                    }
+                    Err(error) => {
+                        warn!(%error, "renewing the index maintenance lease failed");
+                    }
                 }
             }
         }
-    })
+        .boxed(),
+    )
 }
 
 // ---------------------------------------------------------------------------

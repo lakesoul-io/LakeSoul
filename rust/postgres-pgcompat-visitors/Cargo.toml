@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "postgres-pgcompat-visitors"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+datafusion.workspace = true
+datafusion-postgres = { git = "https://github.com/meta-soul/datafusion-postgres.git", rev = "6193a47498954aa7ee270ed6f673a94fa68c6220", features = [
+  "pgvector",
+] }

@@ -9,6 +9,7 @@
 //! insert/update/delete but not truncate. Everything else fails before the
 //! first WAL byte is read, with an actionable message.
 
+use futures::FutureExt;
 use rootcause::{bail, report};
 use tokio_postgres::NoTls;
 
@@ -131,11 +132,14 @@ pub async fn inspect_source(
     let (client, connection) = tokio_postgres::connect(url, NoTls)
         .await
         .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
-    let handle = tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::warn!(%error, "source PostgreSQL connection closed");
+    let handle = tokio::spawn(
+        async move {
+            if let Err(error) = connection.await {
+                tracing::warn!(%error, "source PostgreSQL connection closed");
+            }
         }
-    });
+        .boxed(),
+    );
 
     let result = inspect(&client, publication, schema, table).await;
     drop(client);

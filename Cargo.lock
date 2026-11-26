@@ -444,6 +444,24 @@ dependencies = [
 [[package]]
 name = "arrow-pg"
 version = "0.15.0"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220#6193a47498954aa7ee270ed6f673a94fa68c6220"
+dependencies = [
+ "arrow-schema",
+ "bytes",
+ "chrono",
+ "datafusion",
+ "futures",
+ "pg_interval",
+ "pgwire",
+ "postgres-types",
+ "rust_decimal",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "arrow-pg"
+version = "0.15.0"
 source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8#ed66c013834b98d0d9ce84cc270b33efa926f6b8"
 dependencies = [
  "arrow-schema",
@@ -3004,15 +3022,39 @@ dependencies = [
 [[package]]
 name = "datafusion-pg-catalog"
 version = "0.18.3"
-source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8#ed66c013834b98d0d9ce84cc270b33efa926f6b8"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220#6193a47498954aa7ee270ed6f673a94fa68c6220"
 dependencies = [
- "arrow-pg",
+ "arrow-pg 0.15.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220)",
  "async-trait",
  "datafusion",
  "futures",
  "log",
  "postgres-types",
  "tokio",
+]
+
+[[package]]
+name = "datafusion-pg-catalog"
+version = "0.18.3"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8#ed66c013834b98d0d9ce84cc270b33efa926f6b8"
+dependencies = [
+ "arrow-pg 0.15.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8)",
+ "async-trait",
+ "datafusion",
+ "futures",
+ "log",
+ "postgres-types",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-pg-functions"
+version = "0.1.0"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220#6193a47498954aa7ee270ed6f673a94fa68c6220"
+dependencies = [
+ "datafusion",
+ "libm",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -3142,15 +3184,40 @@ dependencies = [
 [[package]]
 name = "datafusion-postgres"
 version = "0.18.0"
-source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8#ed66c013834b98d0d9ce84cc270b33efa926f6b8"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220#6193a47498954aa7ee270ed6f673a94fa68c6220"
 dependencies = [
- "arrow-pg",
+ "arrow-pg 0.15.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220)",
  "async-trait",
  "bytes",
  "chrono",
  "datafusion",
- "datafusion-pg-catalog",
- "datafusion-pg-functions",
+ "datafusion-pg-catalog 0.18.3 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220)",
+ "datafusion-pg-functions 0.1.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220)",
+ "futures",
+ "getset",
+ "log",
+ "pgwire",
+ "postgres-types",
+ "rust_decimal",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "socket2",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
+name = "datafusion-postgres"
+version = "0.18.0"
+source = "git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8#ed66c013834b98d0d9ce84cc270b33efa926f6b8"
+dependencies = [
+ "arrow-pg 0.15.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8)",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "datafusion",
+ "datafusion-pg-catalog 0.18.3 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8)",
+ "datafusion-pg-functions 0.1.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8)",
  "futures",
  "getset",
  "log",
@@ -5645,6 +5712,7 @@ dependencies = [
  "bytes",
  "cached",
  "chrono",
+ "futures",
  "jsonwebtoken",
  "lakesoul-common",
  "lakesoul-metadata-proto",
@@ -8099,7 +8167,7 @@ dependencies = [
  "chrono",
  "clap",
  "datafusion",
- "datafusion-postgres",
+ "datafusion-postgres 0.18.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=ed66c013834b98d0d9ce84cc270b33efa926f6b8)",
  "encoding_rs",
  "futures",
  "jsonwebtoken",
@@ -8122,6 +8190,7 @@ dependencies = [
  "parquet",
  "pg_walstream",
  "pgvector",
+ "postgres-pgcompat-visitors",
  "rootcause",
  "rust_decimal",
  "rustls",
@@ -8140,6 +8209,14 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "postgres-pgcompat-visitors"
+version = "4.1.0-dev.0"
+dependencies = [
+ "datafusion",
+ "datafusion-postgres 0.18.0 (git+https://github.com/meta-soul/datafusion-postgres.git?rev=6193a47498954aa7ee270ed6f673a94fa68c6220)",
 ]
 
 [[package]]

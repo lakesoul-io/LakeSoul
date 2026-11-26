@@ -504,6 +504,28 @@ pub struct ExternalFileTableProvider {
     path: String,
 }
 
+// SAFETY: every field is `Send + Sync`, enforced by the test below. Hand-written
+// impls stop rustc from re-proving `ListingTable`'s expression-tree type graph
+// in every async `TableProvider` method that captures this provider.
+unsafe impl Send for ExternalFileTableProvider {}
+unsafe impl Sync for ExternalFileTableProvider {}
+
+#[cfg(test)]
+mod send_sync_tests {
+    use super::*;
+
+    #[test]
+    fn external_file_table_provider_fields_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+        assert_send_sync::<Arc<ListingTable>>();
+        assert_send_sync::<ExternalFileSpec>();
+        assert_send_sync::<ObjectStoreUrl>();
+        assert_send_sync::<Arc<dyn ObjectStore>>();
+        assert_send_sync::<ExternalFileStoreConfig>();
+        assert_send_sync::<String>();
+    }
+}
+
 impl fmt::Debug for ExternalFileTableProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExternalFileTableProvider")
@@ -610,26 +632,45 @@ impl TableProvider for ExternalFileTableProvider {
         self.inner.statistics()
     }
 
-    async fn scan(
-        &self,
-        state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
+    fn scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        state: &'life1 dyn Session,
+        projection: Option<&'life2 Vec<usize>>,
+        filters: &'life3 [Expr],
         limit: Option<usize>,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+    ) -> futures::future::BoxFuture<'async_trait, DFResult<Arc<dyn ExecutionPlan>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
         self.register_store(state);
-        let inner = self.inner.scan(state, projection, filters, limit).await?;
-        Ok(self.wrap_plan(inner))
+        let inner = self.inner.scan(state, projection, filters, limit);
+        Box::pin(async move {
+            let inner = inner.await?;
+            Ok(self.wrap_plan(inner))
+        })
     }
 
-    async fn scan_with_args<'a>(
-        &self,
-        state: &dyn Session,
+    fn scan_with_args<'a, 'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        state: &'life1 dyn Session,
         args: ScanArgs<'a>,
-    ) -> DFResult<ScanResult> {
+    ) -> futures::future::BoxFuture<'async_trait, DFResult<ScanResult>>
+    where
+        'a: 'async_trait,
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
         self.register_store(state);
-        let result = self.inner.scan_with_args(state, args).await?;
-        Ok(ScanResult::new(self.wrap_plan(result.into_inner())))
+        let result = self.inner.scan_with_args(state, args);
+        Box::pin(async move {
+            let result = result.await?;
+            Ok(ScanResult::new(self.wrap_plan(result.into_inner())))
+        })
     }
 
     async fn insert_into(

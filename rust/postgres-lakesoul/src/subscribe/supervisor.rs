@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::ValueEnum;
+use futures::FutureExt;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::{bail, report};
 use tokio::sync::{Mutex, Notify};
@@ -227,44 +228,48 @@ impl SubscriptionSupervisor {
         let meta = self.meta.clone();
         let children = Arc::clone(&self.children);
         let id = subscription_id.to_string();
-        tokio::spawn(async move {
-            let status = child.wait().await;
-            let message = match &status {
-                Ok(status) if status.success() => {
-                    format!("subscriber process for {id} exited")
+        tokio::spawn(
+            async move {
+                let status = child.wait().await;
+                let message = match &status {
+                    Ok(status) if status.success() => {
+                        format!("subscriber process for {id} exited")
+                    }
+                    Ok(status) => {
+                        format!("subscriber process for {id} exited with {status}")
+                    }
+                    Err(error) => {
+                        format!(
+                            "subscriber process for {id} could not be waited for: {error}"
+                        )
+                    }
+                };
+                let pool = meta.pooled_client();
+                let pool = pool.lock().await.clone();
+                let metadata = SubscriptionMetadata::from_pool(pool);
+                let succeeded = status.is_ok_and(|status| status.success());
+                if !succeeded
+                    && let Err(error) =
+                        metadata.record_unexpected_exit(&id, &message).await
+                {
+                    tracing::warn!(
+                        %error,
+                        subscription = %id,
+                        "failed to record subscriber process exit"
+                    );
                 }
-                Ok(status) => {
-                    format!("subscriber process for {id} exited with {status}")
+                if let Err(error) = metadata.clear_process(&id).await {
+                    tracing::warn!(
+                        %error,
+                        subscription = %id,
+                        "failed to clear subscriber process pid"
+                    );
                 }
-                Err(error) => {
-                    format!(
-                        "subscriber process for {id} could not be waited for: {error}"
-                    )
-                }
-            };
-            let pool = meta.pooled_client();
-            let pool = pool.lock().await.clone();
-            let metadata = SubscriptionMetadata::from_pool(pool);
-            let succeeded = status.is_ok_and(|status| status.success());
-            if !succeeded
-                && let Err(error) = metadata.record_unexpected_exit(&id, &message).await
-            {
-                tracing::warn!(
-                    %error,
-                    subscription = %id,
-                    "failed to record subscriber process exit"
-                );
+                children.lock().await.remove(&id);
+                done.notify_waiters();
             }
-            if let Err(error) = metadata.clear_process(&id).await {
-                tracing::warn!(
-                    %error,
-                    subscription = %id,
-                    "failed to clear subscriber process pid"
-                );
-            }
-            children.lock().await.remove(&id);
-            done.notify_waiters();
-        });
+            .boxed(),
+        );
 
         tracing::info!(
             subscription = %subscription_id,
@@ -646,11 +651,14 @@ pub(crate) async fn drop_replication_slot(url: &str, slot: &str) -> Result<()> {
     let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
         .await
         .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
-    let handle = tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::warn!(%error, "source PostgreSQL connection closed");
+    let handle = tokio::spawn(
+        async move {
+            if let Err(error) = connection.await {
+                tracing::warn!(%error, "source PostgreSQL connection closed");
+            }
         }
-    });
+        .boxed(),
+    );
     let result = async {
         let row = client
             .query_opt(
@@ -784,13 +792,16 @@ mod tests {
 
         let runner_metadata = metadata.clone();
         let runner_id = id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            runner_metadata
-                .set_state(&runner_id, "disabled", None)
-                .await
-                .unwrap();
-        });
+        tokio::spawn(
+            async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                runner_metadata
+                    .set_state(&runner_id, "disabled", None)
+                    .await
+                    .unwrap();
+            }
+            .boxed(),
+        );
         supervisor.disable(&record).await.unwrap();
         assert_eq!(
             metadata.state(&id).await.unwrap().as_deref(),
@@ -815,10 +826,13 @@ mod tests {
 
         let runner_metadata = metadata.clone();
         let runner_id = id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            runner_metadata.unregister(&runner_id).await.unwrap();
-        });
+        tokio::spawn(
+            async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                runner_metadata.unregister(&runner_id).await.unwrap();
+            }
+            .boxed(),
+        );
         supervisor.drop_subscription(&record).await.unwrap();
         assert!(!metadata.exists(&id).await.unwrap());
     }

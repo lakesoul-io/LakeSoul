@@ -30,6 +30,7 @@ use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::logical_expr::when;
 use datafusion::logical_expr::{ExprSchemable, Operator};
 use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
+use futures::future::BoxFuture;
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::transfusion::DataFileInfo;
@@ -5833,7 +5834,16 @@ impl IvmRuntime {
     }
 
     /// Refresh a view from its persisted [`ViewSpec`], opening every table by
-    pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
+    pub fn refresh_spec<'a>(
+        &'a self,
+        spec: &'a ViewSpec,
+    ) -> BoxFuture<'a, Result<Option<i64>>> {
+        let future: BoxFuture<'a, Result<Option<i64>>> =
+            Box::pin(self.refresh_spec_impl(spec));
+        future
+    }
+
+    async fn refresh_spec_impl(&self, spec: &ViewSpec) -> Result<Option<i64>> {
         self.ensure_incremental_upstreams(spec).await?;
         let kind = spec.kind();
         let started = std::time::Instant::now();
@@ -5988,7 +5998,12 @@ impl IvmRuntime {
     /// Rebuild a view from its persisted [`ViewSpec`]: the full source state is
     /// recomputed, the MV is replaced and the cursors are reset to the current
     /// source versions.
-    pub async fn rebuild_spec(&self, spec: &ViewSpec) -> Result<i64> {
+    pub fn rebuild_spec<'a>(&'a self, spec: &'a ViewSpec) -> BoxFuture<'a, Result<i64>> {
+        let future: BoxFuture<'a, Result<i64>> = Box::pin(self.rebuild_spec_impl(spec));
+        future
+    }
+
+    async fn rebuild_spec_impl(&self, spec: &ViewSpec) -> Result<i64> {
         self.ensure_incremental_upstreams(spec).await?;
         let kind = spec.kind();
         let started = std::time::Instant::now();

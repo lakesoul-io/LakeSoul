@@ -7,6 +7,7 @@
 //! carries the column and the management knobs, the kind parameters
 //! (tokenizer/positions/stored) are flattened next to them.
 
+use futures::future::LocalBoxFuture;
 use lakesoul_common::IndexKind;
 use lakesoul_common::misc::SecretMap;
 use lakesoul_metadata::index_catalog::{CommitMode, IndexCatalog, IndexCommitView};
@@ -267,7 +268,26 @@ fn is_text_split_file(name: &str) -> bool {
 /// Stale splits are harmless for correctness (the reader verifies candidates
 /// against the current rows exactly) and are compacted away once the shard's
 /// delta history outweighs its compacted base (`max_delta_ratio`).
-pub async fn auto_build_text_index(
+pub fn auto_build_text_index<'a>(
+    configs: &'a [TextIndexTableConfig],
+    primary_keys: &'a [String],
+    object_store_options: &'a HashMap<String, String>,
+    partition_files: &'a HashMap<String, (Vec<String>, u64)>,
+    all_active_files: Option<&'a [String]>,
+    catalog: &'a IndexCatalog<TextSplitEntry>,
+) -> LocalBoxFuture<'a, Result<usize>> {
+    let future: LocalBoxFuture<'a, Result<usize>> = Box::pin(auto_build_text_index_impl(
+        configs,
+        primary_keys,
+        object_store_options,
+        partition_files,
+        all_active_files,
+        catalog,
+    ));
+    future
+}
+
+async fn auto_build_text_index_impl(
     configs: &[TextIndexTableConfig],
     primary_keys: &[String],
     object_store_options: &HashMap<String, String>,
@@ -469,7 +489,24 @@ pub async fn auto_build_text_index(
 /// delta splits collapses into one, dropping superseded and deleted
 /// documents.  Returns the number of rebuilt shards; fails loudly when any
 /// shard of a configured column fails.
-pub async fn rebuild_text_index(
+pub fn rebuild_text_index<'a>(
+    client: &'a lakesoul_metadata::MetaDataClient,
+    table_name: &'a str,
+    namespace: &'a str,
+    primary_keys: &'a [String],
+    object_store_options: SecretMap,
+) -> LocalBoxFuture<'a, Result<usize>> {
+    let future: LocalBoxFuture<'a, Result<usize>> = Box::pin(rebuild_text_index_impl(
+        client,
+        table_name,
+        namespace,
+        primary_keys,
+        object_store_options,
+    ));
+    future
+}
+
+async fn rebuild_text_index_impl(
     client: &lakesoul_metadata::MetaDataClient,
     table_name: &str,
     namespace: &str,

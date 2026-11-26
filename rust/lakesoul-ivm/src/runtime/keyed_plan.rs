@@ -3112,12 +3112,19 @@ impl Default for KeyedLookupQueryPlanner {
 
 #[async_trait]
 impl datafusion::execution::context::QueryPlanner for KeyedLookupQueryPlanner {
-    async fn create_physical_plan(
-        &self,
-        logical_plan: &LogicalPlan,
-        session: &dyn Session,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        self.inner.create_physical_plan(logical_plan, session).await
+    fn create_physical_plan<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        logical_plan: &'life1 LogicalPlan,
+        session: &'life2 dyn Session,
+    ) -> futures::future::BoxFuture<'async_trait, DataFusionResult<Arc<dyn ExecutionPlan>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        let future = self.inner.create_physical_plan(logical_plan, session);
+        Box::pin(async move { future.await })
     }
 }
 

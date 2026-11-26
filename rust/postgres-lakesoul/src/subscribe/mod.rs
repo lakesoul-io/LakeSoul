@@ -41,6 +41,8 @@ use clap::{Args, ValueEnum};
 use datafusion::execution::memory_pool::{
     FairSpillPool, MemoryPool, UnboundedMemoryPool,
 };
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::{bail, report};
 use tokio_postgres::NoTls;
@@ -452,7 +454,17 @@ pub fn replication_url(url: &str) -> String {
     }
 }
 
-pub async fn run(
+pub fn run(
+    args: SubscribeArgs,
+    meta: MetaDataClientRef,
+    warehouse_prefix: Option<String>,
+) -> BoxFuture<'static, Result<()>> {
+    let future: BoxFuture<'static, Result<()>> =
+        Box::pin(run_impl(args, meta, warehouse_prefix));
+    future
+}
+
+async fn run_impl(
     args: SubscribeArgs,
     meta: MetaDataClientRef,
     warehouse_prefix: Option<String>,
@@ -1082,11 +1094,14 @@ pub(crate) async fn check_slot(
     let (client, connection) = tokio_postgres::connect(url, NoTls)
         .await
         .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
-    let handle = tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::warn!(%error, "source PostgreSQL connection closed");
+    let handle = tokio::spawn(
+        async move {
+            if let Err(error) = connection.await {
+                tracing::warn!(%error, "source PostgreSQL connection closed");
+            }
         }
-    });
+        .boxed(),
+    );
     let result = check_slot_inner(
         &client,
         slot,

@@ -23,7 +23,6 @@
 //! the simple probe and the common column projections directly.
 
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -38,8 +37,7 @@ use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     BinaryOperator, CloseCursor, Declare, DeclareType, Expr, FetchDirection, Ident,
-    ObjectName, SelectItem, SetExpr, Statement, TableFactor, Value, ValueWithSpan, Visit,
-    Visitor,
+    ObjectName, SelectItem, SetExpr, Statement, Value, ValueWithSpan,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::arrow_pg::datatypes::arrow_schema_to_pg_fields;
@@ -610,31 +608,7 @@ impl QueryHook for CancellableCursorHook {
 pub(crate) struct PgCursorsHook;
 
 fn references_pg_cursors(statement: &Statement) -> bool {
-    if !matches!(statement, Statement::Query(_)) {
-        return false;
-    }
-    struct Detector(bool);
-    impl Visitor for Detector {
-        type Break = ();
-        fn pre_visit_table_factor(
-            &mut self,
-            table_factor: &TableFactor,
-        ) -> ControlFlow<Self::Break> {
-            if let TableFactor::Table { name, .. } = table_factor
-                && name
-                    .0
-                    .last()
-                    .and_then(|part| part.as_ident())
-                    .is_some_and(|ident| ident.value.eq_ignore_ascii_case("pg_cursors"))
-            {
-                self.0 = true;
-            }
-            ControlFlow::Continue(())
-        }
-    }
-    let mut detector = Detector(false);
-    let _ = Visit::visit(statement, &mut detector);
-    detector.0
+    postgres_pgcompat_visitors::references_pg_cursors(statement)
 }
 
 #[derive(Clone, Copy)]

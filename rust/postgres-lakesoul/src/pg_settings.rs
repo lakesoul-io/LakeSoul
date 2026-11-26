@@ -23,9 +23,7 @@ use std::sync::Arc;
 use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
-use datafusion::sql::sqlparser::ast::{
-    Ident, SetExpr, Statement, TableFactor, VisitMut, VisitorMut,
-};
+use datafusion::sql::sqlparser::ast::{Ident, SetExpr, Statement, TableFactor};
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire::api::ClientInfo;
@@ -453,13 +451,7 @@ impl PgSettingsHook {
             return None;
         }
         let derived = Self::derived_table(parameters, client)?;
-        let mut statement = statement.clone();
-        let mut visitor = SettingsTableVisitor {
-            derived,
-            replaced: false,
-        };
-        let _ = VisitMut::visit(&mut statement, &mut visitor);
-        visitor.replaced.then_some(statement)
+        postgres_pgcompat_visitors::rewrite_pg_settings(statement, derived)
     }
 
     /// `(VALUES ...) AS pg_settings(name, setting, ...)` with one row per
@@ -522,43 +514,6 @@ impl PgSettingsHook {
 
 fn escape(value: &str) -> String {
     value.replace('\'', "''")
-}
-
-struct SettingsTableVisitor {
-    derived: TableFactor,
-    replaced: bool,
-}
-
-impl VisitorMut for SettingsTableVisitor {
-    type Break = ();
-
-    fn pre_visit_table_factor(
-        &mut self,
-        factor: &mut TableFactor,
-    ) -> std::ops::ControlFlow<Self::Break> {
-        let TableFactor::Table { name, alias, .. } = factor else {
-            return std::ops::ControlFlow::Continue(());
-        };
-        let Some(last) = name.0.last().and_then(|part| part.as_ident()) else {
-            return std::ops::ControlFlow::Continue(());
-        };
-        if !last.value.eq_ignore_ascii_case("pg_settings") {
-            return std::ops::ControlFlow::Continue(());
-        }
-        let mut derived = self.derived.clone();
-        if let TableFactor::Derived {
-            alias: derived_alias,
-            ..
-        } = &mut derived
-            && let Some(alias) = alias
-            && let Some(derived_alias) = derived_alias
-        {
-            derived_alias.name = alias.name.clone();
-        }
-        *factor = derived;
-        self.replaced = true;
-        std::ops::ControlFlow::Continue(())
-    }
 }
 
 impl QueryHook for PgSettingsHook {

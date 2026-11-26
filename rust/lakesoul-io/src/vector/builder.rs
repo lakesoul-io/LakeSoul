@@ -13,6 +13,7 @@
 //! [`ShardBuildOutcome`] carries the segment entries to publish.
 
 use futures::StreamExt;
+use futures::future::LocalBoxFuture;
 use lakesoul_common::misc::SecretMap;
 use std::sync::{Arc, Mutex};
 
@@ -107,7 +108,18 @@ impl VectorShardIndexBuilder {
     /// matches the current primary-key columns; after a schema change the
     /// shard is rebuilt from scratch so the index keys stay comparable with
     /// the data files' key layout.
-    pub async fn build(self) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
+    pub fn build(
+        self,
+    ) -> LocalBoxFuture<'static, Result<ShardBuildOutcome, lakesoul_vector::RabitqError>>
+    {
+        let future: LocalBoxFuture<
+            'static,
+            Result<ShardBuildOutcome, lakesoul_vector::RabitqError>,
+        > = Box::pin(Self::build_impl(self));
+        future
+    }
+
+    async fn build_impl(self) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
         use lakesoul_vector::RabitqError;
 
         let index_prefix = self.index_prefix();
@@ -163,7 +175,18 @@ impl VectorShardIndexBuilder {
     /// the complete shard file list (base + previous deltas + the new
     /// batch), e.g. when the accumulated delta/base ratio has drifted past
     /// the configured threshold or on an explicit user request.
-    pub async fn rebuild(
+    pub fn rebuild(
+        self,
+    ) -> LocalBoxFuture<'static, Result<ShardBuildOutcome, lakesoul_vector::RabitqError>>
+    {
+        let future: LocalBoxFuture<
+            'static,
+            Result<ShardBuildOutcome, lakesoul_vector::RabitqError>,
+        > = Box::pin(Self::rebuild_impl(self));
+        future
+    }
+
+    async fn rebuild_impl(
         self,
     ) -> Result<ShardBuildOutcome, lakesoul_vector::RabitqError> {
         use lakesoul_vector::RabitqError;
@@ -194,7 +217,19 @@ impl VectorShardIndexBuilder {
     ///
     /// Returns `Ok(None)` when the shard is too small to train `nlist`
     /// clusters; the caller then falls back to the legacy in-memory path.
-    async fn build_fresh_streaming(
+    fn build_fresh_streaming<'a>(
+        &'a self,
+        index_prefix: String,
+    ) -> LocalBoxFuture<'a, Result<Option<ShardBuildOutcome>, lakesoul_vector::RabitqError>>
+    {
+        let future: LocalBoxFuture<
+            'a,
+            Result<Option<ShardBuildOutcome>, lakesoul_vector::RabitqError>,
+        > = Box::pin(Self::build_fresh_streaming_impl(self, index_prefix));
+        future
+    }
+
+    async fn build_fresh_streaming_impl(
         &self,
         index_prefix: String,
     ) -> Result<Option<ShardBuildOutcome>, lakesoul_vector::RabitqError> {
@@ -472,7 +507,17 @@ impl VectorShardIndexBuilder {
     /// Read the shard's rows and build the key codec from the data schema.
     ///
     /// Returns `(None, [])` when the shard's data files hold no rows.
-    async fn read_batches(
+    fn read_batches<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, crate::Result<(Option<KeyCodec>, Vec<IdAndVecBatch>)>> {
+        let future: LocalBoxFuture<
+            'a,
+            crate::Result<(Option<KeyCodec>, Vec<IdAndVecBatch>)>,
+        > = Box::pin(Self::read_batches_impl(self));
+        future
+    }
+
+    async fn read_batches_impl(
         &self,
     ) -> crate::Result<(Option<KeyCodec>, Vec<IdAndVecBatch>)> {
         let vec_col = self.config.column_name.clone();

@@ -283,6 +283,27 @@ pub struct FederationTableProvider {
     options: BTreeMap<String, String>,
 }
 
+// SAFETY: every field is `Send + Sync`, enforced by the test below. Hand-written
+// impls stop rustc from re-proving `SqlTable`'s type graph in every async
+// `TableProvider` method that captures this provider.
+unsafe impl Send for FederationTableProvider {}
+unsafe impl Sync for FederationTableProvider {}
+
+#[cfg(test)]
+mod send_sync_tests {
+    use super::*;
+
+    #[test]
+    fn federation_table_provider_fields_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+        assert_send_sync::<String>();
+        assert_send_sync::<SqlTable<AdbcConnection, RecordBatch>>();
+        assert_send_sync::<TableReference>();
+        assert_send_sync::<DialectKind>();
+        assert_send_sync::<BTreeMap<String, String>>();
+    }
+}
+
 impl FederationTableProvider {
     pub fn new(
         server_key: String,
@@ -318,27 +339,37 @@ impl TableProvider for FederationTableProvider {
         self.table.supports_filters_pushdown(filters)
     }
 
-    async fn scan(
-        &self,
-        state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
+    fn scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        state: &'life1 dyn Session,
+        projection: Option<&'life2 Vec<usize>>,
+        filters: &'life3 [Expr],
         limit: Option<usize>,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        let plan = self.table.scan(state, projection, filters, limit).await?;
-        let inner = plan
-            .as_ref()
-            .downcast_ref::<SqlExec<AdbcConnection, RecordBatch>>()
-            .ok_or_else(|| {
-                DataFusionError::Internal(
-                    "ADBC table scan did not produce a SqlExec".to_string(),
-                )
-            })?
-            .clone();
-        Ok(Arc::new(FederationExec {
-            server_key: self.server_key.clone(),
-            inner,
-        }))
+    ) -> futures::future::BoxFuture<'async_trait, DFResult<Arc<dyn ExecutionPlan>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        let plan = self.table.scan(state, projection, filters, limit);
+        Box::pin(async move {
+            let plan = plan.await?;
+            let inner = plan
+                .as_ref()
+                .downcast_ref::<SqlExec<AdbcConnection, RecordBatch>>()
+                .ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "ADBC table scan did not produce a SqlExec".to_string(),
+                    )
+                })?
+                .clone();
+            Ok(Arc::new(FederationExec {
+                server_key: self.server_key.clone(),
+                inner,
+            }) as Arc<dyn ExecutionPlan>)
+        })
     }
 
     async fn insert_into(
