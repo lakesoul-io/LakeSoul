@@ -88,6 +88,29 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
     }
 }
 
+/// Attach local IO configuration after rebuilding the worker session. This
+/// configuration is never part of the serialized compaction descriptor.
+#[derive(Debug, Clone)]
+struct ConfiguredCompactionSessionBuilder {
+    io_config: lakesoul_io::config::LakeSoulIOConfig,
+}
+
+#[async_trait::async_trait]
+impl WorkerSessionBuilder for ConfiguredCompactionSessionBuilder {
+    async fn build_session_state(
+        &self,
+        ctx: WorkerQueryContext,
+    ) -> DFResult<SessionState> {
+        let mut state = LakeSoulWorkerSessionBuilder
+            .build_session_state(ctx)
+            .await?;
+        state.config_mut().set_extension(Arc::new(
+            super::compaction::CompactionWorkerConfig(self.io_config.clone()),
+        ));
+        Ok(state)
+    }
+}
+
 /// Options for building a LakeSoul worker.
 #[derive(Debug, Clone)]
 pub struct LakeSoulWorkerOptions {
@@ -109,7 +132,14 @@ pub fn lakesoul_worker(options: &LakeSoulWorkerOptions) -> crate::Result<Worker>
     )?;
     #[cfg(feature = "ivm")]
     install_ivm_worker_config(&options.core_args, &runtime);
-    Ok(Worker::from_session_builder(LakeSoulWorkerSessionBuilder)
+    let builder = ConfiguredCompactionSessionBuilder {
+        io_config:
+            lakesoul_io::config::LakeSoulIOConfigBuilder::new_with_object_store_options(
+                options.core_args.s3_options(),
+            )
+            .build(),
+    };
+    Ok(Worker::from_session_builder(builder)
         .with_runtime_env(runtime)
         .with_version(DISTRIBUTED_PROTOCOL_VERSION))
 }

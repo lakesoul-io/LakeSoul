@@ -489,11 +489,9 @@ impl CompactionCoordinator {
         }
         // Preserve every surviving add, including repeated paths, as in Spark replay.
         active_files.sort_by_key(|file| Reverse(file.level));
-        Ok(SnapshotLoad::Ready(Box::new(LoadedSnapshot {
-            table,
-            partition: partition.clone(),
-            active_files,
-        })))
+        Ok(SnapshotLoad::Ready(Box::new(
+            LoadedSnapshot::from_discovery(table, partition.clone(), active_files),
+        )))
     }
 }
 
@@ -615,7 +613,7 @@ mod tests {
             panic!("replacement snapshot should be complete");
         };
         let files: Vec<_> = loaded
-            .active_files
+            .active_files()
             .iter()
             .map(|f| (f.file.path.as_str(), f.file.modification_time))
             .collect();
@@ -639,7 +637,7 @@ mod tests {
             panic!("expected complete snapshot with both commits visible");
         };
         let files: Vec<_> = loaded
-            .active_files
+            .active_files()
             .iter()
             .map(|f| (f.file.path.as_str(), f.file.modification_time))
             .collect();
@@ -689,7 +687,7 @@ mod tests {
             else {
                 panic!("expected complete snapshot for {table_id}");
             };
-            let [active] = loaded.active_files.as_slice() else {
+            let [active] = loaded.active_files() else {
                 panic!("expected one active file for {table_id}");
             };
             assert_eq!(active.file.path, path);
@@ -748,7 +746,7 @@ mod tests {
         else {
             panic!("expected complete snapshot")
         };
-        let [active] = loaded.active_files.as_slice() else {
+        let [active] = loaded.active_files() else {
             panic!("expected one active file")
         };
         assert_eq!(active.file.path, path);
@@ -798,7 +796,7 @@ mod tests {
             panic!("complete mirror")
         };
         let actual: Vec<_> = snapshot
-            .active_files
+            .active_files()
             .iter()
             .map(|f| (f.file.path.as_str(), f.level, f.file.bucket_id))
             .collect();
@@ -810,7 +808,7 @@ mod tests {
         let mut empty = p.clone();
         empty.snapshot.clear();
         assert!(
-            matches!(coordinator.load_snapshot(&empty).await?, SnapshotLoad::Ready(s) if s.active_files.is_empty())
+            matches!(coordinator.load_snapshot(&empty).await?, SnapshotLoad::Ready(s) if s.active_files().is_empty())
         );
         empty.table_id = "missing".into();
         assert!(matches!(
@@ -860,7 +858,7 @@ mod tests {
                     assert!(result.unwrap_err().to_string().contains(message))
                 }
                 None => assert!(
-                    matches!(result?, SnapshotLoad::Ready(s) if s.active_files.is_empty())
+                    matches!(result?, SnapshotLoad::Ready(s) if s.active_files().is_empty())
                 ),
             }
         }
@@ -999,12 +997,12 @@ mod tests {
         else {
             panic!("all commit rows for the selected version are present")
         };
-        assert_eq!(&snapshot.partition, selected);
-        assert_eq!(snapshot.partition.version, 7);
+        assert_eq!(snapshot.partition(), selected);
+        assert_eq!(snapshot.partition().version, 7);
         let actual: Vec<_> = snapshot
-            .active_files
-            .into_iter()
-            .map(|f| (f.level, f.file))
+            .active_files()
+            .iter()
+            .map(|f| (f.level, f.file.clone()))
             .collect();
         let expected = |path: String, bucket, size, cols: &str, timestamp| DataFileInfo {
             partition_desc: part.into(),

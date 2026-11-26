@@ -42,6 +42,36 @@ use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
 
 const OBJECT_METADATA_FETCH_CONCURRENCY: usize = 8;
 
+/// Resolve an internal IVM table's optional bucket-key prefix.
+pub(crate) fn resolve_bucket_columns(
+    primary_keys: &[String],
+    ivm_internal: Option<&str>,
+    bucket_columns: Option<&str>,
+) -> Result<Vec<String>> {
+    let Some(columns) = bucket_columns else {
+        return Ok(Vec::new());
+    };
+    if ivm_internal != Some("true") {
+        return Err(report!(
+            "lakesoul.ivm.bucket_columns requires lakesoul.ivm.internal=true"
+        ));
+    }
+    let columns: Vec<_> = columns
+        .split(',')
+        .map(str::trim)
+        .filter(|column| !column.is_empty())
+        .map(String::from)
+        .collect();
+    if !primary_keys.starts_with(&columns) {
+        return Err(report!(
+            "lakesoul.ivm.bucket_columns {:?} must be a prefix of the primary keys {:?}",
+            columns,
+            primary_keys
+        ));
+    }
+    Ok(columns)
+}
+
 /// Create a [`LakeSoulIOConfigBuilder`] from the table info.
 pub(crate) fn create_io_config_builder_from_table_info(
     table_info: Arc<TableInfo>,
@@ -61,39 +91,11 @@ pub(crate) fn create_io_config_builder_from_table_info(
     let dynamic_partition = hash_partitions.len() + range_partitions.len() > 0;
 
     let physical_format = crate::catalog::table_file_format(&table_info.properties)?;
-    // Internal IVM tables may bucket by a prefix of the merge key. The property
-    // is only honoured for tables explicitly marked internal, and the bucket
-    // columns must be a prefix of the primary keys so merge-on-read keeps
-    // working on the bucket-ordered files.
-    let bucket_columns = match properties.ivm_bucket_columns.as_deref() {
-        Some(columns) => {
-            if properties.ivm_internal.as_deref() != Some("true") {
-                return Err(report!(
-                    "lakesoul.ivm.bucket_columns requires lakesoul.ivm.internal=true"
-                ));
-            }
-            let columns = columns
-                .split(',')
-                .map(str::trim)
-                .filter(|column| !column.is_empty())
-                .map(String::from)
-                .collect::<Vec<_>>();
-            let is_prefix = columns.len() <= hash_partitions.len()
-                && columns
-                    .iter()
-                    .zip(hash_partitions.iter())
-                    .all(|(bucket, key)| bucket == key);
-            if !is_prefix {
-                return Err(report!(
-                    "lakesoul.ivm.bucket_columns {:?} must be a prefix of the primary keys {:?}",
-                    columns,
-                    hash_partitions
-                ));
-            }
-            columns
-        }
-        None => Vec::new(),
-    };
+    let bucket_columns = resolve_bucket_columns(
+        &hash_partitions,
+        properties.ivm_internal.as_deref(),
+        properties.ivm_bucket_columns.as_deref(),
+    )?;
     // Vector index columns get small row blocks on write so the candidate
     // rows can later be fetched by row index cheaply.
     let vector_columns = crate::vector_index::parse_vector_index_columns(

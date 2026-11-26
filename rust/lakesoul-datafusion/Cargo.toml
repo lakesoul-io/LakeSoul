@@ -63,6 +63,7 @@ chrono = { workspace = true }
 # serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.11"
 serde-aux = "4.6.0"
 json = "0.12"
 # tpch
