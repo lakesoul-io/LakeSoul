@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Reusable Website Publication
+name: Website Publication
 
 on:
   workflow_call:
@@ -18,12 +18,17 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Existing final Core release tag, for example v4.0.0
-        required: true
+        description: Branch, tag, or commit to publish (default main)
+        required: false
+        default: main
         type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: website-publish
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -36,12 +41,13 @@ jobs:
       github.ref == format('refs/tags/{0}', inputs.ref)
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out validated release tag
+      - name: Check out the requested ref
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
       - name: Validate release tag
+        if: github.event_name != 'workflow_dispatch'
         env:
           RELEASE_TAG: ${{ inputs.ref }}
         run: |

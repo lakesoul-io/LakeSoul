@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">LakeSoul 4.0 architecture</title>
+  <desc id="desc">LakeSoul 4.0 has three interfaces — PostgreSQL wire, Python native and Spark/Flink/Presto connectors — over one lakehouse engine, one PostgreSQL metadata catalog and one object-storage data plane.</desc>
+  <rect width="1200" height="800" fill="#FFFFFF"/>
+
+  <!-- Header -->
+  <text x="60" y="58" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="32" font-weight="700" fill="#0F172A">LakeSoul 4.0</text>
+  <text x="60" y="88" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="17" fill="#64748B">One table. Three interfaces. One catalog.</text>
+
+  <!-- Clients -->
+  <rect x="60" y="120" width="340" height="100" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="84" y="154" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="18" font-weight="600" fill="#0F172A">PostgreSQL wire</text>
+  <text x="84" y="180" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#475569">psql · JDBC · psycopg · BI</text>
+  <text x="84" y="200" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" fill="#64748B">one protocol for agents and apps</text>
+
+  <rect x="430" y="120" width="340" height="100" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="454" y="154" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="18" font-weight="600" fill="#0F172A">Python native</text>
+  <text x="454" y="180" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#475569">Arrow · Pandas · Daft · Ray · PyTorch</text>
+  <text x="454" y="200" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" fill="#64748B">LeRobot · MCAP · video / state / action</text>
+
+  <rect x="800" y="120" width="340" height="100" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="824" y="154" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="18" font-weight="600" fill="#0F172A">Connectors</text>
+  <text x="824" y="180" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#475569">Spark · Flink · Presto</text>
+  <text x="824" y="200" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" fill="#64748B">existing jobs do not move</text>
+
+  <!-- Client to engine arrows -->
+  <line x1="230" y1="220" x2="230" y2="270" stroke="#64748B" stroke-width="1.8"/>
+  <polygon points="224,268 236,268 230,280" fill="#64748B"/>
+  <line x1="600" y1="220" x2="600" y2="270" stroke="#64748B" stroke-width="1.8"/>
+  <polygon points="594,268 606,268 600,280" fill="#64748B"/>
+  <line x1="970" y1="220" x2="970" y2="270" stroke="#64748B" stroke-width="1.8"/>
+  <polygon points="964,268 976,268 970,280" fill="#64748B"/>
+
+  <!-- Metadata -->
+  <rect x="50" y="300" width="240" height="330" rx="16" fill="#F0FDF4" stroke="#86EFAC" stroke-width="1.5"/>
+  <text x="74" y="338" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="18" font-weight="600" fill="#166534">PostgreSQL metadata</text>
+  <text x="74" y="374" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#166534">catalog</text>
+  <text x="74" y="400" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#166534">partition versions</text>
+  <text x="74" y="426" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#166534">commits &amp; snapshots</text>
+  <text x="74" y="452" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#166534">ACL / index leases</text>
+  <text x="74" y="530" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#15803D">CONTROL PLANE</text>
+
+  <!-- Engine -->
+  <rect x="330" y="280" width="540" height="370" rx="18" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.8"/>
+  <text x="354" y="318" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="20" font-weight="700" fill="#1D4ED8">LakeSoul 4.0 engine</text>
+  <text x="354" y="342" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" fill="#1E40AF">Rust · DataFusion · coordinator + workers</text>
+
+  <rect x="354" y="370" width="238" height="82" rx="10" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1.5"/>
+  <text x="370" y="398" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="16" font-weight="600" fill="#1E3A8A">Distributed Engine</text>
+  <text x="370" y="422" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12" fill="#475569">SQL · joins · aggregates · windows</text>
+
+  <rect x="608" y="370" width="238" height="82" rx="10" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1.5"/>
+  <text x="624" y="398" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" font-weight="600" fill="#1E3A8A">CDC Subscription + Federation</text>
+  <text x="624" y="422" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12" fill="#475569">subscriptions · foreign tables</text>
+
+  <rect x="354" y="468" width="238" height="82" rx="10" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1.5"/>
+  <text x="370" y="496" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="16" font-weight="600" fill="#1E3A8A">Incremental SQL</text>
+  <text x="370" y="520" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12" fill="#475569">cursor + delta commits</text>
+
+  <rect x="608" y="468" width="238" height="82" rx="10" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1.5"/>
+  <text x="624" y="496" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="16" font-weight="600" fill="#1E3A8A">Vector + BM25</text>
+  <text x="624" y="520" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12" fill="#475569">indexes live with the table</text>
+
+  <rect x="354" y="566" width="492" height="54" rx="10" fill="#DBEAFE" stroke="#93C5FD" stroke-width="1.2"/>
+  <text x="600" y="598" text-anchor="middle" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" font-weight="600" fill="#1E40AF">Coordinator / workers · distributed execution</text>
+
+  <!-- Storage -->
+  <rect x="910" y="300" width="240" height="330" rx="16" fill="#FFF7ED" stroke="#FDBA74" stroke-width="1.5"/>
+  <text x="934" y="338" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="18" font-weight="600" fill="#9A3412">Object storage</text>
+  <text x="934" y="374" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#9A3412">Parquet / Vortex</text>
+  <text x="934" y="400" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#9A3412">vector segments</text>
+  <text x="934" y="426" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#9A3412">text index segments</text>
+  <text x="934" y="452" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="14" fill="#9A3412">blob packs</text>
+  <text x="934" y="530" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="1.2" fill="#C2410C">DATA PLANE</text>
+
+  <!-- Control / data arrows -->
+  <line x1="292" y1="465" x2="328" y2="465" stroke="#16A34A" stroke-width="1.8" stroke-dasharray="5 4"/>
+  <polygon points="300,459 300,471 290,465" fill="#16A34A"/>
+  <polygon points="320,459 320,471 330,465" fill="#16A34A"/>
+  <text x="310" y="452" text-anchor="middle" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="10" fill="#15803D">control</text>
+
+  <line x1="872" y1="465" x2="908" y2="465" stroke="#EA580C" stroke-width="1.8"/>
+  <polygon points="880,459 880,471 870,465" fill="#EA580C"/>
+  <polygon points="900,459 900,471 910,465" fill="#EA580C"/>
+  <text x="890" y="452" text-anchor="middle" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="10" fill="#C2410C">data</text>
+
+  <!-- Summary band -->
+  <rect x="50" y="690" width="1100" height="70" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+  <text x="74" y="720" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="16" font-weight="600" fill="#334155">Same data, three interfaces: structured rows · vectors · text · embodied episodes</text>
+  <text x="74" y="744" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" fill="#64748B">LeRobot / MCAP import → ordinary LakeSoul tables → Daft / Ray / PyTorch training windows</text>
+
+  <text x="600" y="790" text-anchor="middle" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12" fill="#94A3B8">one catalog · one permission boundary · from single process to PB scale</text>
+</svg>
