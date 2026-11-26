@@ -21,7 +21,9 @@
 //!
 //! The filter can be replaced at runtime through [`TracingGuard::filter_handle`].
 //! [`spawn_reload_on_sighup`] wires that to `SIGHUP`, re-reading
-//! `LAKESOUL_LOG_FILTER_FILE` (when set) or `RUST_LOG`.
+//! `LAKESOUL_LOG_FILTER_FILE`. The file is a production debugging switch,
+//! not configuration: it is never read at startup, so a restart always comes
+//! back on the `RUST_LOG` baseline even if a debug filter was left in it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -167,55 +169,58 @@ impl FilterReloadHandle {
             .map_err(|error| TracingInitError::Filter(error.to_string()))
     }
 
-    /// Re-reads `LAKESOUL_LOG_FILTER_FILE` (when set) or `RUST_LOG` and
-    /// applies it, returning the directives that were applied.
+    /// Re-reads `LAKESOUL_LOG_FILTER_FILE` and applies it, returning the
+    /// directives that were applied.
     ///
-    /// A missing, empty or unreadable source is an error and keeps the current
-    /// filter: a stray signal must not silently change the log level.
-    pub fn reload_from_env_or_file(&self) -> Result<String, TracingInitError> {
-        let directives = resolve_directives(
-            std::env::var("LAKESOUL_LOG_FILTER_FILE").ok(),
-            std::env::var("RUST_LOG").ok(),
-            |path| std::fs::read_to_string(path),
-        )?;
+    /// `RUST_LOG` is deliberately not a source: a running process's
+    /// environment cannot be changed from outside, so re-reading it would only
+    /// re-apply the startup filter. An unset variable, or a missing, empty or
+    /// unreadable file, is an error and keeps the current filter: a stray
+    /// signal must not silently change the log level.
+    pub fn reload_from_filter_file(&self) -> Result<String, TracingInitError> {
+        let directives =
+            resolve_directives(std::env::var("LAKESOUL_LOG_FILTER_FILE").ok(), |path| {
+                std::fs::read_to_string(path)
+            })?;
         self.reload(&directives)?;
         Ok(directives)
     }
 }
 
-/// Chooses the directives for a runtime reload and trims them.
+/// Reads the directives for a runtime reload from the filter file and trims
+/// them.
 fn resolve_directives(
     file: Option<String>,
-    env: Option<String>,
     read_file: impl FnOnce(&str) -> std::io::Result<String>,
 ) -> Result<String, TracingInitError> {
-    if let Some(path) = file.filter(|path| !path.trim().is_empty()) {
-        let content = read_file(&path).map_err(|error| {
-            TracingInitError::Filter(format!("failed to read {path}: {error}"))
-        })?;
-        let directives = content.trim();
-        if directives.is_empty() {
-            return Err(TracingInitError::Filter(format!(
-                "{path} is empty; keeping the current filter"
-            )));
-        }
-        return Ok(directives.to_string());
+    let Some(path) = file.filter(|path| !path.trim().is_empty()) else {
+        return Err(TracingInitError::Filter(
+            "LAKESOUL_LOG_FILTER_FILE is not set; start the process with it to \
+             change the log filter at runtime"
+                .to_string(),
+        ));
+    };
+    let content = read_file(&path).map_err(|error| {
+        TracingInitError::Filter(format!("failed to read {path}: {error}"))
+    })?;
+    let directives = content.trim();
+    if directives.is_empty() {
+        return Err(TracingInitError::Filter(format!(
+            "{path} is empty; keeping the current filter"
+        )));
     }
-    match env {
-        Some(directives) if !directives.trim().is_empty() => {
-            Ok(directives.trim().to_string())
-        }
-        _ => Err(TracingInitError::Filter(
-            "no filter source: set LAKESOUL_LOG_FILTER_FILE or RUST_LOG".to_string(),
-        )),
-    }
+    Ok(directives.to_string())
 }
 
 /// Reloads the log filter on every `SIGHUP`.
 ///
-/// The source is `LAKESOUL_LOG_FILTER_FILE` when set (edit the file, then
-/// `kill -HUP <pid>`), otherwise `RUST_LOG`. A reload that fails keeps the
-/// current filter and logs a warning.
+/// The source is `LAKESOUL_LOG_FILTER_FILE` (edit the file, then
+/// `kill -HUP <pid>`). A reload that fails, including one without the
+/// variable set, keeps the current filter and logs a warning.
+///
+/// The listener is installed even when the variable is unset: `SIGHUP`'s
+/// default action terminates the process, and a stray signal must not take
+/// the server down.
 ///
 /// Must be called from within a Tokio runtime. The spawned task holds only a
 /// clone of the handle, never the guard.
@@ -232,7 +237,7 @@ pub fn spawn_reload_on_sighup(filter: FilterReloadHandle) {
             }
         };
         while hangup.recv().await.is_some() {
-            match filter.reload_from_env_or_file() {
+            match filter.reload_from_filter_file() {
                 Ok(directives) => tracing::info!(
                     target: "lakesoul_observability",
                     filter = %directives,
@@ -568,50 +573,31 @@ mod tests {
     }
 
     #[test]
-    fn a_reload_without_a_source_keeps_the_current_filter() {
-        assert!(resolve_directives(None, None, |_| unreachable!()).is_err());
-        assert!(
-            resolve_directives(None, Some("  ".to_string()), |_| unreachable!()).is_err()
-        );
+    fn a_reload_without_a_filter_file_keeps_the_current_filter() {
+        assert!(resolve_directives(None, |_| unreachable!()).is_err());
         // An empty path counts as unset.
-        assert_eq!(
-            resolve_directives(Some(String::new()), Some("info".to_string()), |_| {
-                unreachable!()
-            })
-            .unwrap(),
-            "info"
-        );
+        assert!(resolve_directives(Some("  ".to_string()), |_| unreachable!()).is_err());
     }
 
     #[test]
-    fn the_filter_file_wins_over_the_environment() {
+    fn a_reload_reads_the_filter_file() {
         assert_eq!(
-            resolve_directives(
-                Some("/tmp/filter".to_string()),
-                Some("info".to_string()),
-                |path| {
-                    assert_eq!(path, "/tmp/filter");
-                    Ok("  info,lakesoul_sql=debug\n".to_string())
-                },
-            )
+            resolve_directives(Some("/tmp/filter".to_string()), |path| {
+                assert_eq!(path, "/tmp/filter");
+                Ok("  info,lakesoul_sql=debug\n".to_string())
+            })
             .unwrap(),
             "info,lakesoul_sql=debug"
         );
         assert!(
-            resolve_directives(
-                Some("/tmp/filter".to_string()),
-                Some("info".to_string()),
-                |_| Ok(String::new()),
-            )
-            .is_err(),
+            resolve_directives(Some("/tmp/filter".to_string()), |_| Ok(String::new()))
+                .is_err(),
             "an empty filter file must not silently disable logging"
         );
         assert!(
-            resolve_directives(
-                Some("/tmp/filter".to_string()),
-                Some("info".to_string()),
-                |_| Err(std::io::Error::other("missing")),
-            )
+            resolve_directives(Some("/tmp/filter".to_string()), |_| {
+                Err(std::io::Error::other("missing"))
+            })
             .is_err()
         );
     }

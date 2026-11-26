@@ -171,7 +171,7 @@ fn main() -> Result<(), Report> {
             LogFormat::new(),
             tracing_subscriber::fmt::time::ChronoLocal::rfc_3339(),
         )?);
-        // 动态日志级别：修改 LAKESOUL_LOG_FILTER_FILE（或 RUST_LOG）后 kill -HUP <pid>
+        // 动态日志级别：修改 LAKESOUL_LOG_FILTER_FILE 后 kill -HUP <pid>
         spawn_reload_on_sighup(tracing_guard.filter_handle());
         if let Some(endpoint) = tracing_guard.otlp_endpoint() {
             info!(endpoint, "OTLP trace exporter enabled");

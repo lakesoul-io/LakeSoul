@@ -213,7 +213,7 @@ cargo run -p postgres-lakesoul -- -p 6543 \
 | `OTEL_SERVICE_NAME` | LakeSoul | `service.name` resource attribute and the metrics `service` label (Loki's `service` label comes from the log file name instead) |
 | `OTEL_TRACES_SAMPLER_ARG` | LakeSoul | Head sampling ratio in `[0,1]`, default `1.0` (parent-based). Any other value — `0,01` included — fails tracing initialization instead of silently sampling everything |
 | `OTEL_TRACES_EXPORTER=none` / `OTEL_SDK_DISABLED=true` | LakeSoul | Disable trace export |
-| `LAKESOUL_LOG_FILTER_FILE` | LakeSoul | Filter file re-read on `SIGHUP`; falls back to `RUST_LOG` |
+| `LAKESOUL_LOG_FILTER_FILE` | LakeSoul | Filter file re-read on `SIGHUP`; must be set at startup for runtime changes |
 | `LAKESOUL_LOG_DIR` | `rust/justfile`, Alloy | Directory the recipes tee stdout into and Alloy tails; default `/tmp/lakesoul/logs` |
 
 ## Runtime log level (SIGHUP)
@@ -236,8 +236,14 @@ echo 'info' > "$LAKESOUL_LOG_FILTER_FILE"
 kill -HUP "$(pgrep -f postgres-lakesoul | head -1)"
 ```
 
-- Source order: `LAKESOUL_LOG_FILTER_FILE`, then `RUST_LOG`; an empty or
-  unreadable source is refused and the current filter is kept.
+- The only reload source is `LAKESOUL_LOG_FILTER_FILE`. `RUST_LOG` sets the
+  startup filter but is not re-read: a running process's environment cannot
+  be changed from outside. Without the variable, or with an empty or
+  unreadable file, a `SIGHUP` is refused with a warning and the current
+  filter is kept (the process is never terminated by it).
+- The file is meant for debugging a running production process, not for
+  configuration: it is never read at startup, so a restarted process comes
+  back on its `RUST_LOG` filter even if a debug filter was left in the file.
 - SQL logging uses the dedicated `lakesoul_sql` target
   (`executing SQL (simple query)` / `planning SQL (extended query)`) with
   `query_id`, so it can be toggled without enabling debug for every target.

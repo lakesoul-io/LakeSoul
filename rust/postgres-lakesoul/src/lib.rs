@@ -392,8 +392,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // catalog refresher, whose first refresh would otherwise run without a
     // subscriber and export its queries as parentless root traces.
     let tracing = Arc::new(init_logger()?);
-    // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
-    // `kill -HUP <pid>`.
+    // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE and `kill -HUP <pid>`.
     spawn_reload_on_sighup(tracing.filter_handle());
     allocator::log_active();
     // Validate TLS before any listener, metadata connection or worker starts.

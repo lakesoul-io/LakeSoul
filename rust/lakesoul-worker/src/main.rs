@@ -102,8 +102,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .with_ansi(std::io::stdout().is_terminal()),
                 JiffTime::beijing("%m-%d %T%.3f %Z"),
             )?);
-            // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG)
-            // and `kill -HUP <pid>`.
+            // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE and
+            // `kill -HUP <pid>`.
             spawn_reload_on_sighup(tracing_guard.filter_handle());
             allocator::log_active();
             install_prometheus_metrics(PrometheusMetricsConfig::new(
