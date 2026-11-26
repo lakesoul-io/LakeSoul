@@ -724,7 +724,17 @@ pub async fn plan_upsert(
             table_name: identity.table_name.clone(),
             table_info: Arc::new(authoritative.clone()),
             partitions: Arc::clone(&captured),
-            commit_kind: crate::write_mode::FixedSnapshotCommitKind::Merge,
+            // Only a full-row `col = EXCLUDED.col` upsert is a plain replacement
+            // whose rows stay correct when the commit rebases over a compatible
+            // peer. An assignment that reads the old row (e.g.
+            // `v = t.v + EXCLUDED.v`) computed its new value from a stale row,
+            // so it must keep strict CAS and let the client retry on a new
+            // snapshot rather than lose the peer's increment.
+            commit_kind: if legacy {
+                crate::write_mode::FixedSnapshotCommitKind::Merge
+            } else {
+                crate::write_mode::FixedSnapshotCommitKind::Strict
+            },
         });
         snapshot = Some(captured);
         snapshot_guard = Some(installed);
