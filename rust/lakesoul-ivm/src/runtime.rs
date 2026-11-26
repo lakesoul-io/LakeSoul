@@ -2734,10 +2734,10 @@ pub(crate) struct SourceWindow {
     /// `(source_table_id, partition_desc, from_version, to_version)` of every
     /// consumed partition; this is the window identity the epoch is keyed by.
     pub(crate) identity: Vec<(String, String, i64, i64)>,
-    pub(crate) before_timestamp: i64,
     /// `partition_desc -> last consumed version before this window`, for every
-    /// partition the window touched (`None` = the partition is first consumed
-    /// by this window). Used to read the before state per partition.
+    /// partition with a cursor (`None` = the partition is first consumed by
+    /// this window). Used to read the before state per partition without a
+    /// timestamp-based boundary lookup.
     pub(crate) before_versions: HashMap<String, Option<i64>>,
     /// True when the window was reconstructed from a pending epoch.  Such a
     /// window must not advance cursors before the epoch is marked.
@@ -6284,11 +6284,8 @@ impl IvmRuntime {
         context: &SessionContext,
         table: &IvmTable,
         before: &std::collections::HashMap<String, Option<i64>>,
-        before_timestamp: i64,
     ) -> Result<DataFrame> {
-        let groups = table
-            .before_window_groups(&self.client, before, before_timestamp)
-            .await?;
+        let groups = table.before_window_groups(&self.client, before).await?;
         self.groups_table_frame(context, table, groups)
     }
 
@@ -6301,16 +6298,6 @@ impl IvmRuntime {
     ) -> Result<DataFrame> {
         Ok(context
             .read_table(Arc::new(self.table_provider_at_versions(table, versions)))?)
-    }
-
-    /// A lazy frame over the state as of `as_of_ms`.
-    pub(crate) fn as_of_table_frame(
-        &self,
-        context: &SessionContext,
-        table: &IvmTable,
-        as_of_ms: i64,
-    ) -> Result<DataFrame> {
-        Ok(context.read_table(Arc::new(self.table_provider_as_of(table, as_of_ms)))?)
     }
 
     /// Register or update a consumer watermark (see `EPOCH.md` §9).
@@ -6795,12 +6782,6 @@ impl IvmRuntime {
             .filter(|cursor| cursor.source_table_id == source.table_id)
             .map(|cursor| (cursor.partition_desc.clone(), cursor))
             .collect::<HashMap<String, Cursor>>();
-        let before_timestamp = cursors
-            .values()
-            .map(|cursor| cursor.last_timestamp)
-            .max()
-            .unwrap_or(0);
-
         // A pending epoch is a barrier: a retry must reconstruct exactly the
         // window of that attempt, not fold in source commits that arrived
         // while it was pending.  Rebuild epochs are not incremental windows
@@ -6828,7 +6809,6 @@ impl IvmRuntime {
                 added_files: Vec::new(),
                 cursors: Vec::new(),
                 identity: Vec::new(),
-                before_timestamp,
                 before_versions: HashMap::new(),
                 barrier: true,
             });
@@ -6905,7 +6885,16 @@ impl IvmRuntime {
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
         let mut identity = Vec::new();
-        let mut before_versions = HashMap::new();
+        // Seed the before state from every cursor, not just the partitions this
+        // window touched. A timestamp-based boundary could pick up a version
+        // whose transaction started before the cursor but committed after the
+        // window was computed (partition_info.timestamp is now(), the
+        // transaction start). Explicit versions cannot be retroactively
+        // reordered.
+        let mut before_versions: HashMap<String, Option<i64>> = cursors
+            .iter()
+            .map(|(desc, cursor)| (desc.clone(), Some(cursor.last_version)))
+            .collect();
         let mut dropped = Vec::new();
         for partition in window.partitions {
             let last_version = cursors
@@ -6991,7 +6980,6 @@ impl IvmRuntime {
                     added_files: Vec::new(),
                     cursors: Vec::new(),
                     identity: Vec::new(),
-                    before_timestamp,
                     before_versions: HashMap::new(),
                     barrier: false,
                 });
@@ -7002,7 +6990,6 @@ impl IvmRuntime {
             added_files,
             cursors: new_cursors,
             identity,
-            before_timestamp,
             before_versions,
             barrier: barrier.is_some(),
         })

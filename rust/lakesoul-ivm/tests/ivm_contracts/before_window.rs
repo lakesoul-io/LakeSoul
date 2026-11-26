@@ -2,9 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The before image of a refresh window must be pinned to the window
-//! boundary: a partition the window did not touch is read at its version as of
-//! the last consumed timestamp, not at its current version.
+//! The before image of a refresh window is pinned by explicit partition
+//! versions, one per partition with a cursor. A partition the window did not
+//! touch is still pinned to the version the view consumed, not to its current
+//! version and not to a version resolved by a (non-reproducible) timestamp.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,7 +42,7 @@ fn batch(rows: &[(i64, &str, i64)]) -> RecordBatch {
 }
 
 #[test_log::test(tokio::test)]
-async fn before_window_pins_untouched_partitions_at_the_window_boundary() {
+async fn before_window_pins_every_partition_to_its_recorded_version() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -81,8 +82,10 @@ async fn before_window_pins_untouched_partitions_at_the_window_boundary() {
         .clone();
     let boundary = d1.timestamp.max(d2.timestamp);
 
-    // Land a commit on the partition the window does NOT touch after the
-    // boundary.
+    // Land a commit on a partition the window does NOT touch after the
+    // boundary. Its timestamp can even be stamped earlier than the boundary
+    // (partition_info.timestamp is the transaction start, not commit time);
+    // the recorded version must still win.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     table
         .append_batch(&client, batch(&[(3, "d2", 30)]))
@@ -101,14 +104,14 @@ async fn before_window_pins_untouched_partitions_at_the_window_boundary() {
         "the second commit must be after the boundary"
     );
 
-    // The window touched d1 only.  d2 has no before entry and must be read as
-    // of the boundary, so row 3 (committed later) is not part of the before
-    // image.
-    let before = HashMap::from([("day=d1".to_string(), Some(i64::from(d1.version)))]);
-    let batches = table
-        .read_before_window(&client, &before, boundary)
-        .await
-        .unwrap();
+    // The window touched d1 only, but d2 has a cursor, so both partitions are
+    // pinned to the versions the view consumed. Row 3 (committed later) is not
+    // part of the before image regardless of its timestamp.
+    let before = HashMap::from([
+        ("day=d1".to_string(), Some(i64::from(d1.version))),
+        ("day=d2".to_string(), Some(i64::from(d2.version))),
+    ]);
+    let batches = table.read_before_window(&client, &before).await.unwrap();
     let mut rows = Vec::new();
     for batch in &batches {
         let schema = batch.schema();
@@ -130,6 +133,6 @@ async fn before_window_pins_untouched_partitions_at_the_window_boundary() {
     assert_eq!(
         rows,
         vec![(1, 10), (2, 20)],
-        "an untouched partition must be read at the window boundary, not at its current version"
+        "an untouched partition must be read at its recorded version, not at its current version"
     );
 }

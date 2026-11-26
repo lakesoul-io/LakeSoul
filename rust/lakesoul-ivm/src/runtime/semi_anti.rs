@@ -1282,7 +1282,6 @@ impl IvmRuntime {
                     &context,
                     &view.left,
                     &left_window.before_versions,
-                    left_window.before_timestamp,
                 )
                 .await?,
                 &left_columns,
@@ -1293,7 +1292,6 @@ impl IvmRuntime {
                         &context,
                         &view.right,
                         &right_window.before_versions,
-                        right_window.before_timestamp,
                     )
                     .await?,
                     &right_columns,
@@ -2577,7 +2575,6 @@ impl IvmRuntime {
                         &context,
                         &view.left,
                         &left_window.before_versions,
-                        left_window.before_timestamp,
                     )
                     .await?,
                     &left_columns,
@@ -2594,7 +2591,6 @@ impl IvmRuntime {
                         &context,
                         &view.right,
                         &right_window.before_versions,
-                        right_window.before_timestamp,
                     )
                     .await?,
                     &right_columns,

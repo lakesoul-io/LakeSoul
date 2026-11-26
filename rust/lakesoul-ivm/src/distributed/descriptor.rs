@@ -110,7 +110,6 @@ pub struct IvmSourceSnapshot {
     pub added_files: Vec<PartitionFiles>,
     pub cursors: Vec<crate::metadata::Cursor>,
     pub identity: Vec<(String, String, i64, i64)>,
-    pub before_timestamp: i64,
     pub before_versions: HashMap<String, Option<i64>>,
 }
 
@@ -123,7 +122,6 @@ impl IvmSourceSnapshot {
             added_files: window.added_files.clone(),
             cursors: window.cursors.clone(),
             identity: window.identity.clone(),
-            before_timestamp: window.before_timestamp,
             before_versions: window.before_versions.clone(),
         })
     }
@@ -258,7 +256,6 @@ mod tests {
             }],
             cursors: Vec::new(),
             identity: vec![(table.table_id.clone(), "-5".to_string(), 0, 1)],
-            before_timestamp: 0,
             before_versions: HashMap::from([("-5".to_string(), None)]),
             barrier: false,
         };

@@ -1155,7 +1155,6 @@ impl IvmRuntime {
                         &context,
                         table,
                         &windows[index].before_versions,
-                        windows[index].before_timestamp,
                     )
                     .await?,
                     &columns,
