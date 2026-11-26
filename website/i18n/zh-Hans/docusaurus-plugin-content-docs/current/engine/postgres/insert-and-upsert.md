@@ -96,10 +96,55 @@ SET day = EXCLUDED.day,
 
 行表示、分区快速路径和事务边界见 [DELETE 与 TRUNCATE](delete-and-truncate.md)。
 
-## 批量导入
+## 从 JSON 批量写入
 
-批量导入请使用 [`COPY ... FROM STDIN`](copy.md)，而不是大量单行插入：它是
-一次 commit，支持 TEXT 和 CSV。
+vector.dev 等日志采集器会把一批数据绑定为一个 JSONB 参数，使用如下语句形态：
+
+```sql
+INSERT INTO orders
+SELECT * FROM jsonb_populate_recordset(NULL::orders, $1)
+ON CONFLICT (id) DO UPDATE
+SET day = EXCLUDED.day,
+    region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
+```
+
+`$1` 是一个**对象数组**，每个对象对应一行。对象的键映射到列名（会尝试小写匹配），
+缺失的键写入 `NULL`。也可以传入数组的数组，此时按位置映射到 `INSERT` 列清单中
+指定的列。`DO NOTHING` 与 `DO UPDATE` 两种冲突处理与普通 `VALUES` 插入行为一致。
+
+```json
+[
+  {"id": 1, "day": "2026-01-01", "region": "APAC", "amount": 42.00},
+  {"id": 2, "day": "2026-01-02", "region": "EMEA", "amount": 51.50}
+]
+```
+
+该函数只在 `INSERT ... SELECT * FROM jsonb_populate_recordset(NULL::table, $n)`
+这种形态下被识别，参数必须是 JSONB 标量。它不是通用的表函数，不能用于任意
+`SELECT`；这种形态也不支持 `RETURNING`。非法 JSON 以及按位置映射时长度不符的行
+分别以 `22P02` / `42601` 拒绝。
+
+## 大批量写入建议
+
+每条 `INSERT` 或 `COPY` 语句对应一次提交，客户端在元数据提交完成后才收到确认。
+通过 PG wire 高吞吐写入时：
+
+- **按批发送，不要逐行写**。把多行放进一个 `VALUES` 列表、按上面的方式绑定一个
+  JSON 数组，或使用 [`COPY ... FROM STDIN`](copy.md)。使用 vector.dev 的 PostgreSQL
+  sink 时，调大 sink 的 batch size，让一条语句携带更多行。
+- 语句形态允许时，把多条写放进 `BEGIN ... COMMIT`：暂存写入会在 `COMMIT` 时一起
+  发布，减少元数据往返。通用 `DO UPDATE` 仍须在 autocommit 下执行。
+- 一批数据会按它触及的**哈希桶和 range 分区**各生成一个文件，而不是每批一个文件。
+  根据读取并行度选择 `hash_bucket_num` 和 range 分区；写入密集的表不要设置过大的
+  桶数。
+- 写入**同一张表、同一个分区**的并发客户端会在该分区的元数据版本上串行。普通
+  `INSERT` / `UPDATE` 竞争失败时返回 `40001`，客户端需要重试。`ON CONFLICT DO UPDATE`
+  会在服务端重试发布：可兼容的提交（compaction、append、merge）会 rebase 到新快照，
+  期间出现 update 或 delete 则报冲突。
+- 很多客户端并发写入时，尽量分散到不同分区或不同表，避免都去竞争同一个版本槽。
+  服务端的提交重试次数有上限，客户端仍应处理好最终的 `40001` 并重试语句。
+- 长期运行的写入仍依赖后台 compaction 服务来合并各批次产生的文件。
 
 ## 下一步
 

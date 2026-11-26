@@ -117,10 +117,67 @@ inserted rows are already committed and visible.
 See [DELETE and TRUNCATE](delete-and-truncate.md) for the row representations,
 the partition fast path and the transaction boundaries.
 
-## Bulk load
+## Write a JSON batch
 
-For bulk loads, use [`COPY ... FROM STDIN`](copy.md) instead of many
-single-row inserts: it is one commit, in TEXT or CSV format.
+Log shippers such as vector.dev bind one batch as a single JSONB parameter
+and send this statement shape:
+
+```sql
+INSERT INTO orders
+SELECT * FROM jsonb_populate_recordset(NULL::orders, $1)
+ON CONFLICT (id) DO UPDATE
+SET day = EXCLUDED.day,
+    region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
+```
+
+`$1` is a JSON **array of objects**, one object per row. Keys map to column
+names (a lowercase fallback is applied); a missing key writes `NULL`. A JSON
+array of arrays is also accepted and maps values positionally to the columns
+named in the `INSERT` column list. Both `DO NOTHING` and `DO UPDATE` conflict
+actions behave the same as for a `VALUES` insert.
+
+```json
+[
+  {"id": 1, "day": "2026-01-01", "region": "APAC", "amount": 42.00},
+  {"id": 2, "day": "2026-01-02", "region": "EMEA", "amount": 51.50}
+]
+```
+
+The function is recognised only in the `INSERT ... SELECT * FROM
+jsonb_populate_recordset(NULL::table, $n)` shape and only with a JSONB scalar
+parameter. It is not a general table function for arbitrary `SELECT`s;
+`RETURNING` is not supported on this shape. Invalid JSON and a positional row
+of the wrong width are rejected with `22P02`/`42601`.
+
+## Bulk write guidance
+
+Each `INSERT` or `COPY` statement is one commit and is acknowledged after the
+metadata commit. To ingest high volumes through the PG wire endpoint:
+
+- Send **batches, not single rows**. Put many rows in one `VALUES` list, bind a
+  JSON array as above, or use [`COPY ... FROM STDIN`](copy.md). For vector.dev's
+  PostgreSQL sink, raise the sink's batch size so one statement carries more
+  rows.
+- Group several writes inside `BEGIN ... COMMIT` when the statement shape
+  allows it; staged writes publish together at `COMMIT` and reduce metadata
+  round trips. General `DO UPDATE` still has to run in autocommit.
+- A batch produces one file per **hash bucket and range partition** it touches,
+  not one file per batch. Choose `hash_bucket_num` and range partitions for
+  the read parallelism you need; avoid an unnecessarily large bucket count for
+  write-heavy tables.
+- Concurrent writers to the **same table and partition** serialize on that
+  partition's metadata version. A plain `INSERT`/`UPDATE` that loses the race
+  returns `40001` and must be retried by the client. `ON CONFLICT DO UPDATE`
+  retries its publication in the server: compatible commits (compaction,
+  append, merge) are rebased onto the new snapshot, while an intervening
+  update or delete is reported as a conflict.
+- If many clients write concurrently, spread them across partitions or tables
+  so they do not all claim the same version slot. The server's commit retry
+  budget is bounded, so clients should still handle a final `40001` by
+  retrying the statement.
+- Long-running ingestion still relies on the background compaction service to
+  merge files across batches.
 
 ## Next
 
