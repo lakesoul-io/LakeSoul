@@ -205,6 +205,11 @@ where
         }
     }
     let options = parse_options(options, legacy_options)?;
+    if options.format == CopyFormat::Binary {
+        return Err(feature_not_supported(
+            "COPY ... TO STDOUT with FORMAT binary is not supported".to_string(),
+        ));
+    }
     let sql = match source {
         CopySource::Table {
             table_name,
@@ -323,6 +328,11 @@ fn encode_row(
         match options.format {
             CopyFormat::Text => encode_text_field(&mut out, value.as_deref(), options),
             CopyFormat::Csv => encode_csv_field(&mut out, value.as_deref(), options),
+            CopyFormat::Binary => {
+                return Err(feature_not_supported(
+                    "COPY ... TO STDOUT with FORMAT binary is not supported".to_string(),
+                ));
+            }
         }
     }
     out.extend_from_slice(b"\n");

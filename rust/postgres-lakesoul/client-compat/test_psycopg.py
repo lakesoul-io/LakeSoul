@@ -633,6 +633,47 @@ def test_copy_from_stdin_text_and_csv(driver, connector, table_factory):
             ]
 
 
+def _pgcopy_header():
+    return b"PGCOPY\n\xff\r\n\0" + (0).to_bytes(4, "big") + (0).to_bytes(4, "big")
+
+
+def _pgcopy_row(*fields):
+    out = len(fields).to_bytes(2, "big", signed=True)
+    for field in fields:
+        if field is None:
+            out += (-1).to_bytes(4, "big", signed=True)
+        else:
+            out += len(field).to_bytes(4, "big", signed=True) + field
+    return out
+
+
+def test_copy_from_stdin_binary(driver, connector, table_factory):
+    """Both drivers can stream PostgreSQL's binary COPY framing, including
+    a NULL field, and read the committed rows back."""
+    table = table_factory(
+        "id bigint primary key, name text, n integer", "client_copy_binary"
+    )
+    import struct
+
+    data = (
+        _pgcopy_header()
+        + _pgcopy_row(struct.pack(">q", 1), b"alice", struct.pack(">i", 10))
+        + _pgcopy_row(struct.pack(">q", 2), None, None)
+        + (-1).to_bytes(2, "big", signed=True)
+    )
+    sql = "COPY " + table + " (id, name, n) FROM STDIN WITH (FORMAT binary)"
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            if driver == "psycopg2":
+                cursor.copy_expert(sql, io.BytesIO(data))
+            else:
+                with cursor.copy(sql) as copy:
+                    copy.write(data[:12])
+                    copy.write(data[12:])
+            cursor.execute("SELECT id, name, n FROM " + table + " ORDER BY id")
+            assert rows(cursor) == [(1, "alice", 10), (2, None, None)]
+
+
 def test_copy_driver_encoders(driver, connector, table_factory):
     """`copy_from` and `write_row` are the driver-side encoders import tools
     use; they must produce TEXT COPY that the server decodes."""

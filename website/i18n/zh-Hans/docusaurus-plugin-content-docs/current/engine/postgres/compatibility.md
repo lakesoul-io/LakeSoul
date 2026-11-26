@@ -27,7 +27,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | --- | --- |
 | 查询 | 带 join、聚合、窗口、CTE、`UNION`/`INTERSECT`/`EXCEPT`、子查询的 `SELECT` |
 | DDL | `CREATE TABLE`、`DROP TABLE`、`ALTER TABLE` schema evolution（加列/加宽列、`SET`/`RESET` 支持的选项）、向量/文本索引的 `CREATE INDEX`、`REINDEX TABLE`、主键、`PARTITIONED BY`、`WITH (...)` |
-| 写入 | `INSERT ... VALUES`（包括 `RETURNING *`/列引用）、`INSERT ... SELECT`、`COPY ... FROM STDIN` 和 `COPY ... TO STDOUT`（TEXT 和 CSV）、非 CDC 主键表上的 `UPDATE`、`DELETE`（CDC tombstone、分区清空或分区重写）和 `TRUNCATE`（含 `PARTITION (...)`）、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
+| 写入 | `INSERT ... VALUES`（包括 `RETURNING *`/列引用）、`INSERT ... SELECT`、`COPY ... FROM STDIN`（TEXT、CSV 和 binary）和 `COPY ... TO STDOUT`（TEXT 和 CSV）、非 CDC 主键表上的 `UPDATE`、`DELETE`（CDC tombstone、分区清空或分区重写）和 `TRUNCATE`（含 `PARTITION (...)`）、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | 订阅 | `CREATE SUBSCRIPTION`、`ALTER SUBSCRIPTION ... ENABLE/DISABLE`、`DROP SUBSCRIPTION`，把源 PostgreSQL 逻辑复制到 LakeSoul CDC 表 |
 | 事务 | Autocommit、`READ COMMITTED`；LakeSoul 写入使用 deferred publication 的 `BEGIN`/`COMMIT`/`ROLLBACK` |
 | 目录 | `pg_catalog`、`information_schema`、`psql \d`/`\dt`/`\l`/`\dn`、`pg_cursors`、`pg_settings`、`pg_roles`、`current_database()`、`current_user`/`session_user`、`to_regtype`、`current_setting`/`set_config`、`psycopg2` dialect 下的 SQLAlchemy reflection |
@@ -41,8 +41,8 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 以下操作返回 SQLSTATE `0A000`，而不是被静默忽略：
 
 - `CREATE TABLE AS`、`CREATE TEMP TABLE`、`DELETE ... USING`
-- `COPY ... TO` 文件或程序、`COPY ... FROM` 文件或程序、`FORMAT binary`，以及
-  [COPY](copy.md) 中列出的选项
+- `COPY ... TO` 文件或程序、`COPY ... FROM` 文件或程序、导出的 `FORMAT binary`、
+  binary 数组/vector 值，以及 [COPY](copy.md) 中列出的选项
 - 多语句 simple-query batch 内的写入、`COPY` 和表 DDL；显式事务块内的
   `CREATE INDEX`、`REINDEX`、IVM 维护、订阅、非 CDC `DELETE` 重写和 `TRUNCATE`
 - CDC 表、无主键表、append-only 表上的 `UPDATE`，`UPDATE ... FROM`，以及更新
@@ -87,8 +87,8 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 
 真实驱动基线位于 `rust/postgres-lakesoul/client-compat/`。它当前对运行中的端点
 执行 psycopg2、psycopg3、SQLAlchemy 和 pgjdbc，覆盖连接/`SELECT`、参数化写入
-（包括 `bytea`）、`COPY ... FROM STDIN` 和 `COPY ... TO STDOUT`（psycopg2、
-psycopg3 和 pgjdbc `CopyManager` 的 TEXT/CSV）、batch、UPSERT、事务、重复键恢复、
+（包括 `bytea`）、`COPY ... FROM STDIN`（TEXT/CSV/binary）和 `COPY ... TO STDOUT`
+（psycopg2、psycopg3 和 pgjdbc `CopyManager` 的 TEXT/CSV）、batch、UPSERT、事务、重复键恢复、
 catalog 发现
 （`SHOW`、`pg_settings`、`pg_roles`、psql `\dt`/`\l`/`\dn`）、SQLAlchemy
 reflection、forward-only named cursor、fetch-size cursor 和 Metabase 风格的启动
