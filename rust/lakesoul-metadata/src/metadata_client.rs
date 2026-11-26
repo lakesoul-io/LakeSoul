@@ -1428,6 +1428,20 @@ impl MetaDataClient {
         meta_info: MetaInfo,
         commit_op: CommitOp,
     ) -> Result<CommitOutcome> {
+        self.commit_data_inner(meta_info, commit_op, false).await
+    }
+
+    /// `reject_rewrite_conflicts` is set only by the upsert publication: a
+    /// full-row replacement computed from a stale snapshot must not be
+    /// published over an intervening update/delete. Other MergeCommit callers
+    /// (IVM rebuilds, SDK hash-keyed appends) treat merge as an append and
+    /// legitimately rebase over those ops.
+    async fn commit_data_inner(
+        &self,
+        meta_info: MetaInfo,
+        commit_op: CommitOp,
+        reject_rewrite_conflicts: bool,
+    ) -> Result<CommitOutcome> {
         let table_info = meta_info.table_info.ok_or(LakeSoulMetaDataError::Internal(
             "table info missing".to_string(),
         ))?;
@@ -1542,6 +1556,7 @@ impl MetaDataClient {
                     &read_partition_map,
                     &cur_map,
                     &mut planned,
+                    reject_rewrite_conflicts,
                 )
                 .await
             {
@@ -1648,6 +1663,7 @@ impl MetaDataClient {
         read_partition_map: &HashMap<String, PartitionInfo>,
         cur_map: &HashMap<String, PartitionInfo>,
         planned: &mut HashMap<String, PartitionInfo>,
+        reject_rewrite_conflicts: bool,
     ) -> Result<Vec<PartitionInfo>> {
         match commit_op {
             CommitOp::AppendCommit | CommitOp::MergeCommit => {
@@ -1683,7 +1699,7 @@ impl MetaDataClient {
                     // delete in between replaced the file set this upsert's
                     // rows were computed against, so reusing it would
                     // resurrect stale rows; report a conflict instead.
-                    if commit_op == CommitOp::MergeCommit {
+                    if commit_op == CommitOp::MergeCommit && reject_rewrite_conflicts {
                         let read_version = read_partition_map
                             .get(partition_desc)
                             .map(|info| i64::from(info.version))
@@ -2199,13 +2215,14 @@ impl MetaDataClient {
         self.transaction_insert_data_commit_info(data_commits)
             .await?;
         match self
-            .commit_data(
+            .commit_data_inner(
                 MetaInfo {
                     table_info: Some(table_info.clone()),
                     list_partition,
                     read_partition_info: expected_partitions.to_vec(),
                 },
                 CommitOp::MergeCommit,
+                true,
             )
             .await?
         {

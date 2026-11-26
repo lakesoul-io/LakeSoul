@@ -326,19 +326,19 @@ async fn merge_conflicts_with_concurrent_update_or_delete() -> Result<()> {
         )
         .await?;
 
-        let (_, merge_uuid) = new_uuid();
-        let result = commit_with_read(
-            &client,
-            &table_id,
-            "p1",
-            CommitOp::MergeCommit,
-            vec![merge_uuid],
-            Some(&read),
-        )
-        .await;
+        // The upsert publication path rejects a rewrite it was not computed
+        // against; other MergeCommit callers are allowed to rebase over it.
+        let table_info = client.get_table_info_by_table_id(&table_id).await?.unwrap();
+        let result = client
+            .commit_merge_with_retry(
+                &table_info,
+                &[read.clone()],
+                vec![file("p1", "upsert")],
+            )
+            .await;
         assert!(
             result.is_err(),
-            "merge must not rebase over a concurrent {rewrite_op:?}"
+            "upsert merge must not rebase over a concurrent {rewrite_op:?}"
         );
 
         client.drop_table(&name, NAMESPACE).await?;
