@@ -3929,3 +3929,67 @@ fn result_columns_compare_client_visible_types() {
         "both are text to the client"
     );
 }
+
+/// Parses `sql` the way a connection does: FDW and subscription DDL become
+/// their sentinel `SELECT`s first.
+fn parse_rewritten(sql: &str) -> datafusion::sql::sqlparser::ast::Statement {
+    use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
+
+    let sql = crate::federation::rewrite(sql)
+        .unwrap()
+        .unwrap_or_else(|| sql.to_string());
+    let sql = crate::subscribe::sql::rewrite(&sql).unwrap().unwrap_or(sql);
+    PostgresCompatibilityParser::new()
+        .parse(&sql)
+        .expect("statement parses")
+        .remove(0)
+}
+
+fn user_error_message(error: &PgWireError) -> &str {
+    match error {
+        PgWireError::UserError(info) => &info.message,
+        other => panic!("expected a user error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_disabled_feature_refuses_only_its_own_ddl() {
+    let federation = super::DisabledFeatureHook {
+        claims: crate::federation::is_ddl_sentinel,
+        message: "foreign-data DDL is disabled on this server (--no-federation)",
+    };
+    let subscriptions = super::DisabledFeatureHook {
+        claims: crate::subscribe::sql::is_ddl_sentinel,
+        message: "subscriptions are disabled on this server (--no-subscriptions)",
+    };
+    let create_server = parse_rewritten(
+        "CREATE SERVER s FOREIGN DATA WRAPPER adbc_fdw OPTIONS (driver 'postgresql')",
+    );
+    let drop_subscription = parse_rewritten("DROP SUBSCRIPTION IF EXISTS s");
+    let select = parse_rewritten("SELECT 1");
+
+    let error = federation
+        .refuse::<()>(&create_server)
+        .expect("claimed")
+        .unwrap_err();
+    assert_eq!(user_error_code(&error), "0A000");
+    assert!(
+        user_error_message(&error).contains("--no-federation"),
+        "{error:?}"
+    );
+    let error = subscriptions
+        .refuse::<()>(&drop_subscription)
+        .expect("claimed")
+        .unwrap_err();
+    assert_eq!(user_error_code(&error), "0A000");
+    assert!(
+        user_error_message(&error).contains("--no-subscriptions"),
+        "{error:?}"
+    );
+
+    // Each hook leaves the other feature's DDL and ordinary SQL alone.
+    assert!(federation.refuse::<()>(&drop_subscription).is_none());
+    assert!(subscriptions.refuse::<()>(&create_server).is_none());
+    assert!(federation.refuse::<()>(&select).is_none());
+    assert!(subscriptions.refuse::<()>(&select).is_none());
+}

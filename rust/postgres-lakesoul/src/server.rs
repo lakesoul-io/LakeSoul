@@ -1094,6 +1094,11 @@ pub(crate) fn connection_statement_hooks(
             cluster_domain.clone(),
             session_domain,
         )));
+    } else {
+        hooks.push(Arc::new(DisabledFeatureHook {
+            claims: crate::federation::is_ddl_sentinel,
+            message: "foreign-data DDL is disabled on this server (--no-federation)",
+        }));
     }
     hooks.push(Arc::new(crate::user::UserStatementHook::new(
         Arc::clone(factory.meta_client()),
@@ -1142,11 +1147,67 @@ pub(crate) fn connection_statement_hooks(
                 Arc::clone(supervisor),
             ),
         ));
+    } else {
+        hooks.push(Arc::new(DisabledFeatureHook {
+            claims: crate::subscribe::sql::is_ddl_sentinel,
+            message: "subscriptions are disabled on this server (--no-subscriptions)",
+        }));
     }
     hooks.push(Arc::new(crate::update::UpdateStatementHook));
     hooks.push(Arc::new(crate::truncate::TruncateStatementHook));
     hooks.push(Arc::new(crate::delete::DeleteStatementHook));
     statement_hooks_with(hooks)
+}
+
+/// Refuses the DDL of a feature the server was started without.
+///
+/// The parser rewrites that DDL to a sentinel `SELECT` whether or not the
+/// feature is on; without this hook the sentinel would reach DataFusion and
+/// fail as a call to an unknown function.
+struct DisabledFeatureHook {
+    claims: fn(&datafusion::sql::sqlparser::ast::Statement) -> bool,
+    message: &'static str,
+}
+
+impl DisabledFeatureHook {
+    fn refuse<T>(
+        &self,
+        statement: &datafusion::sql::sqlparser::ast::Statement,
+    ) -> Option<PgWireResult<T>> {
+        (self.claims)(statement)
+            .then(|| Err(crate::ddl::feature_not_supported(self.message.to_string())))
+    }
+}
+
+impl datafusion_postgres::QueryHook for DisabledFeatureHook {
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a datafusion::sql::sqlparser::ast::Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn datafusion_postgres::hooks::HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { self.refuse(statement) })
+    }
+
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a datafusion::sql::sqlparser::ast::Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move { self.refuse(statement) })
+    }
+
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a datafusion::sql::sqlparser::ast::Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn datafusion_postgres::hooks::HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { self.refuse(statement) })
+    }
 }
 
 /// Connection-aware parser facade.

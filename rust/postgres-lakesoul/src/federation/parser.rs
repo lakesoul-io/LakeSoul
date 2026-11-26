@@ -619,6 +619,13 @@ impl QueryHook for FederationStatementHook {
     }
 }
 
+/// Whether `statement` is the sentinel this module rewrites foreign-data DDL to,
+/// well-formed or not. Lets a server without federation refuse the statement
+/// instead of failing it as a call to an unknown function.
+pub(crate) fn is_ddl_sentinel(statement: &Statement) -> bool {
+    !matches!(original_ddl(statement), Ok(None))
+}
+
 fn original_ddl(statement: &Statement) -> PgWireResult<Option<String>> {
     let Statement::Query(query) = statement else {
         return Ok(None);
