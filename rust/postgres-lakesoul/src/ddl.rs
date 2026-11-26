@@ -21,7 +21,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::catalog::SchemaProvider;
 use datafusion::common::{Constraints, TableReference, ToDFSchema};
@@ -734,46 +733,47 @@ impl DdlStatementHook {
     }
 }
 
-#[async_trait]
 impl QueryHook for DdlStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.handle(statement, session_context, client).await
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { self.handle(statement, session_context, client).await })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        // `Describe` has no columns to report for DDL; the statement is
-        // claimed so that DataFusion's own DDL planner never sees it. The
-        // parts analyzable from the AST alone are refused here, at Parse, the
-        // way PostgreSQL reports them before Bind.
-        ddl_verb(statement)?;
-        let validated = self.validate(statement, session_context);
-        if let (Statement::AlterTable(_), Err(error)) = (statement, &validated) {
-            // Refused at Parse: the statement never reaches execution, where
-            // every other outcome is counted.
-            crate::alter::record_outcome(Err(error));
-        }
-        Some(validated.map(|()| SessionSettingsHook::placeholder_plan()))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            // `Describe` has no columns to report for DDL; the statement is
+            // claimed so that DataFusion's own DDL planner never sees it. The
+            // parts analyzable from the AST alone are refused here, at Parse, the
+            // way PostgreSQL reports them before Bind.
+            ddl_verb(statement)?;
+            let validated = self.validate(statement, session_context);
+            if let (Statement::AlterTable(_), Err(error)) = (statement, &validated) {
+                // Refused at Parse: the statement never reaches execution, where
+                // every other outcome is counted.
+                crate::alter::record_outcome(Err(error));
+            }
+            Some(validated.map(|()| SessionSettingsHook::placeholder_plan()))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.handle(statement, session_context, client).await
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { self.handle(statement, session_context, client).await })
     }
 }
 

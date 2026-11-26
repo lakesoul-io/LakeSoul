@@ -31,7 +31,6 @@
 //! stream, and changing a key would leave the old row behind without a delete
 //! path.
 
-use async_trait::async_trait;
 use datafusion::common::ParamValues;
 use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::{LogicalPlan, dml::DmlStatement};
@@ -60,94 +59,99 @@ const UNDEFINED_TABLE: &str = "42P01";
 
 pub(crate) struct UpdateStatementHook;
 
-#[async_trait]
 impl QueryHook for UpdateStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let update = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                crate::insert::reject_transaction(status, session_context, "UPDATE")?;
-                let planned = prepare(update, session_context, &database).await?;
-                execute(&planned, None, session_context).await
-            }
-            .await,
-        )
-    }
-
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let update = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                crate::insert::reject_transaction(status, session_context, "UPDATE")?;
-                // Analysis only: the plan supplies parameter types, but no
-                // partition snapshot is pinned at Parse time.
-                let planned = prepare_with(
-                    update,
-                    session_context,
-                    &database,
-                    SnapshotMode::PlanOnly,
-                )
-                .await?;
-                Ok(planned.plan)
-            }
-            .await,
-        )
-    }
-
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        logical_plan: &LogicalPlan,
-        params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let update = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                crate::insert::reject_transaction(status, session_context, "UPDATE")?;
-                // Execute re-plans from the statement and the live catalog.
-                // Compare the prepared statement's target identity first: a
-                // recreated table (whatever its new configuration) must not be
-                // written through the old binding.
-                if let Some(parsed) = plan_identity(logical_plan) {
-                    let (table_ref, table_name) =
-                        target_reference(&table_object(&update.table)?, &database)?;
-                    let current = resolved_table_id(session_context, &table_ref).await?;
-                    if current.as_deref() != Some(parsed.as_str()) {
-                        return Err(user_error(
-                            UNDEFINED_TABLE,
-                            format!(
-                                "relation \"{table_name}\" was dropped and recreated; \
-                                 reparse the statement"
-                            ),
-                        ));
-                    }
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let update = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    crate::insert::reject_transaction(status, session_context, "UPDATE")?;
+                    let planned = prepare(update, session_context, &database).await?;
+                    execute(&planned, None, session_context).await
                 }
-                let planned = prepare_with(
-                    update,
-                    session_context,
-                    &database,
-                    SnapshotMode::Capture,
-                )
-                .await?;
-                execute(&planned, Some(params), session_context).await
-            }
-            .await,
-        )
+                .await,
+            )
+        })
+    }
+
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let update = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    crate::insert::reject_transaction(status, session_context, "UPDATE")?;
+                    // Analysis only: the plan supplies parameter types, but no
+                    // partition snapshot is pinned at Parse time.
+                    let planned = prepare_with(
+                        update,
+                        session_context,
+                        &database,
+                        SnapshotMode::PlanOnly,
+                    )
+                    .await?;
+                    Ok(planned.plan)
+                }
+                .await,
+            )
+        })
+    }
+
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        logical_plan: &'a LogicalPlan,
+        params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let update = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    crate::insert::reject_transaction(status, session_context, "UPDATE")?;
+                    // Execute re-plans from the statement and the live catalog.
+                    // Compare the prepared statement's target identity first: a
+                    // recreated table (whatever its new configuration) must not be
+                    // written through the old binding.
+                    if let Some(parsed) = plan_identity(logical_plan) {
+                        let (table_ref, table_name) =
+                            target_reference(&table_object(&update.table)?, &database)?;
+                        let current = resolved_table_id(session_context, &table_ref).await?;
+                        if current.as_deref() != Some(parsed.as_str()) {
+                            return Err(user_error(
+                                UNDEFINED_TABLE,
+                                format!(
+                                    "relation \"{table_name}\" was dropped and recreated; \
+                                     reparse the statement"
+                                ),
+                            ));
+                        }
+                    }
+                    let planned = prepare_with(
+                        update,
+                        session_context,
+                        &database,
+                        SnapshotMode::Capture,
+                    )
+                    .await?;
+                    execute(&planned, Some(params), session_context).await
+                }
+                .await,
+            )
+        })
     }
 }
 

@@ -25,7 +25,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::arrow::array::StringArray;
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::common::{DataFusionError, ParamValues, ScalarValue};
@@ -632,58 +631,60 @@ impl IndexStatementHook {
     }
 }
 
-#[async_trait]
 impl QueryHook for IndexStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.handle(statement, session_context, client).await
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { self.handle(statement, session_context, client).await })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let validated = if let Statement::CreateIndex(create) = statement {
-            validate_create_index_shape(create).and_then(|()| {
-                target_table(&self.database, &create.table_name).map(|_| ())
-            })
-        } else {
-            match original_reindex(statement) {
-                Ok(Some(original)) => parse_reindex(&original).map(|_| ()),
-                Ok(None) => return None,
-                Err(error) => return Some(Err(error)),
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let validated = if let Statement::CreateIndex(create) = statement {
+                validate_create_index_shape(create).and_then(|()| {
+                    target_table(&self.database, &create.table_name).map(|_| ())
+                })
+            } else {
+                match original_reindex(statement) {
+                    Ok(Some(original)) => parse_reindex(&original).map(|_| ()),
+                    Ok(None) => return None,
+                    Err(error) => return Some(Err(error)),
+                }
+            };
+            if let Err(error) = validated {
+                return Some(Err(error));
             }
-        };
-        if let Err(error) = validated {
-            return Some(Err(error));
-        }
-        if let Err(error) =
-            crate::ddl::reject_in_transaction(client.transaction_status(), "index DDL")
-        {
-            return Some(Err(error));
-        }
-        Some(
-            crate::ddl::public_schema_for(session_context, &self.database).map(|_| {
-                crate::session_settings::SessionSettingsHook::placeholder_plan()
-            }),
-        )
+            if let Err(error) = crate::ddl::reject_in_transaction(
+                client.transaction_status(),
+                "index DDL",
+            ) {
+                return Some(Err(error));
+            }
+            Some(
+                crate::ddl::public_schema_for(session_context, &self.database).map(
+                    |_| crate::session_settings::SessionSettingsHook::placeholder_plan(),
+                ),
+            )
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.handle(statement, session_context, client).await
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { self.handle(statement, session_context, client).await })
     }
 }
 

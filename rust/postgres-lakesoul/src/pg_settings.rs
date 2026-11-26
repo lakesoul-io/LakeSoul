@@ -20,7 +20,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
@@ -562,70 +561,73 @@ impl VisitorMut for SettingsTableVisitor {
     }
 }
 
-#[async_trait]
 impl QueryHook for PgSettingsHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let parameters = Self::parameters(client).ok()?;
-        let rewritten = Self::rewrite(statement, &parameters, client)?;
-        Some(
-            async move {
-                let dataframe = session_context
-                    .sql(&rewritten.to_string())
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
-                let options = Arc::new(
-                    datafusion_postgres::pgwire::types::format::FormatOptions::from_client_metadata(
-                        client.metadata(),
-                    ),
-                );
-                let response = datafusion_postgres::arrow_pg::encode_dataframe(
-                    dataframe,
-                    &datafusion_postgres::pgwire::api::portal::Format::UnifiedText,
-                    Some(options),
-                )
-                .await?;
-                Ok(Response::Query(response))
-            }
-            .await,
-        )
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let parameters = Self::parameters(client).ok()?;
+            let rewritten = Self::rewrite(statement, &parameters, client)?;
+            Some(
+                async move {
+                    let dataframe = session_context
+                        .sql(&rewritten.to_string())
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                    let options = Arc::new(
+                        datafusion_postgres::pgwire::types::format::FormatOptions::from_client_metadata(
+                            client.metadata(),
+                        ),
+                    );
+                    let response = datafusion_postgres::arrow_pg::encode_dataframe(
+                        dataframe,
+                        &datafusion_postgres::pgwire::api::portal::Format::UnifiedText,
+                        Some(options),
+                    )
+                    .await?;
+                    Ok(Response::Query(response))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let parameters = Self::parameters(client).ok()?;
-        let rewritten = Self::rewrite(statement, &parameters, client)?;
-        Some(
-            async move {
-                session_context
-                    .state()
-                    .statement_to_plan(datafusion::sql::parser::Statement::Statement(
-                        Box::new(rewritten),
-                    ))
-                    .await
-                    .map_err(|error| PgWireError::ApiError(Box::new(error)))
-            }
-            .await,
-        )
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let parameters = Self::parameters(client).ok()?;
+            let rewritten = Self::rewrite(statement, &parameters, client)?;
+            Some(
+                async move {
+                    session_context
+                        .state()
+                        .statement_to_plan(datafusion::sql::parser::Statement::Statement(
+                            Box::new(rewritten),
+                        ))
+                        .await
+                        .map_err(|error| PgWireError::ApiError(Box::new(error)))
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        _statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        None
+    fn handle_extended_query<'a>(
+        &'a self,
+        _statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { None })
     }
 }
 

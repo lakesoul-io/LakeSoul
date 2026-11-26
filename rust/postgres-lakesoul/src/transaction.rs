@@ -1068,46 +1068,47 @@ fn transaction_plan() -> LogicalPlan {
     })
 }
 
-#[async_trait]
 impl QueryHook for LakeSoulTransactionHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        Self::respond(statement, client).await.transpose()
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move { Self::respond(statement, client).await.transpose() })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        Self::claims(statement).then(|| Ok(transaction_plan()))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move { Self::claims(statement).then(|| Ok(transaction_plan())) })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if !Self::claims(statement) {
-            let session = match crate::server::connection_session(client) {
-                Ok(session) => session,
-                Err(error) => return Some(Err(error)),
-            };
-            if is_open(&session, client.transaction_status())
-                && let Err(error) = lock_plan_tables(&session, logical_plan).await
-            {
-                return Some(Err(error));
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if !Self::claims(statement) {
+                let session = match crate::server::connection_session(client) {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+                if is_open(&session, client.transaction_status())
+                    && let Err(error) = lock_plan_tables(&session, logical_plan).await
+                {
+                    return Some(Err(error));
+                }
             }
-        }
-        Self::respond(statement, client).await.transpose()
+            Self::respond(statement, client).await.transpose()
+        })
     }
 }
 

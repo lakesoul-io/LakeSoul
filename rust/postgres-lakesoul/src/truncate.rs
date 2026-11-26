@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::common::DFSchema;
 use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
 use datafusion::prelude::SessionContext;
@@ -50,63 +49,70 @@ const UNDEFINED_TABLE: &str = "42P01";
 
 pub(crate) struct TruncateStatementHook;
 
-#[async_trait]
 impl QueryHook for TruncateStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let truncate = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                reject_transaction_strict(status, "TRUNCATE")?;
-                let meta_client = meta_client(client)?;
-                let planned =
-                    prepare(truncate, session_context, &database, &meta_client).await?;
-                execute(&planned, &meta_client).await
-            }
-            .await,
-        )
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let truncate = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    reject_transaction_strict(status, "TRUNCATE")?;
+                    let meta_client = meta_client(client)?;
+                    let planned =
+                        prepare(truncate, session_context, &database, &meta_client)
+                            .await?;
+                    execute(&planned, &meta_client).await
+                }
+                .await,
+            )
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        extract(statement)?;
-        // `TRUNCATE` has no parameters and no result columns. Resolving the
-        // target is deferred to Execute, where the table is re-read anyway.
-        Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
-            produce_one_row: false,
-            schema: Arc::new(DFSchema::empty()),
-        })))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            extract(statement)?;
+            // `TRUNCATE` has no parameters and no result columns. Resolving the
+            // target is deferred to Execute, where the table is re-read anyway.
+            Some(Ok(LogicalPlan::EmptyRelation(EmptyRelation {
+                produce_one_row: false,
+                schema: Arc::new(DFSchema::empty()),
+            })))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let truncate = extract(statement)?;
-        Some(
-            async {
-                let (status, database) = request_context(client)?;
-                reject_transaction_strict(status, "TRUNCATE")?;
-                let meta_client = meta_client(client)?;
-                let planned =
-                    prepare(truncate, session_context, &database, &meta_client).await?;
-                execute(&planned, &meta_client).await
-            }
-            .await,
-        )
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let truncate = extract(statement)?;
+            Some(
+                async {
+                    let (status, database) = request_context(client)?;
+                    reject_transaction_strict(status, "TRUNCATE")?;
+                    let meta_client = meta_client(client)?;
+                    let planned =
+                        prepare(truncate, session_context, &database, &meta_client)
+                            .await?;
+                    execute(&planned, &meta_client).await
+                }
+                .await,
+            )
+        })
     }
 }
 

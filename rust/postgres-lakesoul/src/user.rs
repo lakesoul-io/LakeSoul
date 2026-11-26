@@ -10,7 +10,6 @@
 //! LakeSoul user directory. It never grants `<domain>_admins`; space
 //! administrators cannot create other space administrators.
 
-use async_trait::async_trait;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
@@ -243,61 +242,66 @@ fn create_user_error(error: LakeSoulMetaDataError) -> PgWireError {
     }
 }
 
-#[async_trait]
 impl QueryHook for UserStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let parsed = match self.parse(statement) {
-            Ok(Some(parsed)) => parsed,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(self.execute(parsed, session_context, client).await)
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let parsed = match self.parse(statement) {
+                Ok(Some(parsed)) => parsed,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(self.execute(parsed, session_context, client).await)
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        let parsed = match self.parse(statement) {
-            Ok(Some(parsed)) => parsed,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        if let Err(error) =
-            reject_in_transaction(client.transaction_status(), "CREATE USER")
-        {
-            return Some(Err(error));
-        }
-        if pg_acl(session_context).is_none() {
-            return Some(Err(feature_not_supported(
-                "CREATE USER requires --rbac".to_string(),
-            )));
-        }
-        let _ = parsed;
-        Some(Ok(SessionSettingsHook::placeholder_plan()))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            let parsed = match self.parse(statement) {
+                Ok(Some(parsed)) => parsed,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            if let Err(error) =
+                reject_in_transaction(client.transaction_status(), "CREATE USER")
+            {
+                return Some(Err(error));
+            }
+            if pg_acl(session_context).is_none() {
+                return Some(Err(feature_not_supported(
+                    "CREATE USER requires --rbac".to_string(),
+                )));
+            }
+            let _ = parsed;
+            Some(Ok(SessionSettingsHook::placeholder_plan()))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let parsed = match self.parse(statement) {
-            Ok(Some(parsed)) => parsed,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(self.execute(parsed, session_context, client).await)
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let parsed = match self.parse(statement) {
+                Ok(Some(parsed)) => parsed,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(self.execute(parsed, session_context, client).await)
+        })
     }
 }
 

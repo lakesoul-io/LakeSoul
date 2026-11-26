@@ -245,75 +245,82 @@ pub(crate) struct CopyInCell(Mutex<Option<CopyInState>>);
 /// Claims `COPY ... FROM STDIN` in both protocols.
 pub(crate) struct CopyStatementHook;
 
-#[async_trait]
 impl QueryHook for CopyStatementHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if !is_copy(statement) {
-            return None;
-        }
-        if is_copy_to(statement) {
-            return Some(
-                crate::copy_out::copy_out(statement, session_context, client, None).await,
-            );
-        }
-        Some(begin_copy(statement, session_context, client).await)
-    }
-
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        session_context: &SessionContext,
-        client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        if !is_copy(statement) {
-            return None;
-        }
-        // Validate the statement at Parse time, the way PostgreSQL does, and
-        // hand the planner a plan without columns: a prepared COPY has no
-        // result to describe. The copy state is created at Execute, because
-        // only then does the server start the copy sub-protocol.
-        let copy_to = is_copy_to(statement);
-        Some(
-            async {
-                if copy_to {
-                    crate::copy_out::validate(statement, session_context, client).await?;
-                } else {
-                    plan_copy(statement, session_context, client).await?;
-                }
-                Ok(no_data_plan())
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if !is_copy(statement) {
+                return None;
             }
-            .await,
-        )
+            if is_copy_to(statement) {
+                return Some(
+                    crate::copy_out::copy_out(statement, session_context, client, None)
+                        .await,
+                );
+            }
+            Some(begin_copy(statement, session_context, client).await)
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if !is_copy(statement) {
-            return None;
-        }
-        if is_copy_to(statement) {
-            return Some(
-                crate::copy_out::copy_out(
-                    statement,
-                    session_context,
-                    client,
-                    Some(_params),
-                )
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        session_context: &'a SessionContext,
+        client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            if !is_copy(statement) {
+                return None;
+            }
+            // Validate the statement at Parse time, the way PostgreSQL does, and
+            // hand the planner a plan without columns: a prepared COPY has no
+            // result to describe. The copy state is created at Execute, because
+            // only then does the server start the copy sub-protocol.
+            let copy_to = is_copy_to(statement);
+            Some(
+                async {
+                    if copy_to {
+                        crate::copy_out::validate(statement, session_context, client)
+                            .await?;
+                    } else {
+                        plan_copy(statement, session_context, client).await?;
+                    }
+                    Ok(no_data_plan())
+                }
                 .await,
-            );
-        }
-        Some(begin_copy(statement, session_context, client).await)
+            )
+        })
+    }
+
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if !is_copy(statement) {
+                return None;
+            }
+            if is_copy_to(statement) {
+                return Some(
+                    crate::copy_out::copy_out(
+                        statement,
+                        session_context,
+                        client,
+                        Some(_params),
+                    )
+                    .await,
+                );
+            }
+            Some(begin_copy(statement, session_context, client).await)
+        })
     }
 }
 

@@ -14,7 +14,6 @@ use std::sync::{Arc, Weak};
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion::catalog::{TableFunctionArgs, TableFunctionImpl, TableProvider};
 use datafusion::common::{DataFusionError, Result as DFResult};
@@ -528,49 +527,54 @@ async fn manifest_references(
     Ok(batches.iter().any(|batch| batch.num_rows() > 0))
 }
 
-#[async_trait]
 impl QueryHook for SnapshotDdlHook {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        let raw = match parse_sentinel(statement) {
-            Ok(Some(raw)) => raw,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        let ddl = match parse_ddl(&raw) {
-            Ok(ddl) => ddl,
-            Err(error) => return Some(Err(error)),
-        };
-        Some(self.execute(ddl, _session_context, client).await)
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            let raw = match parse_sentinel(statement) {
+                Ok(Some(raw)) => raw,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
+            let ddl = match parse_ddl(&raw) {
+                Ok(ddl) => ddl,
+                Err(error) => return Some(Err(error)),
+            };
+            Some(self.execute(ddl, _session_context, client).await)
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        match parse_sentinel(statement) {
-            Ok(Some(_)) => Some(Ok(SessionSettingsHook::placeholder_plan())),
-            Ok(None) => None,
-            Err(error) => Some(Err(error)),
-        }
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            match parse_sentinel(statement) {
+                Ok(Some(_)) => Some(Ok(SessionSettingsHook::placeholder_plan())),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &datafusion::common::ParamValues,
-        session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        self.handle_simple_query(statement, session_context, client)
-            .await
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a datafusion::common::ParamValues,
+        session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            self.handle_simple_query(statement, session_context, client)
+                .await
+        })
     }
 }
 

@@ -50,7 +50,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
@@ -172,39 +171,44 @@ fn forget_closed_portal(statement: &Statement, client: &dyn HookClient) {
     }
 }
 
-#[async_trait]
 impl QueryHook for PortalCloseCleanup {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        forget_closed_portal(statement, client);
-        None
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            forget_closed_portal(statement, client);
+            None
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        _statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        // A portal's statement is registered when it executes, so parse time
-        // has nothing to forget.
-        None
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        _statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            // A portal's statement is registered when it executes, so parse time
+            // has nothing to forget.
+            None
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        forget_closed_portal(statement, client);
-        None
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            forget_closed_portal(statement, client);
+            None
+        })
     }
 }
 
@@ -360,35 +364,43 @@ fn libpq_option(name: &str, options: &str) -> Option<String> {
     None
 }
 
-#[async_trait]
 impl QueryHook for ReadCommittedOnlyGuard {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        Self::unsupported_isolation(statement).map(|level| Err(isolation_error(&level)))
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            Self::unsupported_isolation(statement)
+                .map(|level| Err(isolation_error(&level)))
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        Self::unsupported_isolation(statement).map(|level| Err(isolation_error(&level)))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            Self::unsupported_isolation(statement)
+                .map(|level| Err(isolation_error(&level)))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        Self::unsupported_isolation(statement).map(|level| Err(isolation_error(&level)))
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            Self::unsupported_isolation(statement)
+                .map(|level| Err(isolation_error(&level)))
+        })
     }
 }
 
@@ -439,35 +451,40 @@ fn body_has_modifying_cte(body: &SetExpr) -> bool {
     }
 }
 
-#[async_trait]
 impl QueryHook for ModifyingCteGuard {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(
+            async move { Self::modifies(statement).then(|| Err(modifying_cte_error())) },
+        )
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(
+            async move { Self::modifies(statement).then(|| Err(modifying_cte_error())) },
+        )
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(
+            async move { Self::modifies(statement).then(|| Err(modifying_cte_error())) },
+        )
     }
 }
 
@@ -613,48 +630,53 @@ fn reject_error(statement: &Statement) -> PgWireError {
     )))
 }
 
-#[async_trait]
 impl QueryHook for ReadOnlyStatementGuard {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        if Self::allow(statement) {
-            return None;
-        }
-        Some(Err(reject_error(statement)))
+    fn handle_simple_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            if Self::allow(statement) {
+                return None;
+            }
+            Some(Err(reject_error(statement)))
+        })
     }
 
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        // Fail at Parse time: the client gets the read-only error before any
-        // Bind/Execute instead of a DataFusion planning error.
-        if Self::allow(statement) {
-            return None;
-        }
-        Some(Err(reject_error(statement)))
+    fn handle_extended_parse_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _session_context: &'a SessionContext,
+        _client: &'a (dyn ClientInfo + Send + Sync),
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<LogicalPlan>>> {
+        Box::pin(async move {
+            // Fail at Parse time: the client gets the read-only error before any
+            // Bind/Execute instead of a DataFusion planning error.
+            if Self::allow(statement) {
+                return None;
+            }
+            Some(Err(reject_error(statement)))
+        })
     }
 
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        // Defense in depth: unreachable while the parse hook rejects first,
-        // but keeps the execute phase safe if hook ordering ever changes.
-        if Self::allow(statement) {
-            return None;
-        }
-        Some(Err(reject_error(statement)))
+    fn handle_extended_query<'a>(
+        &'a self,
+        statement: &'a Statement,
+        _logical_plan: &'a LogicalPlan,
+        _params: &'a ParamValues,
+        _session_context: &'a SessionContext,
+        _client: &'a mut dyn HookClient,
+    ) -> futures::future::BoxFuture<'a, Option<PgWireResult<Response>>> {
+        Box::pin(async move {
+            // Defense in depth: unreachable while the parse hook rejects first,
+            // but keeps the execute phase safe if hook ordering ever changes.
+            if Self::allow(statement) {
+                return None;
+            }
+            Some(Err(reject_error(statement)))
+        })
     }
 }
 

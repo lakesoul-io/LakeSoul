@@ -23,7 +23,7 @@ use tokio_postgres::types::Type;
 
 use super::common;
 use crate::support::Harness;
-use crate::support::compare::Rows;
+use crate::support::compare::{self, Rows};
 
 /// A consumer picks the database/schema it is attached to from the session
 /// identity; a wrong answer silently reads another namespace.
@@ -263,6 +263,42 @@ async fn assert_pg_attribute(
     .await
 }
 
+/// Replay psql's column probe using the relation OID advertised by the server.
+async fn assert_psql_describe_columns(client: &Client) -> Result<()> {
+    let oid: String = client
+        .query_one(
+            "SELECT c.oid::text FROM pg_catalog.pg_class c \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = 'public' AND c.relname = 'pk_items'",
+            &[],
+        )
+        .await?
+        .try_get(0)?;
+    let sql = format!(
+        "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), \
+            (SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid, true) FROM pg_catalog.pg_attrdef d \
+             WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef), \
+            a.attnotnull, (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t \
+             WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation, \
+            a.attidentity, a.attgenerated FROM pg_catalog.pg_attribute a \
+            WHERE a.attrelid = {} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+        literal(&oid),
+    );
+    let mut actual = compare::simple(client, &sql)
+        .await
+        .context("psql describe columns for public.pk_items")?;
+    for row in &mut actual.rows {
+        row.truncate(3); // Column name, formatted type, and default expression.
+    }
+    let expected = common::rows(&[
+        &[Some("id"), Some("bigint"), None],
+        &[Some("val"), Some("bigint"), None],
+        &[Some("label"), Some("text"), None],
+    ]);
+    compare::compare_rows(&actual.rows, &expected, true)
+        .context("psql describe must show only public.pk_items columns in table order")
+}
+
 pub async fn run(h: &Harness) -> Result<()> {
     let primary = h.lake_namespace.clone();
     let peer = h.catalog_peer_namespace()?.to_owned();
@@ -289,6 +325,7 @@ pub async fn run(h: &Harness) -> Result<()> {
         &primary_rows,
     )
     .await?;
+    assert_psql_describe_columns(&h.lake).await?;
 
     // 2. A real second database through the PG protocol.
     let peer_client = h
