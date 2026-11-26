@@ -124,7 +124,27 @@ impl CatalogSnapshot {
     /// started by the first lookup that runs with a runtime, and
     /// [`Self::refresh`]/[`Self::load`] fill the view from any async context.
     pub fn new(client: MetaDataClientRef, interval: Duration) -> Arc<Self> {
-        let snapshot = Arc::new(Self {
+        let snapshot = Self::build(client, interval);
+        snapshot.ensure_refresher();
+        snapshot
+    }
+
+    /// Builds a snapshot without starting the periodic refresher.
+    ///
+    /// The refresher then starts on the first lookup that runs with a runtime
+    /// (see [`Self::ensure_loaded`]). Tests that must control exactly when the
+    /// view is populated use this so the refresher's immediate first refresh
+    /// cannot race with their setup.
+    #[cfg(test)]
+    pub(crate) fn new_without_refresher(
+        client: MetaDataClientRef,
+        interval: Duration,
+    ) -> Arc<Self> {
+        Self::build(client, interval)
+    }
+
+    fn build(client: MetaDataClientRef, interval: Duration) -> Arc<Self> {
+        Arc::new(Self {
             client,
             interval,
             view: Arc::new(RwLock::new(CatalogView::default())),
@@ -132,9 +152,7 @@ impl CatalogSnapshot {
             refreshing: Arc::new(AtomicBool::new(false)),
             refresher_running: Arc::new(AtomicBool::new(false)),
             last_attempt: Mutex::new(None),
-        });
-        snapshot.ensure_refresher();
-        snapshot
+        })
     }
 
     /// The refresh interval of the background task.

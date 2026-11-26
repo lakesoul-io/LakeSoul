@@ -442,13 +442,16 @@ mod tests {
     async fn registering_an_existing_table_is_idempotent() {
         let client = Arc::new(MetaDataClient::from_env().await.unwrap());
         let options = LakeSoulProviderOptions::default();
-        // A long interval keeps the staleness deterministic: only the load
-        // below touches the view.
-        let catalog = LakeSoulCatalog::with_refresh_interval(
+        // Only the load below may touch the view before the table is created.
+        // The periodic refresher's first refresh is immediate (the long
+        // interval only spaces later ones), so build the snapshot without it;
+        // it starts on the first lookup, after the staleness assertion.
+        let snapshot = CatalogSnapshot::new_without_refresher(
             client.clone(),
-            options.clone(),
             Duration::from_secs(3600),
         );
+        let catalog =
+            LakeSoulCatalog::with_snapshot(client.clone(), options.clone(), snapshot);
         catalog.snapshot().load().await.unwrap();
 
         let table_name = format!("stale_table_{}", rand::random::<u32>());
