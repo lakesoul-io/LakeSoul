@@ -1409,16 +1409,9 @@ impl QueryHook for SqlAlchemyCatalogHook {
     }
 }
 
-/// Rewrites catalog-describe queries whose projections contain correlated
-/// scalar subqueries.
-///
-/// psql `\d` and SQLAlchemy reflection both ask `pg_attribute` for columns,
-/// defaults, collations and identity options. The pinned DataFusion planner
-/// refuses the correlated scalar subqueries those clients put in the
-/// projection ("must be aggregated to return at most one row"). LakeSoul has
-/// no column defaults or identity sequences, so the correlated subqueries
-/// answer NULL; replacing them with `NULL` preserves the client-visible
-/// column shape while keeping the rest of the catalog query intact.
+/// Supplies NULL for unsupported correlated projections in catalog queries
+/// such as SQLAlchemy's identity-options lookup. The compatibility parser
+/// already rewrites psql `\d`'s default and collation lookups as joins.
 pub struct CatalogProjectionHook;
 
 fn is_catalog_projection_query(statement: &Statement) -> bool {
@@ -1878,33 +1871,6 @@ mod tests {
         assert!(is_catalog_projection_query(&statement));
         let rewritten = rewrite_catalog_projection(&statement).to_string();
         assert!(!rewritten.contains("json_build_object"), "{rewritten}");
-    }
-
-    #[test]
-    fn rewrites_psql_describe_columns_query() {
-        use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
-
-        let sql = "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), \
-            (SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid, true) FROM pg_catalog.pg_attrdef d \
-             WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef), \
-            a.attnotnull, (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t \
-             WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation, \
-            a.attidentity, a.attgenerated FROM pg_catalog.pg_attribute a \
-            WHERE a.attrelid = '16455' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum";
-        let statement = PostgresCompatibilityParser::new()
-            .parse(sql)
-            .expect("parse psql query")
-            .remove(0);
-        assert!(is_catalog_projection_query(&statement));
-        let rewritten = rewrite_catalog_projection(&statement).to_string();
-        assert!(
-            !rewritten.to_ascii_lowercase().contains("pg_attrdef"),
-            "{rewritten}"
-        );
-        assert!(
-            rewritten.to_ascii_lowercase().contains("null"),
-            "{rewritten}"
-        );
     }
 
     fn parse_statement(sql: &str) -> Statement {
