@@ -132,13 +132,28 @@ impl QueryHook for InsertStatementHook {
                             session_context,
                             status,
                             &database,
+                            &Format::UnifiedText,
                         )
                         .await;
                     }
                     if is_do_update(insert) {
-                        run_upsert(insert, session_context, status, &database).await
+                        run_upsert(
+                            insert,
+                            session_context,
+                            status,
+                            &database,
+                            &Format::UnifiedText,
+                        )
+                        .await
                     } else {
-                        run(insert, session_context, status, &database).await
+                        run(
+                            insert,
+                            session_context,
+                            status,
+                            &database,
+                            &Format::UnifiedText,
+                        )
+                        .await
                     }
                 }
                 .await,
@@ -175,6 +190,10 @@ impl QueryHook for InsertStatementHook {
                             UpsertSnapshotMode::PlanOnly,
                         )
                         .await?;
+                        if let Some(projection) = upsert_returning_plan(insert, &planned)?
+                        {
+                            return Ok(projection);
+                        }
                         return Ok(planned.plan.clone());
                     }
                     let target =
@@ -212,6 +231,7 @@ impl QueryHook for InsertStatementHook {
                             session_context,
                             status,
                             &database,
+                            &current_result_format(client),
                         )
                         .await;
                     }
@@ -264,8 +284,21 @@ impl QueryHook for InsertStatementHook {
                         {
                             return Err(stale_upsert_error(&table_name));
                         }
-                        return execute_upsert(&planned, Some(params), session_context)
-                            .await;
+                        let returning = upsert_returning_rows(
+                            insert,
+                            &planned,
+                            Some(params),
+                            &current_result_format(client),
+                            session_context,
+                        )
+                        .await?;
+                        return execute_upsert(
+                            &planned,
+                            Some(params),
+                            session_context,
+                            returning,
+                        )
+                        .await;
                     }
                     let target =
                         prepare(insert, session_context, status, &database).await?;
@@ -337,11 +370,60 @@ pub(crate) async fn prepare_upsert(
         .map_err(upsert_plan_error)
 }
 
+fn upsert_returning_spec(
+    insert: &Insert,
+    planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
+) -> PgWireResult<Option<ReturningSpec>> {
+    let (Some(items), Some((_, target_schema))) =
+        (insert.returning.as_deref(), planned.returning())
+    else {
+        return Ok(None);
+    };
+    ReturningSpec::new(items, target_schema).map(Some)
+}
+
+/// Parse-time RETURNING plan for a full-row `DO UPDATE` upsert.
+pub(crate) fn upsert_returning_plan(
+    insert: &Insert,
+    planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
+) -> PgWireResult<Option<LogicalPlan>> {
+    let Some(spec) = upsert_returning_spec(insert, planned)? else {
+        return Ok(None);
+    };
+    let (input, target_schema) = planned
+        .returning()
+        .ok_or_else(|| internal("the upsert plan has no RETURNING input"))?;
+    let projection = returning_projection_from(input, target_schema, &spec)?;
+    carry_parameter_types(&planned.plan, projection).map(Some)
+}
+
+/// Evaluate an upsert's RETURNING rows from the merged new-row plan. Because
+/// the PG wire form only permits `col = EXCLUDED.col` assignments, that plan
+/// is exactly the source row for both fresh inserts and conflicts.
+pub(crate) async fn upsert_returning_rows(
+    insert: &Insert,
+    planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
+    params: Option<&ParamValues>,
+    format: &Format,
+    session_context: &SessionContext,
+) -> PgWireResult<Option<ReturnedRows>> {
+    let Some(spec) = upsert_returning_spec(insert, planned)? else {
+        return Ok(None);
+    };
+    let (input, target_schema) = planned
+        .returning()
+        .ok_or_else(|| internal("the upsert plan has no RETURNING input"))?;
+    returning_rows_from(input, target_schema, &spec, params, format, session_context)
+        .await
+        .map(Some)
+}
+
 pub(crate) async fn run_upsert(
     insert: &Insert,
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
+    format: &Format,
 ) -> PgWireResult<Response> {
     // Upsert publishes through its own executor, which does not stage into the
     // block: refuse it before resolving the target, so a block never runs it.
@@ -353,16 +435,24 @@ pub(crate) async fn run_upsert(
         UpsertSnapshotMode::Capture,
     )
     .await?;
-    execute_upsert(&planned, None, session_context).await
+    let returning =
+        upsert_returning_rows(insert, &planned, None, format, session_context).await?;
+    execute_upsert(&planned, None, session_context, returning).await
 }
 
 async fn execute_upsert(
     planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
     params: Option<&ParamValues>,
     session_context: &SessionContext,
+    returning: Option<ReturnedRows>,
 ) -> PgWireResult<Response> {
     let (rows, tag) = execute_upsert_plan(planned, params, session_context).await?;
-    Ok(Response::Execution(tag.with_rows(rows)))
+    match returning {
+        Some((fields, batches)) => {
+            returning_response_tagged(fields, batches, format!("INSERT 0 {rows}"))
+        }
+        None => Ok(Response::Execution(tag.with_rows(rows))),
+    }
 }
 
 /// Runs the prepared upsert and returns the written rows with the command tag.
@@ -1377,7 +1467,11 @@ pub(crate) async fn plan_checked(
     database: &str,
 ) -> PgWireResult<LogicalPlan> {
     let target = prepare(insert, session_context, status, database).await?;
-    plan_target(&target, session_context).await
+    if target.returning.is_some() {
+        returning_plan(&target, session_context).await
+    } else {
+        plan_target(&target, session_context).await
+    }
 }
 
 async fn plan_target(
@@ -1565,9 +1659,10 @@ pub(crate) async fn run(
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
+    format: &Format,
 ) -> PgWireResult<Response> {
     let (rows, tag, returning) =
-        execute_write(insert, session_context, status, database).await?;
+        execute_write(insert, session_context, status, database, format).await?;
     match returning {
         Some((fields, batches)) => returning_response(fields, batches, rows),
         None => Ok(Response::Execution(tag.with_rows(rows))),
@@ -1600,8 +1695,14 @@ pub(crate) async fn run_for_job(
         let (rows, tag) = execute_upsert_plan(&planned, None, session_context).await?;
         return Ok((rows, CommandComplete::from(tag).tag));
     }
-    let (rows, tag, _returning) =
-        execute_write(insert, session_context, TransactionStatus::Idle, database).await?;
+    let (rows, tag, _returning) = execute_write(
+        insert,
+        session_context,
+        TransactionStatus::Idle,
+        database,
+        &Format::UnifiedText,
+    )
+    .await?;
     let tag = CommandComplete::from(tag.with_rows(rows)).tag;
     Ok((rows, tag))
 }
@@ -1613,19 +1714,14 @@ async fn execute_write(
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
+    format: &Format,
 ) -> PgWireResult<(usize, Tag, Option<ReturnedRows>)> {
     let target = prepare(insert, session_context, status, database).await?;
     let write_plan = plan_target(&target, session_context).await?;
     // Evaluate RETURNING before the write so a failing returning expression
     // cannot leave a committed insert without its response rows.
-    let returning = execute_returning(
-        &target,
-        &write_plan,
-        None,
-        &Format::UnifiedText,
-        session_context,
-    )
-    .await?;
+    let returning =
+        execute_returning(&target, &write_plan, None, format, session_context).await?;
     if let TargetKind::LakeSoul(mode) = target.kind {
         write_mode(session_context)?.set(mode);
     }
@@ -1741,7 +1837,19 @@ pub(crate) fn returning_projection_from(
                 .clone()
                 .with_name(column.output_name.as_str()),
         );
-        projections.push(col(input_field.name()).alias(column.output_name.as_str()));
+        let expression = col(input_field.name());
+        // The wire field is declared from the target column, so the projected
+        // array must have exactly that type. A JSON-batch VALUES literal (or
+        // any source cast DataFusion kept narrower) otherwise emits Int32
+        // bytes under an Int8 field and the client cannot decode them.
+        let expression = if input_field.data_type() != target_field.data_type() {
+            expression
+                .cast_to(target_field.data_type(), input_schema)
+                .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+        } else {
+            expression
+        };
+        projections.push(expression.alias(column.output_name.as_str()));
         fields.push((None, output_field));
     }
     let output_schema = Arc::new(

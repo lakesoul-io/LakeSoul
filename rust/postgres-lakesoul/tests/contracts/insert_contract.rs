@@ -236,6 +236,7 @@ async fn insert_scenarios(h: &Harness) -> Result<()> {
     jsonb_insert_and_returning(h).await?;
     returning_returns_inserted_rows(h).await?;
     returning_from_select(h).await?;
+    json_batch_returning(h).await?;
     cdc_delete_marker_hides_the_key(h).await?;
     duplicate_key_leaves_no_state(h).await?;
     not_null_violation_is_23502(h).await?;
@@ -754,6 +755,76 @@ async fn returning_from_select(h: &Harness) -> Result<()> {
         3,
     )?;
     eprintln!("PASS case=insert-returning-select simple=rows extended=rows aliases=ok");
+    Ok(())
+}
+
+/// The vector.dev JSON-batch shape keeps RETURNING through its rewrite to a
+/// VALUES source, both as a plain insert and as a full-row upsert.
+async fn json_batch_returning(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute("CREATE TABLE json_returning (id BIGINT PRIMARY KEY, val TEXT)")
+        .await
+        .context("CREATE TABLE json_returning")?;
+
+    let messages = h
+        .lake
+        .simple_query(
+            "INSERT INTO json_returning \
+             SELECT * FROM jsonb_populate_recordset(NULL::json_returning, '[{\"id\":1,\"val\":\"a\"}]') \
+             RETURNING id, val",
+        )
+        .await
+        .context("simple JSON batch RETURNING")?;
+    let rows = messages
+        .iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ensure_eq("JSON batch RETURNING rows", rows.len(), 1)?;
+    ensure_eq("JSON batch RETURNING id", rows[0].get("id"), Some("1"))?;
+    ensure_eq("JSON batch RETURNING val", rows[0].get("val"), Some("a"))?;
+
+    let statement = h
+        .lake
+        .prepare_typed(
+            "INSERT INTO json_returning \
+             SELECT * FROM jsonb_populate_recordset(NULL::json_returning, $1) \
+             ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val \
+             RETURNING id, val",
+            &[Type::JSONB],
+        )
+        .await
+        .context("prepare JSON batch upsert RETURNING")?;
+    eprintln!(
+        "JSON returning columns: {:?}",
+        statement
+            .columns()
+            .iter()
+            .map(|column| (column.name(), column.type_().clone()))
+            .collect::<Vec<_>>()
+    );
+    let rows = h
+        .lake
+        .query(
+            &statement,
+            &[&serde_json::json!([
+                {"id": 1, "val": "updated"},
+                {"id": 2, "val": "b"}
+            ])],
+        )
+        .await
+        .context("extended JSON batch upsert RETURNING")?;
+    ensure_eq("JSON upsert RETURNING rows", rows.len(), 2)?;
+    ensure_eq("JSON upsert RETURNING id", rows[0].get::<_, i64>(0), 1)?;
+    ensure_eq(
+        "JSON upsert RETURNING value",
+        rows[0].get::<_, String>(1),
+        "updated".to_string(),
+    )?;
+    ensure_eq("JSON upsert RETURNING new id", rows[1].get::<_, i64>(0), 2)?;
+    eprintln!("PASS case=insert-json-returning simple=row upsert=rows");
     Ok(())
 }
 

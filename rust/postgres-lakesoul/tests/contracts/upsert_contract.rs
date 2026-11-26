@@ -114,6 +114,7 @@ async fn upsert_scenarios(h: &Harness) -> Result<()> {
     prepared_upsert_after_drop_and_recreate(h).await?;
     empty_and_all_skipped_change_nothing(h).await?;
     legacy_full_row_and_plain_insert_regressions(h).await?;
+    returning_merged_rows(h).await?;
     refused_upserts_change_nothing(h).await?;
     Ok(())
 }
@@ -1880,6 +1881,101 @@ async fn legacy_full_row_and_plain_insert_regressions(h: &Harness) -> Result<()>
 // Refusals
 // ---------------------------------------------------------------------------
 
+/// A full-row `DO UPDATE` upsert returns the merged new rows for both fresh
+/// inserts and conflicts, in both protocols.
+async fn returning_merged_rows(h: &Harness) -> Result<()> {
+    let table = "upsert_returning";
+    let ddl = format!(
+        "CREATE TABLE {table} (id BIGINT NOT NULL PRIMARY KEY, n BIGINT, label TEXT)"
+    );
+    create_mirrored_table(
+        h,
+        &ddl,
+        &ddl,
+        &format!("INSERT INTO {table} VALUES (1, 10, 'old'), (2, 20, 'two')"),
+    )
+    .await?;
+
+    let messages = h
+        .lake
+        .simple_query(&format!(
+            "INSERT INTO {table} (id, n, label) VALUES (1, 11, 'new'), (3, 30, 'three') \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n, label = EXCLUDED.label \
+             RETURNING id, n, label"
+        ))
+        .await
+        .context("simple upsert RETURNING")?;
+    let rows = messages
+        .iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ensure_eq("upsert RETURNING row count", rows.len(), 2)?;
+    ensure_eq(
+        "upsert RETURNING conflicted row",
+        rows[0].get("n"),
+        Some("11"),
+    )?;
+    ensure_eq(
+        "upsert RETURNING fresh row",
+        rows[1].get("label"),
+        Some("three"),
+    )?;
+
+    let statement = h
+        .lake
+        .prepare_typed(
+            &format!(
+                "INSERT INTO {table} (id, n, label) VALUES ($1, $2, $3) \
+                 ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n, label = EXCLUDED.label \
+                 RETURNING *"
+            ),
+            &[Type::INT8, Type::INT8, Type::TEXT],
+        )
+        .await
+        .context("prepare upsert RETURNING")?;
+    let row = h
+        .lake
+        .query_one(&statement, &[&1_i64, &99_i64, &"again"])
+        .await
+        .context("extended upsert RETURNING")?;
+    ensure_eq("extended upsert RETURNING id", row.get::<_, i64>("id"), 1)?;
+    ensure_eq("extended upsert RETURNING n", row.get::<_, i64>("n"), 99)?;
+    ensure_eq(
+        "extended upsert RETURNING label",
+        row.get::<_, String>("label"),
+        "again".to_string(),
+    )?;
+
+    h.reference
+        .simple_query(&format!(
+            "INSERT INTO {table} (id, n, label) VALUES (1, 11, 'new'), (3, 30, 'three') \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n, label = EXCLUDED.label"
+        ))
+        .await?;
+    h.reference
+        .simple_query(&format!(
+            "INSERT INTO {table} (id, n, label) VALUES (1, 99, 'again') \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n, label = EXCLUDED.label"
+        ))
+        .await?;
+    ensure_rows(
+        h,
+        "SELECT id, n, label FROM upsert_returning ORDER BY id",
+        text_rows(&[
+            &[Some("1"), Some("99"), Some("again")],
+            &[Some("2"), Some("20"), Some("two")],
+            &[Some("3"), Some("30"), Some("three")],
+        ]),
+        "upsert RETURNING parity",
+    )
+    .await?;
+    eprintln!("PASS case=upsert-returning simple=rows extended=star parity=ok");
+    Ok(())
+}
+
 async fn refused_upserts_change_nothing(h: &Harness) -> Result<()> {
     const DDL: &str =
         "CREATE TABLE {t} (id BIGINT NOT NULL, n BIGINT, label TEXT, PRIMARY KEY (id))";
@@ -1959,16 +2055,17 @@ async fn refused_upserts_change_nothing(h: &Harness) -> Result<()> {
             "refuse-named-constraint",
         )
         .await?;
-        // RETURNING has no row stream.
+        // ON CONFLICT DO NOTHING still has no row stream; DO UPDATE RETURNING
+        // is covered by its own scenario.
         reject_lake_only(
             h,
             protocol,
             &format!(
                 "INSERT INTO {table} (id, n) VALUES (1,5) \
-                 ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n RETURNING id"
+                 ON CONFLICT (id) DO NOTHING RETURNING id"
             ),
             FEATURE_NOT_SUPPORTED,
-            "refuse-returning",
+            "refuse-do-nothing-returning",
         )
         .await?;
     }

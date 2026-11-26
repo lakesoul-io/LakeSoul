@@ -279,9 +279,9 @@ pub(crate) fn rewrite(
         format_clause: None,
         pipe_operators: vec![],
     }));
-    // The JSON function produced the row source; no RETURNING projection can
-    // refer to the composite function's output, so drop it here.
-    rewritten.returning = None;
+    // RETURNING refers to target columns, so it stays valid after the JSON
+    // function is rewritten into a VALUES source and flows through the same
+    // INSERT/UPSERT RETURNING paths.
     Ok(rewritten)
 }
 
@@ -321,6 +321,9 @@ pub(crate) async fn parse_plan(
             lakesoul_datafusion::planner::upsert::SnapshotMode::PlanOnly,
         )
         .await?;
+        if let Some(projection) = crate::insert::upsert_returning_plan(&stub, &planned)? {
+            return Ok(projection);
+        }
         return Ok(planned.plan.clone());
     }
     crate::insert::plan_checked(&stub, session_context, status, database).await
@@ -333,14 +336,16 @@ pub(crate) async fn execute(
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
+    format: &datafusion_postgres::pgwire::api::portal::Format,
 ) -> PgWireResult<Response> {
     let schema = target_schema(insert, session_context, database).await?;
     let rewritten = rewrite(insert, json, &schema)?;
     // Match the ordinary hook dispatch: DO UPDATE goes to the upsert planner,
     // everything else to the insert path. Conflict semantics stay identical.
     if crate::insert::is_do_update(&rewritten) {
-        crate::insert::run_upsert(&rewritten, session_context, status, database).await
+        crate::insert::run_upsert(&rewritten, session_context, status, database, format)
+            .await
     } else {
-        crate::insert::run(&rewritten, session_context, status, database).await
+        crate::insert::run(&rewritten, session_context, status, database, format).await
     }
 }

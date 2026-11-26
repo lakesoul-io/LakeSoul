@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{Column, DFSchema, DFSchemaRef, ScalarValue, TableReference};
 use datafusion::datasource::{DefaultTableSource, source_as_provider};
@@ -110,12 +110,24 @@ pub struct PlannedUpsert {
     pub plan: LogicalPlan,
     pub identity: UpsertIdentity,
     pub snapshot: Option<Arc<Vec<PartitionInfo>>>,
+    /// The merged new-row output of the upsert node. `RETURNING` reads these
+    /// rows through a projection instead of re-running the upsert executor.
+    returning_input: Option<Arc<LogicalPlan>>,
+    returning_schema: Option<Arc<Schema>>,
     _snapshot_guard: Option<LakeSoulSnapshotGuard>,
 }
 
 impl PlannedUpsert {
     pub fn plan(&self) -> &LogicalPlan {
         &self.plan
+    }
+
+    /// The plan and target schema a `RETURNING` projection should read.
+    pub fn returning(&self) -> Option<(&LogicalPlan, &SchemaRef)> {
+        Some((
+            self.returning_input.as_ref()?,
+            self.returning_schema.as_ref()?,
+        ))
     }
 }
 
@@ -447,6 +459,33 @@ async fn plan_upsert_impl(
         .build()
         .map_err(UpsertPlanError::DataFusion)?;
     let incoming_schema = incoming.schema().clone();
+    // RETURNING reads the proposed source rows, not the UpsertNode output:
+    // the wire path only accepts full-row `col = EXCLUDED.col` assignments,
+    // so the merged row is exactly the incoming row. Projecting the source
+    // also avoids executing the custom UpsertNode a second time.
+    let wants_returning = insert.returning.is_some();
+    let returning_input = if wants_returning {
+        let projections = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                Expr::Column(Column::new(
+                    Some(excluded_ref.clone()),
+                    format!("{NEW_PREFIX}{index}"),
+                ))
+                .alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        let projected = LogicalPlanBuilder::from(incoming.clone())
+            .project(projections)
+            .map_err(UpsertPlanError::DataFusion)?
+            .build()
+            .map_err(UpsertPlanError::DataFusion)?;
+        Some(Arc::new(projected))
+    } else {
+        None
+    };
     let new_indices = (0..schema.fields().len())
         .map(|index| {
             incoming_schema.index_of_column(&Column::new(
@@ -756,6 +795,8 @@ async fn plan_upsert_impl(
         plan,
         identity,
         snapshot,
+        returning_input,
+        returning_schema: wants_returning.then(|| Arc::clone(&schema)),
         _snapshot_guard: snapshot_guard,
     })
 }
@@ -844,7 +885,6 @@ fn reject_upsert_clauses(
     insert: &datafusion::sql::sqlparser::ast::Insert,
 ) -> Result<(), UpsertPlanError> {
     for (present, clause) in [
-        (insert.returning.is_some(), "RETURNING"),
         (insert.overwrite, "INSERT OVERWRITE"),
         (insert.ignore, "INSERT IGNORE"),
         (insert.replace_into, "REPLACE INTO"),

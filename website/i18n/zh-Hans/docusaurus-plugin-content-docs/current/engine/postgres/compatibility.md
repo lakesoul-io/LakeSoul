@@ -97,8 +97,8 @@ reflection、forward-only named cursor、fetch-size cursor 和 Metabase 风格�
 核心 Python 和 JDBC 工作流已通过基线，包括 psql `\d`、`bytea` 往返和
 `psycopg2` dialect 下的 SQLAlchemy reflection。Named cursor 目前只支持
 forward-only、非 holdable；`WITH HOLD`、`SCROLL` 和 backward fetch 会显式拒绝。
-已知缺口会显式保留，而不是隐藏：`ON CONFLICT` 上的 `RETURNING` 以及 `RETURNING`
-表达式，以及 `pg_dump --data-only`（它使用 REPEATABLE READ 事务和
+已知缺口会显式保留，而不是隐藏：`ON CONFLICT DO NOTHING` 上的 `RETURNING` 以及
+`RETURNING` 表达式，以及 `pg_dump --data-only`（它使用 REPEATABLE READ 事务和
 `OPERATOR(pg_catalog.=)` 语法，当前 parser 不接受）。数字 `to_char`
 pattern 未实现，会显式报错；在同一个 projection 里同时选择 `current_user` 和
 `session_user` 仍受兼容 parser 的 `current_user -> session_user` 重写限制；

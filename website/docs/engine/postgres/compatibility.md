@@ -107,8 +107,8 @@ The current baseline passes the core Python and JDBC workflows, including psql
 `\d`, `bytea` round-trips and SQLAlchemy reflection through the `psycopg2`
 dialect. Named cursors are forward-only and non-holdable; `WITH HOLD`,
 `SCROLL` and backward fetches are explicitly refused. Known gaps are kept
-visible rather than hidden: `RETURNING` for `ON CONFLICT` and `RETURNING`
-expressions, and `pg_dump --data-only` (it opens a REPEATABLE READ transaction and
+visible rather than hidden: `RETURNING` for `ON CONFLICT DO NOTHING` and
+`RETURNING` expressions, and `pg_dump --data-only` (it opens a REPEATABLE READ transaction and
 uses `OPERATOR(pg_catalog.=)` syntax this parser does not accept). Numeric
 `to_char` patterns are not
 implemented and fail explicitly; selecting `current_user` and `session_user`

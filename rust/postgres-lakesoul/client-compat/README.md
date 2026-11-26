@@ -15,7 +15,7 @@ that ordinary PostgreSQL driver workflows can execute.
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | `test_types.py` | psycopg2 + psycopg3 semantic types: `uuid`, `uuid[]`, `money`, `numeric(60,10)`/`numeric(76,0)`, `varchar(n)`/`char(n)`, `time`/`timestamp(p)`/`timestamptz`, arrays of int/text/numeric/varchar/money, OIDs and `pg_attribute` metadata, plus explicit refusals |
-| `test_batch_insert.py` | the vector.dev sink shape `INSERT INTO t SELECT * FROM jsonb_populate_recordset(NULL::t, $1)` (plain, `DO NOTHING`, `DO UPDATE`, NULL values) and large multi-row `VALUES`, through both drivers; `BEGIN … COMMIT` folds several JSON inserts into one metadata commit |
+| `test_batch_insert.py` | the vector.dev sink shape `INSERT INTO t SELECT * FROM jsonb_populate_recordset(NULL::t, $1)` (plain, `DO NOTHING`, `DO UPDATE`, NULL values and `RETURNING`) and large multi-row `VALUES`, through both drivers; `BEGIN … COMMIT` folds several JSON inserts into one metadata commit |
 | `test_pgvector.py` | pgvector type discovery, `Vector` parameters and `<->`/`<#>`/`<=>` distance, vector column round trip, `format_type`, SQLAlchemy `Vector` reflection/select, and `CREATE TABLE`/`CREATE INDEX` DDL (including `vector_index_columns` declarations, refused index forms and SQLAlchemy index creation) |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV/binary), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT; semantic types and `ParameterMetaData` in `JdbcTypeSmoke`, pgvector type/query and `CREATE TABLE`/`CREATE INDEX` DDL via `com.pgvector:pgvector` in `JdbcVectorSmoke` |
 
@@ -31,9 +31,10 @@ The suite asserts **explicit refusal** for currently unsupported paths:
 
 Named cursors are forward-only and non-holdable. `WITH HOLD`, `SCROLL`, binary
 cursors and backward fetches are explicitly refused instead of being silently
-downgraded. `INSERT ... RETURNING` covers `INSERT ... VALUES` and
-`INSERT ... SELECT`, and `UPDATE ... RETURNING` covers the new rows, with `*`,
-column references and aliases; expressions and `ON CONFLICT ... RETURNING`
+downgraded. `INSERT ... RETURNING` covers `INSERT ... VALUES`,
+`INSERT ... SELECT` and the JSON-batch shape, including full-row `ON CONFLICT
+DO UPDATE`; `UPDATE ... RETURNING` covers the new rows. `*` column references
+and aliases are supported; expressions and `ON CONFLICT DO NOTHING RETURNING`
 remain explicit `0A000` gaps.
 
 If one of these starts working, the test fails and the compatibility contract
