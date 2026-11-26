@@ -170,18 +170,30 @@ impl TableProvider for CountingTable {
         self.inner.table_type()
     }
 
-    async fn scan(
-        &self,
-        state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
+    fn scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        state: &'life1 dyn Session,
+        projection: Option<&'life2 Vec<usize>>,
+        filters: &'life3 [Expr],
         limit: Option<usize>,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        let inner = self.inner.scan(state, projection, filters, limit).await?;
-        Ok(Arc::new(CountingExec {
-            inner,
-            executions: Arc::clone(&self.executions),
-        }))
+    ) -> futures::future::BoxFuture<'async_trait, DFResult<Arc<dyn ExecutionPlan>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        // Build the inner future before the coroutine: `filters` and `state`
+        // are DataFusion AST/session types whose Send proof is expensive.
+        let inner = self.inner.scan(state, projection, filters, limit);
+        Box::pin(async move {
+            let inner = inner.await?;
+            Ok(Arc::new(CountingExec {
+                inner,
+                executions: Arc::clone(&self.executions),
+            }) as Arc<dyn ExecutionPlan>)
+        })
     }
 }
 

@@ -3123,8 +3123,7 @@ impl datafusion::execution::context::QueryPlanner for KeyedLookupQueryPlanner {
         'life2: 'async_trait,
         Self: 'async_trait,
     {
-        let future = self.inner.create_physical_plan(logical_plan, session);
-        Box::pin(async move { future.await })
+        self.inner.create_physical_plan(logical_plan, session)
     }
 }
 

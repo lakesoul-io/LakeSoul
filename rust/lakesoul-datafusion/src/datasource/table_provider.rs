@@ -3026,6 +3026,8 @@ impl TableProvider for LakeSoulTableProvider {
         ),
         err
     )]
+    // The async wrapper is needed to coerce the inner future to 'async_trait.
+    #[allow(clippy::redundant_async_block)]
     fn insert_into<'life0, 'life1, 'async_trait>(
         &'life0 self,
         state: &'life1 dyn Session,

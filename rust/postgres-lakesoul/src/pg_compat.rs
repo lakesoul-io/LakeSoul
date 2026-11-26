@@ -55,9 +55,8 @@ use datafusion::scalar::ScalarValue;
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     DataType as SqlDataType, Expr, Function, FunctionArg, FunctionArgExpr,
-    FunctionArgumentList, FunctionArguments, Ident, LimitClause, ObjectName, Query,
-    SetExpr, Statement, TableFactor, Value, ValueWithSpan, Visit, VisitMut, Visitor,
-    VisitorMut,
+    FunctionArgumentList, FunctionArguments, Ident, ObjectName, Statement, Value,
+    VisitMut, VisitorMut,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::arrow_pg::encode_dataframe;
