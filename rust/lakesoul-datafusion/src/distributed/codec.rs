@@ -664,8 +664,9 @@ const MAX_WRITE_ID_LEN: usize = 64;
 /// [`crate::federation::FederationPlanCodec`] (ADBC foreign scans and writes),
 /// position 5 the IVM refresh codec when the `ivm` feature is enabled, then
 /// [`ExternalFileScanCodec`], [`ExternalFileWriteCodec`], [`UpsertExecCodec`],
-/// [`NativeBatchProbeCodec`] for vector probes, and finally
-/// [`crate::udf::json::JsonUdfCodec`] for the JSON scalar functions. A worker
+/// [`NativeBatchProbeCodec`] for vector probes,
+/// [`crate::udf::json::JsonUdfCodec`] for JSON scalar functions, and
+/// [`super::compaction::CompactionCodec`] for bucket compaction. A worker
 /// registers a different list either fails to decode a stage or would hand a
 /// payload to the wrong codec, so the list is part of the wire generation
 /// ([`CODEC_VERSION`]).
@@ -689,6 +690,7 @@ pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
     codecs.push(Arc::new(super::vector_batch_codec::NativeBatchProbeCodec));
     // Appended: the position of every existing codec stays stable.
     codecs.push(Arc::new(crate::udf::json::JsonUdfCodec));
+    codecs.push(Arc::new(super::compaction::CompactionCodec));
     codecs
 }
 
