@@ -1829,3 +1829,146 @@ impl IvmRuntime {
         Ok(epoch)
     }
 }
+
+#[cfg(test)]
+mod key_filter_tests {
+    use super::*;
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use tempfile::tempdir;
+
+    const CHANGE_COLUMN: &str = "op";
+
+    fn source_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Int64, false),
+            Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+        ]))
+    }
+
+    fn batch(rows: &[(i64, i64, &str)]) -> RecordBatch {
+        RecordBatch::try_new(
+            source_schema(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.0))),
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.1))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.2))),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// A three-way keyed join whose incremental refresh must read only the
+    /// rows matching the changed key, not the full sources.
+    #[tokio::test]
+    async fn a_keyed_refresh_reads_only_the_affected_keys() {
+        let runtime = IvmRuntime::from_env().await.unwrap();
+        runtime.init_schema().await.unwrap();
+        let dir = tempdir().unwrap();
+        let suffix = uuid::Uuid::new_v4().simple();
+        let path = |name: &str| format!("file://{}", dir.path().join(name).display());
+        let source = |name: String| {
+            let runtime = &runtime;
+            let path = path.clone();
+            async move {
+                runtime
+                    .create_table(
+                        IvmTableOptions::new(name.clone(), path(&name), source_schema())
+                            .with_primary_keys(vec!["k".to_string()])
+                            .with_cdc_column(CHANGE_COLUMN),
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let a = source(format!("ivm_mjk_a_{suffix}")).await;
+        let b = source(format!("ivm_mjk_b_{suffix}")).await;
+        let c = source(format!("ivm_mjk_c_{suffix}")).await;
+
+        let schemas = [a.schema.clone(), b.schema.clone(), c.schema.clone()];
+        let primary_keys = vec![
+            vec!["k".to_string()],
+            vec!["k".to_string()],
+            vec!["k".to_string()],
+        ];
+        let columns = vec![
+            MultiJoinColumn {
+                source: 0,
+                column: "v".to_string(),
+                name: "av".to_string(),
+            },
+            MultiJoinColumn {
+                source: 1,
+                column: "v".to_string(),
+                name: "bv".to_string(),
+            },
+            MultiJoinColumn {
+                source: 2,
+                column: "v".to_string(),
+                name: "cv".to_string(),
+            },
+        ];
+        let mv = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_mjk_mv_{suffix}"),
+                    path("mv"),
+                    multi_join_mv_schema_for(&schemas, &primary_keys, &columns).unwrap(),
+                )
+                .with_primary_keys(multi_join_primary_keys(&primary_keys)),
+            )
+            .await
+            .unwrap();
+        let key = |left: usize, right: usize| MultiJoinKey {
+            left_source: left,
+            left_column: "k".to_string(),
+            left_expr: None,
+            right_source: right,
+            right_column: "k".to_string(),
+            right_expr: None,
+        };
+        let view = MultiJoinView::new(
+            format!("ivm_mjk_view_{suffix}"),
+            vec![a.clone(), b.clone(), c.clone()],
+            mv.clone(),
+            vec![key(0, 1), key(1, 2)],
+            columns,
+        );
+
+        let rows = (1..=200).map(|k| (k, k * 10, "insert")).collect::<Vec<_>>();
+        for table in [&a, &b, &c] {
+            table
+                .append_batch(runtime.client(), batch(&rows))
+                .await
+                .unwrap();
+        }
+        let (_, bootstrap_io) = crate::observability::scope_refresh_io(
+            "multi_join",
+            runtime.refresh_multi_join(&view),
+        )
+        .await;
+        assert!(bootstrap_io.rows_scanned() > 0);
+
+        // One update in the first source: the keyed walk probes the two
+        // neighbours by join key instead of reading all three sources.
+        a.append_batch(runtime.client(), batch(&[(7, 777, "insert")]))
+            .await
+            .unwrap();
+        let (_, io) = crate::observability::scope_refresh_io(
+            "multi_join",
+            runtime.refresh_multi_join(&view),
+        )
+        .await;
+        assert_eq!(
+            io.full_scans(),
+            0,
+            "a keyed multi-join refresh must not fall back to full source scans: {:?}",
+            io.full_scan_tables()
+        );
+        assert!(
+            io.rows_scanned() < 200,
+            "only the affected key should be read, scanned {} rows",
+            io.rows_scanned()
+        );
+    }
+}

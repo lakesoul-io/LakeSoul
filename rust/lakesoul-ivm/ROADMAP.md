@@ -302,7 +302,7 @@ B3 + P1 + R1 之后，瓶颈已经从「扫描行数」转到「文件数」：
 | **R3** | **阶段级指标** | 规划 / delta 读 / 状态读 / 计算 / 写 / epoch 提交分段计时 | 量化 ~0.1–0.3s 截距与每文件成本 | S | 各阶段之和 ≈ 总时间（±10%） |
 | **R4** | **源表/状态 compaction** | 先加 compacted-source bench 变体量化上限；再接入现有 compaction 服务或 IVM 级旧文件重写 | 绝对值下降；但全量同样受益，相对优势可能进一步缩小 | M–L | compacted bench ≥3× 绝对值；长跑视图文件数不增长 |
 | **R5** | **固定开销** | 计划缓存、footer/元数据缓存、合并 LIST/HEAD | 地板 −20–40% | M | R3 指标 |
-| **R6** | **剩余 key-filtered 形状** | multi_join 按直接邻居 join key 过滤；chain 逐阶段键传播；top_k 分组过滤；pair join before-match | 仅在 10M/compacted 基准下验证是否值得；1M 下增量已只有 1.0–1.2× | M–L | 形状 bench |
+| **R6** | **剩余 key-filtered 形状** | ✅ multi_join 按 equality edge 逐跳过滤已实现并有回归；chain 逐阶段键传播；top_k 分组过滤；pair join before-match | 仅在 10M/compacted 基准下验证是否值得；1M 下增量已只有 1.0–1.2× | M–L | 形状 bench |
 | **R7** | **分区/倾斜变体** | partitioned@1M 在 compaction 后重测；MIN/MAX、COUNT(DISTINCT) 热点变体 | 按需求 | M | bench |
 
 **为什么 R1 在 R4 之前**：MV 的 488 个文件完全由 IVM 自己的写入批次造成，改动小、收益确定；

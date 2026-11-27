@@ -4382,9 +4382,11 @@ bench（release，本地 RustFS，Parquet，4 bucket，1e5/1e6 行，0.01%/0.1%/
 CSV 已更新 `bench-results/row_*`，`BENCH.md` 的 row 行与“读放大”结论同步。
 
 **P1 剩余形状（记录）**：top_k 按受影响分组过滤源/MV（分组键非排序键，主要省计算而非
-IO）；lookup 左/右源与 MV 按主键过滤（右源按变更 join key 过滤；computed join key 退回全量）；
-multi_join 各源按主键/join key 过滤（inner-only，可安全按 join key 裁剪）；pair left/full
-join 仍需 before-match 扩展后才能过滤；chain 继承 lookup/row 的改进后再按阶段键过滤。
+IO）；pair left/full join 仍需 before-match 扩展后才能过滤；chain 继承 lookup/row 的改进后
+再按阶段键过滤。lookup 与 multi_join 已完成：lookup 按变更 join key 过滤两侧与 MV（§10.180）；
+keyed multi_join 从变更源出发沿 equality edge 逐跳用 join key 探测邻居（§1235 的
+`multi_join_single_source_terms`），不再全量读三张源；`runtime/multi_join.rs::key_filter_tests`
+用 `RefreshIo.full_scans` 断言增量刷新没有全表扫描（关闭该快路径时测试失败）。
 
 ### 10.180 性能优化 P1b：lookup join 按变更键过滤读
 
