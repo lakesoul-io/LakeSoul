@@ -38,9 +38,10 @@ concurrency:
 jobs:
   rust_test:
     runs-on: ubuntu-24.04
-    # The three suites run in parallel. legacy/v2 share one target cache;
-    # ivm has its own cache because IVM_FEATURES change the artifacts of
-    # several large crates. Both caches are written on main only.
+    # The three suites run in parallel and share one target cache. Every cargo
+    # invocation uses the same TEST_ARGS (packages + IVM features), so whichever
+    # suite saves first on main writes a complete cache for all three. IVM
+    # features are always enabled: that is the production configuration.
     strategy:
       fail-fast: false
       matrix:
@@ -53,21 +54,18 @@ jobs:
       LAKESOUL_PG_USERNAME: lakesoul_test
       LAKESOUL_PG_PASSWORD: lakesoul_test
       TZ: UTC
-      # One package selection for every cargo invocation in this job. Cargo
-      # resolves features per invocation, and the selected packages' dev-deps
-      # take part in that unification. A different selection -- a bare
-      # `-p postgres-lakesoul`, for example -- resolves a different feature set
-      # (tokio without `test-util`, libc without `extra_traits`, ...), which
-      # recompiles that crate plus its entire dependent subtree.
-      TEST_PKGS: >-
+      # One package selection and feature set for every cargo invocation in
+      # this job, shared by all three suites. Cargo resolves features per
+      # invocation, and the selected packages' dev-deps take part in that
+      # unification; a different selection recompiles shared crates and makes
+      # the target cache incomplete. IVM features are part of the superset
+      # (production runs with them enabled).
+      TEST_ARGS: >-
         -p lakesoul-build-info -p lakesoul-metadata-proto -p lakesoul-metadata
         -p lakesoul-common -p lakesoul-io -p lakesoul-vector
         -p lakesoul-datafusion -p lakesoul-console -p lakesoul-worker
-        -p postgres-lakesoul
-      # Keep the IVM cargo invocations on the same package selection as the
-      # main Rust tests.  A package-only selection changes the feature
-      # unification of shared crates and recompiles arrow/datafusion/vortex.
-      IVM_FEATURES: "lakesoul-ivm/distributed,lakesoul-datafusion/ivm"
+        -p postgres-lakesoul -p lakesoul-ivm
+        --features lakesoul-ivm/distributed,lakesoul-datafusion/ivm
     services:
       # Label used to access the service container
       postgres:
@@ -146,19 +144,11 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
-      # legacy and v2 share the default test-fast target cache; IVM builds a
-      # different feature set and keeps its own entry.
+      # All three suites use the same TEST_ARGS and share one target cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: matrix.suite != 'ivm'
         with:
           workspaces: ". -> rust/target"
           shared-key: "host-testfast"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: matrix.suite == 'ivm'
-        with:
-          workspaces: ". -> rust/target"
-          shared-key: "host-ivm-testfast"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
@@ -177,6 +167,14 @@ jobs:
       # The merged contracts binary runs every PG-wire suite in one process;
       # cap libtest threads so the shared metadata PG server is not exhausted
       # on runners with many cores.
+      # Compile every test target with the one shared TEST_ARGS so the target
+      # cache is complete for all suites. Running subsets below reuses these
+      # artifacts; --tests is avoided on legacy/v2 because it would also run
+      # ivm_contracts (owned by the ivm suite).
+      - name: Build all test targets
+        run: |
+          read -r -a test_args <<< "$TEST_ARGS"
+          cargo test --profile test-fast "${test_args[@]}" --lib --bins --tests --jobs 4 --no-run
       - name: Test legacy merge
         if: matrix.suite == 'legacy'
         env:
@@ -188,8 +186,10 @@ jobs:
           LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
           LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
-          read -r -a test_packages <<< "$TEST_PKGS"
-          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --tests --jobs 4 -- --test-threads=4
+          read -r -a test_args <<< "$TEST_ARGS"
+          cargo test --profile test-fast "${test_args[@]}" --lib --bins \
+            --test io_contracts --test datafusion_contracts --test metadata_contracts \
+            --test vector_contracts --jobs 4 -- --test-threads=4
       # sqllogic runs both wire protocols locally and with two real Flight workers.
       - name: PostgreSQL SQL compatibility (legacy merge)
         if: matrix.suite == 'legacy'
@@ -197,8 +197,8 @@ jobs:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_BACKTRACE: full
         run: |
-          read -r -a test_packages <<< "$TEST_PKGS"
-          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --test contracts --test sqllogic --jobs 4 -- --nocapture --test-threads=4
+          read -r -a test_args <<< "$TEST_ARGS"
+          cargo test --profile test-fast "${test_args[@]}" --lib --bins --test contracts --test sqllogic --jobs 4 -- --nocapture --test-threads=4
       - name: Test v2 merge
         if: matrix.suite == 'v2'
         env:
@@ -210,16 +210,18 @@ jobs:
           LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
           LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
-          read -r -a test_packages <<< "$TEST_PKGS"
-          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --tests --jobs 4 -- --test-threads=4
+          read -r -a test_args <<< "$TEST_ARGS"
+          cargo test --profile test-fast "${test_args[@]}" --lib --bins \
+            --test io_contracts --test datafusion_contracts --test metadata_contracts \
+            --test vector_contracts --jobs 4 -- --test-threads=4
       - name: PostgreSQL SQL compatibility (v2 merge)
         if: matrix.suite == 'v2'
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
         run: |
-          read -r -a test_packages <<< "$TEST_PKGS"
-          cargo test --profile test-fast "${test_packages[@]}" --lib --bins --test contracts --test sqllogic --jobs 4 -- --nocapture --test-threads=4
+          read -r -a test_args <<< "$TEST_ARGS"
+          cargo test --profile test-fast "${test_args[@]}" --lib --bins --test contracts --test sqllogic --jobs 4 -- --nocapture --test-threads=4
 
       # IVM tests use their own package selection but must reuse the shared
       # dependency build of the main test steps.  The script builds the core

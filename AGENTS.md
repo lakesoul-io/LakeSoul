@@ -270,14 +270,15 @@ whole workspace's crates adds entries without helping these jobs, and entry
 sizes are comparable either way. Only `main` saves (`save-if`), PRs restore
 only. `shared-key` separates the streams that produce different artifacts:
 
-- `host-testfast`: host `test-fast` builds (`rust-ci` legacy/v2,
-  `pg-client-compat`, `tpch-compat`, `ivm-bench`)
+- `host-testfast`: host `test-fast` builds (`rust-ci` legacy/v2/ivm,
+  `pg-client-compat`, `tpch-compat`, `ivm-bench`). All `rust-ci` suites use one
+  `TEST_ARGS` (the same packages plus `-p lakesoul-ivm` and the IVM features),
+  so whichever suite saves first on `main` writes a complete cache. IVM
+  features are always enabled — production runs with them on.
 - `host-clippy-testfast`: `rust-ci` clippy only. Clippy finishes first and must
   not save into `host-testfast`: actions/cache will not overwrite an existing
-  key, so its clippy-only target directory would leave legacy/v2 with a cache
-  that restores but still recompiles everything.
-- `host-ivm-testfast`: the `rust-ci` IVM suite, whose feature set changes the
-  artifacts of several large crates
+  key, so its clippy-only target directory would leave the test suites with a
+  cache that restores but still recompiles everything.
 - `gnu217-testfast`: `cargo zigbuild --profile test-fast --target
   x86_64-unknown-linux-gnu.2.17` builds (`maven-test`, `compatibility-ci`,
   `consistency-ci`, `compaction-clean-e2e`, `python-ci` and the CDC suites).
