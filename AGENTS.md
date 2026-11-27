@@ -281,7 +281,9 @@ only. `shared-key` separates the streams that produce different artifacts:
   x86_64-unknown-linux-gnu.2.17` builds (`maven-test`, `compatibility-ci`,
   `consistency-ci`, `compaction-clean-e2e`, `python-ci` and the CDC suites).
   All of them MUST call `.github/actions/build-zigbuild-superset`, which builds
-  one identical package/feature superset into `rust/target`. actions/cache
+  one identical package/feature superset with `--all-targets` (needed for the
+  `lakesoul-console` binary as well as lib/test/cdylib artifacts) into
+  `rust/target`. actions/cache
   keeps only the first job that saves a key, so a single shared entry is only
   complete when every producer compiles the same graph. Every workflow also
   saves on `main` because their path filters fire independently.

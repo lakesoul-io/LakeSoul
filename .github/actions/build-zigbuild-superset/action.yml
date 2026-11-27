@@ -27,4 +27,4 @@ runs:
           --package lakesoul-console --package lakesoul-python \
           --package lakesoul-datafusion \
           --features lakesoul-io-c/hdfs,lakesoul-python/ci-unify,lakesoul-datafusion/ci \
-          --lib --tests
+          --all-targets
