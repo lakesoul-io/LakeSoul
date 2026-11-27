@@ -279,7 +279,12 @@ only. `shared-key` separates the streams that produce different artifacts:
   artifacts of several large crates
 - `gnu217-testfast`: `cargo zigbuild --profile test-fast --target
   x86_64-unknown-linux-gnu.2.17` builds (`maven-test`, `compatibility-ci`,
-  `consistency-ci`, `compaction-clean-e2e`, `python-ci`, CDC suites)
+  `consistency-ci`, `compaction-clean-e2e`, CDC suites)
+- `gnu217-python-testfast`: `python-ci` only. Its `--features
+  lakesoul-python/ci-unify` build also includes `lakesoul-console`; the other
+  gnu217 jobs compile different package/feature sets into the same target dir,
+  so a shared key would store only the first job's artifacts and python would
+  recompile on every run.
 
 `native-build` and the release jobs keep the release profile and the
 `native-glibc217-v2` entry because they produce shipped artifacts. GitHub CI no

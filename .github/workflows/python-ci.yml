@@ -177,10 +177,15 @@ jobs:
         uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+      # The other gnu217 jobs compile different package/feature sets into the
+      # same target directory (maven-test: --all-features, compatibility/compaction:
+      # hdfs only, consistency: datafusion --tests). Sharing one actions/cache key
+      # means only the first job's artifacts are stored, and python's ci-unify
+      # build then recompiles everything. Keep this job's cache separate.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "gnu217-testfast"
+          shared-key: "gnu217-python-testfast"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Zig
         uses: mlugg/setup-zig@v2
