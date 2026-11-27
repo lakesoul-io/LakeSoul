@@ -1589,11 +1589,14 @@ impl IvmRuntime {
             let mut before = Vec::with_capacity(view.sources.len());
             let mut delta = Vec::with_capacity(view.sources.len());
             for (source, window) in view.sources.iter().zip(&windows) {
-                before.push(self.as_of_table_frame(
-                    &context,
-                    source,
-                    window.before_timestamp,
-                )?);
+                before.push(
+                    self.before_window_table_frame(
+                        &context,
+                        source,
+                        &window.before_versions,
+                    )
+                    .await?,
+                );
                 delta.push(self.groups_table_frame(
                     &context,
                     source,

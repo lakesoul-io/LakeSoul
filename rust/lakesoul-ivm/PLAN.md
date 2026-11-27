@@ -2806,6 +2806,11 @@ pending epoch 的 before image 通过 `ivm.pending_versions` 保留。该逻辑�
   _projected)` 按分区 pin 版本读取 before-state（未触及分区读当前态；首次消费分区为空），
   替换 keyed 路径上的 `read_as_of(*, before_timestamp)`（sum/count 族、grouping sets、
   union distinct、recompute、semi-anti、left-aggregate、lookup chain）。
+  **后续收口（2026-11）**：`before_versions` 改为覆盖**每个有 cursor 的分区**，不再只含
+  本窗口触及的分区；`SourceWindow.before_timestamp` 与 `read_as_of` 的 before-image 路径
+  全部移除。原因是 `partition_info.timestamp` 用 `now()`（事务开始时间），按时间戳解析
+  未触及分区会把“事务早已开始、窗口算完后才提交”的版本当作窗口边界前的状态，污染
+  before image。显式版本不会被事后提交重排。
 - **非 keyed 旧路径**：append-only join / multi-join 的 inclusion-exclusion 需要单一
   as-of 时间戳，仍保留 `ensure_unpartitioned`；keyed 视图与 rebuild 的 guard 全部移除。
 - **写入**：`append_batch` 在声明分区列时启用 `with_range_partitions`，writer 自动剥离

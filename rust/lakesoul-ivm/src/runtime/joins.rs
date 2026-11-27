@@ -4633,11 +4633,7 @@ impl IvmRuntime {
             "keyed before lookup routing"
         );
         let before_groups = source
-            .before_window_groups(
-                &self.client,
-                &window.before_versions,
-                window.before_timestamp,
-            )
+            .before_window_groups(&self.client, &window.before_versions)
             .await?;
         let groups = groups_by_bucket(before_groups, bucket_count);
         let provider = IvmLookupTable::columns(
@@ -6207,16 +6203,20 @@ impl IvmRuntime {
                 &view.right,
                 right_window.added_files.clone(),
             )?;
-            let left_before = self.as_of_table_frame(
-                &context,
-                &view.left,
-                left_window.before_timestamp,
-            )?;
-            let right_before = self.as_of_table_frame(
-                &context,
-                &view.right,
-                right_window.before_timestamp,
-            )?;
+            let left_before = self
+                .before_window_table_frame(
+                    &context,
+                    &view.left,
+                    &left_window.before_versions,
+                )
+                .await?;
+            let right_before = self
+                .before_window_table_frame(
+                    &context,
+                    &view.right,
+                    &right_window.before_versions,
+                )
+                .await?;
 
             let left_filtered = |frame: DataFrame| {
                 apply_side_filter(
