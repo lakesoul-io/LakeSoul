@@ -15,9 +15,12 @@
 //! Only the exact `jsonb_populate_recordset` shape is recognized. Everything
 //! else keeps using the regular planner.
 
-use datafusion::arrow::datatypes::SchemaRef;
+use std::sync::Arc;
+
+use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::common::{ParamValues, ScalarValue};
-use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::expr::Placeholder;
+use datafusion::logical_expr::{Filter, LogicalPlan};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
     Expr, FunctionArg, FunctionArgExpr, Insert, ObjectNamePart, Parens, Query,
@@ -301,6 +304,50 @@ async fn target_schema(
     Ok(provider.schema())
 }
 
+/// Keep the JSON placeholder visible in the Parse plan.
+///
+/// The rewrite replaces `$1` with a stub VALUES row, so neither
+/// ParameterDescription nor Execute's parameter decoding would otherwise see
+/// a placeholder and the client would fall back to an untyped (raw) value. A
+/// filter with a constant placeholder predicate carries the JSONB type on the
+/// plan. It is added *inside* the top-level node so the plan's result schema
+/// stays unchanged: a plain INSERT must still describe no result columns,
+/// while a `RETURNING` projection keeps its own fields. Execute always
+/// rewrites from the real JSON and never runs this plan.
+fn with_json_parameter(plan: LogicalPlan, id: &str) -> PgWireResult<LogicalPlan> {
+    // `pg_json_type` requires both the Arrow JSON extension marker and the
+    // pg.json kind; a bare metadata key would be ignored by type inference.
+    let field =
+        crate::ddl::with_json_metadata(Field::new(id, DataType::Utf8, true), "jsonb");
+    let placeholder = datafusion::logical_expr::Expr::Placeholder(Placeholder {
+        id: id.to_string(),
+        field: Some(Arc::new(field)),
+    });
+    // datafusion-postgres also recognises a cast over a placeholder, so the
+    // JSONB marker survives while the filter predicate is a valid boolean.
+    let predicate =
+        datafusion::logical_expr::Expr::Cast(datafusion::logical_expr::expr::Cast::new(
+            Box::new(placeholder),
+            DataType::Boolean,
+        ));
+    let wrap = |input: Arc<LogicalPlan>| -> PgWireResult<Arc<LogicalPlan>> {
+        let filter = Filter::try_new(predicate.clone(), input)
+            .map_err(crate::insert::insert_error)?;
+        Ok(Arc::new(LogicalPlan::Filter(filter)))
+    };
+    match plan {
+        LogicalPlan::Dml(mut dml) => {
+            dml.input = wrap(dml.input)?;
+            Ok(LogicalPlan::Dml(dml))
+        }
+        LogicalPlan::Projection(mut projection) => {
+            projection.input = wrap(projection.input)?;
+            Ok(LogicalPlan::Projection(projection))
+        }
+        other => Ok(other),
+    }
+}
+
 /// Build a plan for Parse/Describe. The JSON array is not available yet, so a
 /// single all-NULL row is planned; the real values are substituted at Execute.
 pub(crate) async fn parse_plan(
@@ -310,10 +357,13 @@ pub(crate) async fn parse_plan(
     database: &str,
 ) -> PgWireResult<LogicalPlan> {
     let schema = target_schema(insert, session_context, database).await?;
+    let parameter = detect(insert)
+        .and_then(|shape| shape.placeholder)
+        .filter(|id| id.starts_with('$'));
     // One empty object becomes one row of NULLs: enough to plan the target and
     // its output schema without knowing the client's values yet.
     let stub = rewrite(insert, "[{}]", &schema)?;
-    if crate::insert::is_do_update(&stub) {
+    let plan = if crate::insert::is_do_update(&stub) {
         let planned = crate::insert::prepare_upsert(
             &stub,
             session_context,
@@ -322,11 +372,17 @@ pub(crate) async fn parse_plan(
         )
         .await?;
         if let Some(projection) = crate::insert::upsert_returning_plan(&stub, &planned)? {
-            return Ok(projection);
+            projection
+        } else {
+            planned.plan.clone()
         }
-        return Ok(planned.plan.clone());
+    } else {
+        crate::insert::plan_checked(&stub, session_context, status, database).await?
+    };
+    match parameter {
+        Some(id) => with_json_parameter(plan, &id),
+        None => Ok(plan),
     }
-    crate::insert::plan_checked(&stub, session_context, status, database).await
 }
 
 /// Execute the JSON write through the ordinary INSERT path.
