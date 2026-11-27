@@ -186,6 +186,11 @@ struct Cli {
     #[clap(long, env = "LAKESOUL_PG_IVM_DEFAULT")]
     ivm_default: bool,
 
+    /// Start the detached-query service and recover unfinished jobs. Without
+    /// it, job metadata is not read and the job SQL functions are refused.
+    #[clap(long, env = "LAKESOUL_PG_JOBS")]
+    jobs: bool,
+
     /// Bind address, defaults to the loopback interface; container/cluster
     /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
     #[clap(long, env = "LAKESOUL_PG_BIND", default_value = "127.0.0.1")]
@@ -447,6 +452,39 @@ async fn start_subscription_supervisor(
         );
     }
     subscriptions
+}
+
+/// Builds the detached-query service and recovers this cluster's jobs.
+async fn start_job_service(
+    cli: &Cli,
+    meta_client: &Arc<MetaDataClient>,
+) -> Result<Arc<jobs::JobService>> {
+    let job_config = jobs::JobConfig {
+        max_jobs: cli.max_jobs,
+        result_max_bytes: cli.job_result_max_mib.saturating_mul(1024 * 1024),
+        result_ttl_ms: (cli.job_result_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
+        record_ttl_ms: (cli.job_record_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
+        ..jobs::JobConfig::default()
+    };
+    if job_config.record_ttl_ms < job_config.result_ttl_ms {
+        warn!(
+            result_ttl_hours = cli.job_result_ttl_hours,
+            record_ttl_hours = cli.job_record_ttl_hours,
+            "job record retention is shorter than result retention; \
+             expired results may be left without a job row"
+        );
+    }
+    let cluster_id = cli
+        .job_cluster_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", cli.bind, cli.port));
+    jobs::JobService::new(
+        Arc::clone(meta_client),
+        cli.core.warehouse_prefix.clone(),
+        job_config,
+        cluster_id,
+    )
+    .await
 }
 
 fn main_inner(cli: Cli) -> BoxFuture<'static, Result<()>> {
@@ -715,38 +753,20 @@ async fn main_inner_impl(cli: Cli) -> Result<()> {
     let service = IvmService::new(Arc::clone(&meta_client), config).await?;
     let session_factory = session_factory.with_ivm(Arc::new(service));
 
-    let job_config = jobs::JobConfig {
-        max_jobs: cli.max_jobs,
-        result_max_bytes: cli.job_result_max_mib.saturating_mul(1024 * 1024),
-        result_ttl_ms: (cli.job_result_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
-        record_ttl_ms: (cli.job_record_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
-        ..jobs::JobConfig::default()
+    let jobs = if cli.jobs {
+        Some(start_job_service(&cli, &meta_client).await?)
+    } else {
+        info!("detached queries disabled; start with --jobs to enable them");
+        None
     };
-    if job_config.record_ttl_ms < job_config.result_ttl_ms {
-        warn!(
-            result_ttl_hours = cli.job_result_ttl_hours,
-            record_ttl_hours = cli.job_record_ttl_hours,
-            "job record retention is shorter than result retention; \
-             expired results may be left without a job row"
-        );
+    let session_factory = Arc::new(session_factory.with_jobs(jobs.clone()));
+    if let Some(jobs) = &jobs {
+        Arc::new(jobs::JobRunner::new(
+            Arc::clone(jobs),
+            Arc::clone(&session_factory),
+        ))
+        .spawn();
     }
-    let cluster_id = cli
-        .job_cluster_id
-        .clone()
-        .unwrap_or_else(|| format!("{}:{}", cli.bind, cli.port));
-    let jobs = jobs::JobService::new(
-        Arc::clone(&meta_client),
-        cli.core.warehouse_prefix.clone(),
-        job_config,
-        cluster_id,
-    )
-    .await?;
-    let session_factory = Arc::new(session_factory.with_jobs(Arc::clone(&jobs)));
-    Arc::new(jobs::JobRunner::new(
-        Arc::clone(&jobs),
-        Arc::clone(&session_factory),
-    ))
-    .spawn();
 
     info!(
         "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_concurrent_queries={}, max_result_rows={}, max_result_bytes={}, max_staged_files_per_transaction={}, max_staged_bytes_per_transaction={}, max_jobs={})",
@@ -832,7 +852,9 @@ async fn main_inner_impl(cli: Cli) -> Result<()> {
     if let Some(supervisor) = index_supervisor {
         supervisor.stop().await;
     }
-    jobs.shutdown().await;
+    if let Some(jobs) = &jobs {
+        jobs.shutdown().await;
+    }
     if let Some(result) = server_result {
         result?;
     }
@@ -1042,6 +1064,7 @@ mod cli_probe_tests {
             "tls_cert": cli.tls_cert.as_ref().map(|path| path.display().to_string()),
             "tls_key": cli.tls_key.as_ref().map(|path| path.display().to_string()),
             "require_tls": cli.require_tls,
+            "jobs": cli.jobs,
             "ivm_default": cli.ivm_default,
             "subscription_executor": format!("{:?}", cli.subscription_executor),
             "subscription_runner": cli.subscription_runner,
@@ -1090,6 +1113,13 @@ mod cli_probe_tests {
             true
         );
         assert_eq!(probe(&[], &["--ivm-default"])["ivm_default"], true);
+    }
+
+    #[test]
+    fn jobs_are_off_unless_asked_for() {
+        assert_eq!(probe(&[], &[])["jobs"], false);
+        assert_eq!(probe(&[], &["--jobs"])["jobs"], true);
+        assert_eq!(probe(&[("LAKESOUL_PG_JOBS", "true")], &[])["jobs"], true);
     }
 
     #[test]

@@ -781,6 +781,8 @@ impl StartupState {
             .args(["--index-maintenance-executor", "off"])
             .arg("--warehouse-prefix")
             .arg(&self.warehouse_url)
+            // The detached-query and RBAC suites exercise detached jobs.
+            .arg("--jobs")
             .env("TZ", "UTC")
             .env_remove("LAKESOUL_DISTRIBUTED_WORKERS")
             .env_remove("LAKESOUL_K8S_WORKER_SERVICE")

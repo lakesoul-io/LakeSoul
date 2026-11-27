@@ -1136,8 +1136,15 @@ pub(crate) fn connection_statement_hooks(
         hooks.push(Arc::new(crate::jobs::JobStatementHook::new(Arc::clone(
             jobs,
         ))));
-        hooks.push(Arc::new(crate::jobs::JobIdentityGuard));
+    } else {
+        hooks.push(Arc::new(DisabledFeatureHook {
+            claims: crate::jobs::mentions_job_function,
+            message: "detached queries are disabled on this server (start it with --jobs)",
+        }));
     }
+    // Installed with or without the job service: the session identity must
+    // stay read-only whatever reads it.
+    hooks.push(Arc::new(crate::jobs::JobIdentityGuard));
     if let Some(supervisor) = factory.subscriptions() {
         hooks.push(Arc::new(
             crate::subscribe::sql::SubscriptionStatementHook::new(
