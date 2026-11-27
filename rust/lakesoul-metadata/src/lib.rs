@@ -774,18 +774,6 @@ async fn get_prepared_statement<'a>(
                 expression,
                 domain)
             values($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
-        DaoType::InsertDataCommitInfo =>
-            "insert into data_commit_info(
-                table_id,
-                partition_desc,
-                commit_id,
-                file_ops,
-                commit_op,
-                timestamp,
-                committed,
-                domain
-            )
-            values($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, $7::BOOL, $8::TEXT)",
 
         DaoType::InsertDiscardCompressedFileInfo =>
             "insert into discard_compressed_file_info(
@@ -877,6 +865,7 @@ async fn get_prepared_statement<'a>(
 
         // not prepared
         DaoType::UpdateTableInfoById |
+        DaoType::InsertDataCommitInfo |
         DaoType::TransactionInsertDataCommitInfo |
         DaoType::TransactionInsertPartitionInfo |
         DaoType::TransactionInsertDiscardCompressedFile |
@@ -1759,7 +1748,57 @@ pub async fn execute_insert(
                 .ok_or(LakeSoulMetaDataError::Internal("commit_id missing".into()))?;
             let _uuid = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
 
-            client
+            // Lock the parent by `table_id` and insert in one transaction.
+            // Cascade DROP takes `table_info` FOR UPDATE before it deletes
+            // child rows, so it cannot commit between a domain read and this
+            // insert and leave an orphan uncommitted row. The locked domain
+            // is authoritative: a caller-supplied domain would disagree with
+            // the table, and an empty one is invisible under RBAC policies.
+            let transaction = client.transaction().await?;
+            let locked = match transaction
+                .query_opt(
+                    "select domain from table_info where table_id = $1::TEXT for share",
+                    &[&data_commit_info.table_id],
+                )
+                .await
+            {
+                Ok(locked) => locked,
+                Err(error) => {
+                    transaction.rollback().await?;
+                    return Err(LakeSoulMetaDataError::from(error));
+                }
+            };
+            let Some(locked) = locked else {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::NotFound(format!(
+                    "table {} no longer exists",
+                    data_commit_info.table_id
+                )));
+            };
+            let domain: String = locked.get(0);
+            let prepared = transaction
+                .prepare(
+                    "insert into data_commit_info(
+                        table_id,
+                        partition_desc,
+                        commit_id,
+                        file_ops,
+                        commit_op,
+                        timestamp,
+                        committed,
+                        domain
+                    )
+                    values($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, $7::BOOL, $8::TEXT)",
+                )
+                .await;
+            let statement = match prepared {
+                Ok(statement) => statement,
+                Err(error) => {
+                    transaction.rollback().await?;
+                    return Err(LakeSoulMetaDataError::from(error));
+                }
+            };
+            if let Err(error) = transaction
                 .execute(
                     &statement,
                     &[
@@ -1770,10 +1809,19 @@ pub async fn execute_insert(
                         &data_commit_info.commit_op().as_str_name(),
                         &data_commit_info.timestamp,
                         &data_commit_info.committed,
-                        &data_commit_info.domain,
+                        &domain,
                     ],
                 )
                 .await
+            {
+                error!(error = %error, "data commit metadata insert failed");
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::from(error));
+            }
+            match transaction.commit().await {
+                Ok(()) => Ok(1u64),
+                Err(error) => Err(error),
+            }
         }
         DaoType::TransactionInsertPartitionInfo => {
             let publication = wrapper.partition_info_commit.ok_or_else(|| {

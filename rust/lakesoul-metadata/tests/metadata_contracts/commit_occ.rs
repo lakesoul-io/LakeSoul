@@ -12,7 +12,10 @@ use std::sync::Arc;
 
 use lakesoul_metadata::error::Result;
 use lakesoul_metadata::transfusion::DataFileInfo;
-use lakesoul_metadata::{CommitOutcome, MetaDataClient};
+use lakesoul_metadata::{
+    CommitOutcome, LakeSoulMetaDataError, MetaDataClient, PRIMARY_URL_ENV_KEY,
+    PRIMARY_URL_PROP_KEY, PooledClient, QueryType, pg_config_from_env,
+};
 use lakesoul_metadata_proto::entity::{
     CommitOp, DataCommitInfo, MetaInfo, PartitionInfo, TableInfo,
 };
@@ -1094,6 +1097,342 @@ async fn data_commit_info_stored_with_table_domain() -> Result<()> {
         .expect("single commit row missing");
     assert_eq!(staged.domain, domain);
 
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+fn staged_commit(table_id: &str, partition_desc: &str) -> DataCommitInfo {
+    let (_, commit_id) = new_uuid();
+    DataCommitInfo {
+        table_id: table_id.to_string(),
+        partition_desc: partition_desc.to_string(),
+        pinned: false,
+        commit_id: Some(commit_id),
+        file_ops: Vec::new(),
+        commit_op: CommitOp::AppendCommit.into(),
+        timestamp: 1_000,
+        committed: false,
+        domain: "public".to_string(),
+    }
+}
+
+async fn pool() -> Result<PooledClient> {
+    PooledClient::try_new(
+        pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?,
+        None,
+    )
+    .await
+}
+
+async fn named_client(application: &str) -> Result<MetaDataClient> {
+    let config = pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?;
+    MetaDataClient::from_config(format!("{config} application_name={application}"), None)
+        .await
+}
+
+/// Every metadata row for `table_id`, including uncommitted data commits.
+/// An empty result means the id owns nothing.
+async fn metadata_state(pool: &PooledClient, table_id: &str) -> Result<Vec<String>> {
+    let table_id = table_id.to_string();
+    Ok(pool
+        .query(
+            "SELECT 'data:' || row_to_json(d)::text AS state \
+             FROM data_commit_info d WHERE table_id = $1
+             UNION ALL
+             SELECT 'partition:' || row_to_json(p)::text \
+             FROM partition_info p WHERE table_id = $1
+             UNION ALL
+             SELECT 'info:' || row_to_json(t)::text \
+             FROM table_info t WHERE table_id = $1
+             UNION ALL
+             SELECT 'name:' || row_to_json(n)::text \
+             FROM table_name_id n WHERE table_id = $1
+             UNION ALL
+             SELECT 'path:' || row_to_json(p)::text \
+             FROM table_path_id p WHERE table_id = $1
+             ORDER BY state",
+            QueryType::RW,
+            &[&table_id],
+        )
+        .await?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+fn assert_missing_table(error: LakeSoulMetaDataError, table_id: &str) {
+    match error {
+        LakeSoulMetaDataError::NotFound(message) => {
+            assert_eq!(
+                message,
+                format!("table {table_id} no longer exists"),
+                "staging must report the absent table_id"
+            );
+        }
+        other => panic!("expected NotFound, got {other}"),
+    }
+}
+
+/// Observe an actual blocked backend, rather than guessing when it reached
+/// its lock. The returned blockers identify the lock owner.
+async fn blocked_backend(
+    pool: &PooledClient,
+    application: &str,
+) -> Result<(i32, Vec<i32>)> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let rows = pool
+                .query(
+                    "select pid, pg_blocking_pids(pid) from pg_stat_activity \
+                     where application_name = $1 and wait_event_type = 'Lock'",
+                    QueryType::RW,
+                    &[&application],
+                )
+                .await?;
+            if let Some(row) = rows.first() {
+                return Ok((row.get(0), row.get(1)));
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("metadata operation never reached its lock barrier")
+}
+
+async fn finish<T>(task: tokio::task::JoinHandle<Result<T>>, what: &str) -> Result<T> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), task)
+        .await
+        .unwrap_or_else(|_| panic!("{what} did not finish after the gate opened"))
+        .unwrap_or_else(|_| panic!("{what} task panicked"))
+}
+
+/// DROP holds `table_info` FOR UPDATE and is blocked on `table_path_id`.
+/// Staging must wait on that DROP, then fail without inserting a row for the
+/// dropped id. A same-name replacement keeps only its own commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_blocks_single_record_staging_and_leaves_no_orphan() -> Result<()> {
+    let name = unique_name("stage_drop");
+    let stage_application = format!("stage_{}", uuid::Uuid::new_v4().simple());
+    let drop_application = format!("drop_{}", uuid::Uuid::new_v4().simple());
+    let stager = named_client(&stage_application).await?;
+    let dropper = named_client(&drop_application).await?;
+    let pool = pool().await?;
+    let table_id = create_test_table(&stager, &name).await?;
+
+    let mut connection = pool.get(QueryType::RW).await?;
+    let gate = connection.transaction().await?;
+    assert!(
+        gate.query_opt(
+            "select table_id from table_path_id where table_id = $1::TEXT for update",
+            &[&table_id],
+        )
+        .await?
+        .is_some(),
+        "the gate must lock the original table_path_id row"
+    );
+    let gate_pid: i32 = gate.query_one("select pg_backend_pid()", &[]).await?.get(0);
+
+    let drop_name = name.clone();
+    let drop_task =
+        tokio::spawn(async move { dropper.drop_table(&drop_name, NAMESPACE).await });
+    let (drop_pid, drop_blockers) = blocked_backend(&pool, &drop_application).await?;
+    assert!(
+        drop_blockers.contains(&gate_pid),
+        "DROP must hold table_info FOR UPDATE and wait on table_path_id: \
+         {drop_blockers:?}"
+    );
+
+    let stage_table_id = table_id.clone();
+    let stage_client = stager.clone();
+    let stage_task = tokio::spawn(async move {
+        stage_client
+            .insert_data_commit_info(&staged_commit(&stage_table_id, "p1"))
+            .await
+    });
+    let (_, stage_blockers) = blocked_backend(&pool, &stage_application).await?;
+    assert!(
+        stage_blockers.contains(&drop_pid),
+        "staging must wait on DROP's table_info lock, not insert an orphan: \
+         {stage_blockers:?}"
+    );
+
+    gate.commit().await?;
+    finish(drop_task, "DROP").await?;
+    let staged = finish(stage_task, "staging").await;
+    assert_missing_table(
+        staged.expect_err("staging must not insert after DROP"),
+        &table_id,
+    );
+
+    assert_eq!(
+        metadata_state(&pool, &table_id).await?,
+        Vec::<String>::new(),
+        "the dropped table_id must own no metadata, including uncommitted commits"
+    );
+    let replacement_id = create_test_table(&stager, &name).await?;
+    assert_ne!(replacement_id, table_id);
+    stager
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "replacement")])
+        .await?;
+    let replacement_rows = metadata_state(&pool, &replacement_id).await?;
+    assert!(
+        replacement_rows.iter().any(|row| row.starts_with("data:")),
+        "the replacement must have its own commit"
+    );
+    assert_eq!(
+        metadata_state(&pool, &table_id).await?,
+        Vec::<String>::new(),
+        "the replacement commit must not land on the dropped table_id"
+    );
+    assert_eq!(
+        metadata_state(&pool, &replacement_id).await?,
+        replacement_rows,
+        "the replacement table must be untouched"
+    );
+    stager.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+/// Staging holds `table_info` FOR SHARE and is blocked on its insert.
+/// DROP must wait for that lock before deleting, then remove the staged row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_record_staging_blocks_drop_until_the_row_is_removed() -> Result<()> {
+    let name = unique_name("stage_holds");
+    let stage_application = format!("stage_{}", uuid::Uuid::new_v4().simple());
+    let drop_application = format!("drop_{}", uuid::Uuid::new_v4().simple());
+    let stager = named_client(&stage_application).await?;
+    let dropper = named_client(&drop_application).await?;
+    let pool = pool().await?;
+    let table_id = create_test_table(&stager, &name).await?;
+    let before = metadata_state(&pool, &table_id).await?;
+
+    let mut connection = pool.get(QueryType::RW).await?;
+    let gate = connection.transaction().await?;
+    gate.batch_execute("lock table data_commit_info in share mode")
+        .await?;
+
+    let stage_table_id = table_id.clone();
+    let stage_task = tokio::spawn(async move {
+        stager
+            .insert_data_commit_info(&staged_commit(&stage_table_id, "p1"))
+            .await
+    });
+    let (stage_pid, _) = blocked_backend(&pool, &stage_application).await?;
+    let drop_name = name.clone();
+    let drop_task =
+        tokio::spawn(async move { dropper.drop_table(&drop_name, NAMESPACE).await });
+    let (_, drop_blockers) = blocked_backend(&pool, &drop_application).await?;
+    assert!(
+        drop_blockers.contains(&stage_pid),
+        "DROP must wait for staging's table_info FOR SHARE before deleting: \
+         {drop_blockers:?}"
+    );
+    assert_eq!(
+        metadata_state(&pool, &table_id).await?,
+        before,
+        "DROP must not delete metadata while staging holds the parent row"
+    );
+
+    gate.commit().await?;
+    finish(stage_task, "staging").await?;
+    finish(drop_task, "DROP").await?;
+    assert_eq!(
+        metadata_state(&pool, &table_id).await?,
+        Vec::<String>::new(),
+        "DROP must remove the staged row and every other metadata row"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn insert_data_commit_info_rejects_a_replaced_table_id() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let pool = pool().await?;
+    let name = unique_name("replaced_id");
+    let old_table_id = create_test_table(&client, &name).await?;
+    client.drop_table(&name, NAMESPACE).await?;
+
+    let new_table_id = create_test_table(&client, &name).await?;
+    assert_ne!(new_table_id, old_table_id);
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "published")])
+        .await?;
+    client
+        .insert_data_commit_info(&staged_commit(&new_table_id, "p2"))
+        .await?;
+    let replacement_rows = metadata_state(&pool, &new_table_id).await?;
+    assert!(
+        replacement_rows.iter().any(|row| row.starts_with("data:")),
+        "the replacement must have staged and published rows"
+    );
+
+    let error = client
+        .insert_data_commit_info(&staged_commit(&old_table_id, "p1"))
+        .await
+        .expect_err("the old table_id must not stage a commit");
+    assert_missing_table(error, &old_table_id);
+    assert_eq!(
+        metadata_state(&pool, &old_table_id).await?,
+        Vec::<String>::new(),
+        "the old table_id must gain no data_commit_info row"
+    );
+    assert_eq!(
+        metadata_state(&pool, &new_table_id).await?,
+        replacement_rows,
+        "the replacement table must be untouched"
+    );
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn insert_data_commit_info_missing_table_is_not_found() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let pool = pool().await?;
+    let table_id = format!("table_{}", uuid::Uuid::new_v4());
+    let error = client
+        .insert_data_commit_info(&staged_commit(&table_id, "p1"))
+        .await
+        .expect_err("a missing table_id must not stage a commit");
+    assert_missing_table(error, &table_id);
+    assert_eq!(
+        metadata_state(&pool, &table_id).await?,
+        Vec::<String>::new(),
+        "the rolled-back insert must not leave a data_commit_info row"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn insert_data_commit_info_duplicate_key_propagates_postgres_error() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let pool = pool().await?;
+    let name = unique_name("dup_stage");
+    let table_id = create_test_table(&client, &name).await?;
+    let commit = staged_commit(&table_id, "p1");
+    client.insert_data_commit_info(&commit).await?;
+    let before = metadata_state(&pool, &table_id).await?;
+
+    let error = client
+        .insert_data_commit_info(&commit)
+        .await
+        .expect_err("a duplicate primary key must fail");
+    match &error {
+        LakeSoulMetaDataError::PostgresError(postgres) => {
+            assert_eq!(
+                postgres.as_db_error().map(|db| db.code().code()),
+                Some("23505"),
+                "the duplicate must roll back and propagate the postgres error, \
+                 got {error}"
+            );
+        }
+        other => panic!("expected a postgres unique violation, got {other}"),
+    }
+    assert_eq!(
+        metadata_state(&pool, &table_id).await?,
+        before,
+        "the duplicate insert must roll back and leave the first row"
+    );
     client.drop_table(&name, NAMESPACE).await?;
     Ok(())
 }

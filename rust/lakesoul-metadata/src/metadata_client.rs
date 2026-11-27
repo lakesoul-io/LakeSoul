@@ -1353,25 +1353,20 @@ impl MetaDataClient {
 
     /// Insert one data commit row without publishing it, so a later
     /// `commit_data` marks it committed during publication.
+    ///
+    /// The insert locks `table_info` `for share` by this row's `table_id` and
+    /// stores that row's domain. The caller's domain is ignored. Doing both
+    /// in one transaction closes the window where a cascade `DROP TABLE`
+    /// could commit after a separate domain read and leave an orphan
+    /// uncommitted `data_commit_info` row.
     pub async fn insert_data_commit_info(
         &self,
         data_commit_info: &DataCommitInfo,
     ) -> Result<i32> {
-        // A commit row is owned by its table, so its domain is the table's
-        // domain, exactly like the partition rows of the same publication.
-        // Callers cannot label a commit with any other domain, and the
-        // column default never applies because the column is named
-        // explicitly: an empty domain here would make the row invisible to
-        // every Postgres role under the RBAC row-level security policies.
-        let mut data_commit_info = data_commit_info.clone();
-        data_commit_info.domain = self
-            .get_table_domain(&data_commit_info.table_id)
-            .await?
-            .domain;
         self.execute_insert(
             DaoType::InsertDataCommitInfo as i32,
             JniWrapper {
-                data_commit_info: vec![data_commit_info],
+                data_commit_info: vec![data_commit_info.clone()],
                 ..Default::default()
             },
         )
