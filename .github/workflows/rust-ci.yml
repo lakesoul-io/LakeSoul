@@ -263,10 +263,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
           command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
+      # Clippy finishes long before the test suites and must not claim the
+      # shared host key: actions/cache does not overwrite an existing entry,
+      # so its clippy-only artifacts would leave legacy/v2 with an incomplete
+      # cache that looks restored but still recompiles everything.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "host-testfast"
+          shared-key: "host-clippy-testfast"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run Clippy
         # Keep every cargo invocation in this workflow on `test-fast` so all
