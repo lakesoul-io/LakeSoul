@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -2173,4 +2173,172 @@ async fn a_lost_source_state_table_forces_a_rebuild() {
         std::collections::BTreeMap::from([(1, 10)]),
         "the rebuilt state must retain values 10 and 20"
     );
+}
+
+/// A cascading update writes both the old row (delete) and the new row
+/// (insert) of a key through the worker sink. The coordinator must commit them
+/// in delete-before-insert order; otherwise merge-on-read keeps the tombstone
+/// and the downstream view loses the live row.
+#[test_log::test(tokio::test)]
+async fn a_worker_sink_keeps_the_live_row_of_an_updated_key() {
+    use lakesoul_ivm::sum_count_mv_schema_for;
+
+    let _guard = test_lock().lock().await;
+    let base = IvmRuntimeConfig::default();
+    let factory = SinkFactory {
+        session: base.session.clone(),
+        runtime: Arc::clone(&base.runtime),
+    };
+    let runtime = Arc::new(
+        IvmRuntime::from_env_with_config(base.with_session_factory(Arc::new(factory)))
+            .await
+            .unwrap(),
+    );
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_tombstone_src_{suffix}"),
+                format!("file://{}", dir.path().join("src").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let mv1 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_tombstone_mv1_{suffix}"),
+                format!("file://{}", dir.path().join("mv1").display()),
+                sum_count_mv_schema_for(&source.schema, &["g".to_string()], Some("v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mv2 = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_tombstone_mv2_{suffix}"),
+                format!("file://{}", dir.path().join("mv2").display()),
+                sum_count_mv_schema_for(&mv1.schema, &["g".to_string()], Some("sum_v"))
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+
+    let batch = |rows: &[(i64, &str, i64)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.0))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.1))),
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.2))),
+                Arc::new(StringArray::from_iter_values(
+                    (0..rows.len()).map(|_| "insert"),
+                )),
+            ],
+        )
+        .unwrap()
+    };
+    source
+        .append_batch(
+            runtime.client(),
+            batch(&[(1, "a", 10), (2, "a", 20), (3, "b", 5)]),
+        )
+        .await
+        .unwrap();
+
+    let context = SessionContext::new();
+    context
+        .register_table(
+            source.table_name.as_str(),
+            Arc::new(runtime.table_provider(&source)),
+        )
+        .unwrap();
+    context
+        .register_table(
+            mv1.table_name.as_str(),
+            Arc::new(runtime.table_provider(&mv1)),
+        )
+        .unwrap();
+    context
+        .register_table(
+            mv2.table_name.as_str(),
+            Arc::new(runtime.table_provider(&mv2)),
+        )
+        .unwrap();
+    let executor =
+        IvmSqlExecutor::with_shared_runtime(Arc::clone(&runtime)).with_session(context);
+    executor
+        .execute(&format!(
+            "INSERT INTO {} SELECT g, SUM(v) AS sum_v, COUNT(*) AS count_v \
+             FROM {} GROUP BY g",
+            mv1.table_name, source.table_name
+        ))
+        .await
+        .unwrap();
+    executor
+        .execute(&format!(
+            "INSERT INTO {} SELECT g, SUM(sum_v) AS sum_v, COUNT(*) AS count_v \
+             FROM {} GROUP BY g",
+            mv2.table_name, mv1.table_name
+        ))
+        .await
+        .unwrap();
+    let expected = vec![("a".to_string(), 30), ("b".to_string(), 5)];
+    assert_eq!(sum_values(&runtime, &mv1).await, expected);
+    assert_eq!(sum_values(&runtime, &mv2).await, expected);
+
+    // b: 5 -> 20. The delete of the old aggregate and the insert of the new
+    // one share a key and an epoch; both travel through the worker sink.
+    source
+        .append_batch(executor.runtime().client(), batch(&[(4, "b", 15)]))
+        .await
+        .unwrap();
+    executor
+        .runtime()
+        .refresh_view_chain(&mv2.table_id)
+        .await
+        .unwrap();
+    let expected = vec![("a".to_string(), 30), ("b".to_string(), 20)];
+    assert_eq!(sum_values(&runtime, &mv1).await, expected);
+    assert_eq!(sum_values(&runtime, &mv2).await, expected);
+}
+
+async fn sum_values(
+    runtime: &IvmRuntime,
+    mv: &lakesoul_ivm::IvmTable,
+) -> Vec<(String, i64)> {
+    let mut values = Vec::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap().iter() {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..groups.len() {
+            values.push((groups.value(row).to_string(), sums.value(row)));
+        }
+    }
+    values.sort();
+    values
 }
