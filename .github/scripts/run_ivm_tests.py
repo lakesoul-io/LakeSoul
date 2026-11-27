@@ -48,7 +48,11 @@ MAIN_TESTS = ["contracts"]
 
 
 def build(artifacts_path, full):
-    packages = os.environ["TEST_PKGS"].split()
+    # TEST_ARGS is the exact same package/feature selection used by the main
+    # test steps, so every cargo invocation in the job shares one target
+    # cache. Adding -p or --features here would change feature unification
+    # and recompile the shared dependency graph.
+    args = os.environ["TEST_ARGS"].split()
     targets = ["--lib", "--bins", "--tests"] if full else ["--lib", "--bins"]
     if not full:
         for target in MAIN_TESTS + [IVM_TARGET]:
@@ -58,11 +62,7 @@ def build(artifacts_path, full):
         "test",
         "--profile",
         "test-fast",
-        *packages,
-        "-p",
-        IVM_PACKAGE,
-        "--features",
-        os.environ["IVM_FEATURES"],
+        *args,
         *targets,
         "--no-run",
         "--jobs",
