@@ -57,6 +57,10 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 - DDL 里的 `STORED AS` / `LOCATION`（改用 `WITH (file_format = ...)`）
 - PostgreSQL 扩展、PL/pgSQL、`LISTEN`/`NOTIFY`
 
+## 已知限制
+
+- 普通查询里的 `INTERSECT ALL` / `EXCEPT ALL` 目前按成员语义执行，而不是 SQL 多重集计数：只要某行在右侧出现，`INTERSECT ALL` 会保留它在左侧的全部重复，`EXCEPT ALL` 会删掉它的全部左侧重复；PostgreSQL 返回 `min(m, n)` 和 `max(m - n, 0)` 份。`DISTINCT` 变体不受影响。见 [#1320](https://github.com/lakesoul-io/LakeSoul/issues/1320)。由 IVM 维护的视图（`INSERT INTO ... SELECT ... INTERSECT ALL` / `EXCEPT ALL`）会正确维护按元组计数；需要精确的多重集语义时可以使用它。
+
 ## SQLSTATE 映射
 
 | SQLSTATE | 含义 |
