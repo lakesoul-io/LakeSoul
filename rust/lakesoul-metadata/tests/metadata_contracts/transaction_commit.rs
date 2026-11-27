@@ -399,3 +399,286 @@ async fn a_table_may_appear_only_once() -> Result<()> {
 fn uuid_string(seed: u64) -> String {
     uuid::Uuid::from_u64_pair(uuid(seed).high, uuid(seed).low).to_string()
 }
+
+#[tokio::test]
+async fn compaction_rejects_mismatched_read_snapshot_and_intervening_compaction()
+-> Result<()> {
+    use lakesoul_metadata::transfusion::DataFileInfo;
+    let client = MetaDataClient::from_env().await?.primary_only().await;
+    let name = unique_name("compact_snapshot");
+    let id = create_test_table(&client, &name).await?;
+    let table = table_info(&client, &id).await?;
+    let part = "p1";
+    client
+        .commit_transaction(vec![TransactionTableCommit {
+            table_info: table.clone(),
+            data_commits: vec![staged(&id, part, 1)],
+            expected: Some(vec![]),
+        }])
+        .await?;
+    let read = latest(&client, &id, part).await?.unwrap();
+    let files = vec![DataFileInfo {
+        path: format!("{}/compactdir1/new_0000.parquet", table.table_path),
+        partition_desc: part.into(),
+        file_op: "add".into(),
+        size: 10,
+        ..Default::default()
+    }];
+    let mut wrong = read.clone();
+    wrong.snapshot.clear();
+    let stale_id = uuid::Uuid::new_v4();
+    assert!(
+        !client
+            .publish_compacted_snapshot(&table, &wrong, stale_id, &files, &[])
+            .await?
+    );
+    let publication = uuid::Uuid::new_v4();
+    assert!(
+        client
+            .publish_compacted_snapshot(&table, &read, publication, &files, &[])
+            .await?
+    );
+    assert!(client.compaction_is_published(&read, publication).await?);
+    let head = latest(&client, &id, part).await?.unwrap();
+    assert_eq!(head.version, read.version + 1);
+    assert_eq!(head.commit_op, CommitOp::CompactionCommit as i32);
+    let (high, low) = publication.as_u64_pair();
+    assert_eq!(head.snapshot, vec![Uuid { high, low }]);
+    assert!(
+        !client
+            .publish_compacted_snapshot(&table, &read, stale_id, &files, &[])
+            .await?
+    );
+    assert!(!client.compaction_is_published(&read, stale_id).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn compaction_preserves_repeated_retained_adds_and_their_order() -> Result<()> {
+    let client = MetaDataClient::from_env().await?.primary_only().await;
+    let name = unique_name("compact_repeated_add");
+    let id = create_test_table(&client, &name).await?;
+    let table = table_info(&client, &id).await?;
+    let part = "p1";
+    let mut input = staged(&id, part, 1);
+    let mut retained = input.file_ops[0].clone();
+    retained.path = format!("{}/retained_0000.parquet", table.table_path);
+    let mut replaced = retained.clone();
+    replaced.path = format!("{}/old_0001.parquet", table.table_path);
+    input.file_ops = vec![retained.clone(), replaced.clone(), retained.clone()];
+    client
+        .commit_transaction(vec![TransactionTableCommit {
+            table_info: table.clone(),
+            data_commits: vec![input],
+            expected: Some(vec![]),
+        }])
+        .await?;
+    let read = latest(&client, &id, part).await?.unwrap();
+    let mut files = client
+        .get_data_file_infos_of_single_partition(&read)
+        .await?;
+    assert_eq!(files.len(), 3);
+    let old = files[1].clone();
+    assert_eq!(old.path, replaced.path);
+    files[1].path = format!("{}/compactdir1/new_0001.parquet", table.table_path);
+    let publication = uuid::Uuid::new_v4();
+    assert!(matches!(
+        client
+            .publish_compacted_snapshot(&table, &read, publication, &files, &[&files[0]])
+            .await,
+        Err(LakeSoulMetaDataError::Internal(_))
+    ));
+    assert!(
+        client
+            .publish_compacted_snapshot(&table, &read, publication, &files, &[&old])
+            .await?
+    );
+    let commit = client
+        .get_single_data_commit_info(&id, part, &publication.to_string())
+        .await?
+        .unwrap();
+    replaced.path = files[1].path.clone();
+    assert_eq!(commit.file_ops, vec![retained.clone(), replaced, retained]);
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn compaction_merges_intervening_versions_in_head_order() -> Result<()> {
+    use CommitOp::{AppendCommit, DeleteCommit, MergeCommit, UpdateCommit};
+    use lakesoul_metadata::transfusion::DataFileInfo;
+
+    let client = MetaDataClient::from_env().await?.primary_only().await;
+    let name = unique_name("compact_history");
+    let id = create_test_table(&client, &name).await?;
+    let table = table_info(&client, &id).await?;
+    let cases: &[(&str, &[CommitOp], bool)] = &[
+        ("append_merge", &[AppendCommit, MergeCommit], true),
+        ("delete_only", &[DeleteCommit], true),
+        (
+            "delete_append",
+            &[AppendCommit, DeleteCommit, AppendCommit],
+            true,
+        ),
+        ("update_append", &[UpdateCommit, AppendCommit], false),
+    ];
+    for &(part, changes, should_publish) in cases {
+        let file = |name: &str| DataFileInfo {
+            partition_desc: part.into(),
+            path: format!("{}/{part}/{name}_0000.parquet", table.table_path),
+            file_op: "add".into(),
+            size: 10,
+            file_exist_cols: "id".into(),
+            ..Default::default()
+        };
+        let input = file("original");
+        client
+            .commit_data_files_with_commit_op(
+                &name,
+                NAMESPACE,
+                vec![input.clone()],
+                AppendCommit,
+            )
+            .await?;
+        let read = latest(&client, &id, part).await?.unwrap();
+        let publication = uuid::Uuid::new_v4();
+        let (high, low) = publication.as_u64_pair();
+        let mut expected = vec![Uuid { high, low }];
+        for (index, &op) in changes.iter().enumerate() {
+            let head = latest(&client, &id, part).await?.unwrap();
+            let added = file(&format!("write_{index}"));
+            match op {
+                AppendCommit | MergeCommit => {
+                    let ids = client
+                        .commit_data_files_with_commit_op(
+                            &name,
+                            NAMESPACE,
+                            vec![added],
+                            op,
+                        )
+                        .await?;
+                    let (high, low) = uuid::Uuid::parse_str(&ids[0])?.as_u64_pair();
+                    expected.push(Uuid { high, low });
+                }
+                DeleteCommit => {
+                    client
+                        .commit_delete(
+                            &table,
+                            std::slice::from_ref(&head),
+                            vec![head.clone()],
+                        )
+                        .await?;
+                    expected.truncate(1);
+                }
+                UpdateCommit => {
+                    client
+                        .commit_update_parts(
+                            &name,
+                            NAMESPACE,
+                            vec![added],
+                            vec![head],
+                            vec![],
+                        )
+                        .await?;
+                }
+                _ => unreachable!(),
+            }
+        }
+        let before = latest(&client, &id, part).await?.unwrap();
+        let output = file("compact");
+        let published = client
+            .publish_compacted_snapshot(
+                &table,
+                &read,
+                publication,
+                std::slice::from_ref(&output),
+                &[&input],
+            )
+            .await?;
+        assert_eq!(published, should_publish, "{part}");
+        let after = latest(&client, &id, part).await?.unwrap();
+        let commit = client
+            .get_single_data_commit_info(&id, part, &publication.to_string())
+            .await?;
+        if should_publish {
+            assert_eq!(after.version, before.version + 1, "{part}");
+            assert_eq!(after.snapshot, expected, "{part}");
+            let commit = commit.unwrap();
+            assert!(commit.committed);
+            assert_eq!(commit.file_ops.len(), 1);
+            assert_eq!(commit.file_ops[0].path, output.path);
+        } else {
+            assert_eq!(after, before);
+            assert!(commit.is_none());
+        }
+    }
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn compaction_registers_only_unpinned_discard_paths() -> Result<()> {
+    use lakesoul_metadata::{DaoType, transfusion::DataFileInfo};
+    let client = MetaDataClient::from_env().await?.primary_only().await;
+    let name = unique_name("compact_pinned_discard");
+    let id = create_test_table(&client, &name).await?;
+    let table = table_info(&client, &id).await?;
+    let file = |base: &str| DataFileInfo {
+        partition_desc: "p1".into(),
+        file_op: "add".into(),
+        path: format!("{}/{base}_0000.parquet", table.table_path),
+        size: 10,
+        file_exist_cols: "id".into(),
+        ..Default::default()
+    };
+    let pinned = file("first");
+    let plain = file("second");
+    client
+        .commit_data_files_with_commit_op(
+            &name,
+            NAMESPACE,
+            vec![pinned.clone()],
+            CommitOp::AppendCommit,
+        )
+        .await?;
+    let snapshot = client.create_snapshot(&id, "protect first input").await?;
+    client
+        .commit_data_files_with_commit_op(
+            &name,
+            NAMESPACE,
+            vec![plain.clone()],
+            CommitOp::AppendCommit,
+        )
+        .await?;
+    let read = latest(&client, &id, "p1").await?.unwrap();
+    let inputs = client
+        .get_data_file_infos_of_single_partition(&read)
+        .await?;
+    assert_eq!(inputs.len(), 2);
+    let discarded: Vec<_> = inputs.iter().collect();
+    let publication = uuid::Uuid::new_v4();
+    assert!(
+        client
+            .publish_compacted_snapshot(
+                &table,
+                &read,
+                publication,
+                &[file("merged")],
+                &discarded
+            )
+            .await?
+    );
+    assert!(client.compaction_is_published(&read, publication).await?);
+    for (path, count) in [(pinned.path, 0), (plain.path, 1)] {
+        let rows = client
+            .execute_query(
+                DaoType::SelectDiscardCompressedFileInfoByFilePath as i32,
+                path.clone(),
+            )
+            .await?;
+        assert_eq!(rows.discard_compressed_file_info.len(), count, "{path}");
+    }
+    client.drop_snapshot(&id, snapshot.snapshot_id).await?;
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}

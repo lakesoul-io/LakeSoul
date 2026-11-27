@@ -53,7 +53,7 @@ mod benchmarks;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
-mod distributed_tests;
+pub(crate) mod distributed_tests;
 #[cfg(test)]
 mod distributed_write_tests;
 #[cfg(test)]

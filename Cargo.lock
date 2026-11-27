@@ -5444,6 +5444,7 @@ dependencies = [
  "lakesoul-ivm",
  "lakesoul-metadata",
  "lakesoul-metadata-proto",
+ "lakesoul-observability",
  "lakesoul-text",
  "lakesoul-vector",
  "log",

@@ -1109,7 +1109,10 @@ impl Drop for AttemptOutputs {
     }
 }
 
-async fn remove_attempt_output(context: &TaskContext, path: &str) -> Result<()> {
+pub(super) async fn remove_attempt_output(
+    context: &TaskContext,
+    path: &str,
+) -> Result<()> {
     let url = datafusion::datasource::listing::ListingTableUrl::parse(path)?;
     let store = context.runtime_env().object_store(url.object_store())?;
     match store.delete(url.prefix()).await {
