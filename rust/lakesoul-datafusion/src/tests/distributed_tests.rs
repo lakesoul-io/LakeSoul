@@ -175,7 +175,7 @@ static TABLE_SUFFIX: AtomicU64 = AtomicU64::new(0);
 /// budget (SQLSTATE 53300) and make unrelated tests fail.
 static DISTRIBUTED_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-pub(super) fn run_distributed_test<F>(future: F)
+pub(crate) fn run_distributed_test<F>(future: F)
 where
     F: std::future::Future<Output = Result<()>>,
 {
@@ -200,7 +200,7 @@ async fn create_distributed_table(
 
 /// Spawns `workers` in-process LakeSoul workers on free ports and returns
 /// their `http://127.0.0.1:<port>` URLs.
-pub(super) async fn spawn_workers(workers: usize) -> (Vec<String>, JoinSet<()>) {
+pub(crate) async fn spawn_workers(workers: usize) -> (Vec<String>, JoinSet<()>) {
     let mut urls = Vec::new();
     let mut join_set = JoinSet::new();
     for _ in 0..workers {
@@ -338,7 +338,7 @@ async fn seed_tables(client: MetaDataClientRef) -> Result<(String, String)> {
 }
 
 /// `id, v` primary-key schema for merge-on-read tests.
-fn pk_schema() -> SchemaRef {
+pub(crate) fn pk_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("v", DataType::Int32, false),
@@ -346,7 +346,11 @@ fn pk_schema() -> SchemaRef {
 }
 
 /// Writes rows through the normal upsert path, producing one file per call.
-async fn upsert_pk(table: &str, ids: Vec<i32>, values: Vec<i32>) -> Result<()> {
+pub(crate) async fn upsert_pk(
+    table: &str,
+    ids: Vec<i32>,
+    values: Vec<i32>,
+) -> Result<()> {
     let batch = RecordBatch::try_new(
         pk_schema(),
         vec![
@@ -1279,7 +1283,7 @@ impl object_store::ObjectStore for GatedStore {
 /// function returns each worker's gate-arrival counter: a test can wait until
 /// every worker's first read is parked at the (still closed) gate and know
 /// the workers are blocked mid-read, not merely handed a task.
-async fn spawn_gated_workers(
+pub(crate) async fn spawn_gated_workers(
     workers: usize,
     gate: tokio::sync::watch::Receiver<bool>,
 ) -> (Vec<String>, Vec<Arc<AtomicUsize>>, Vec<Worker>, JoinSet<()>) {
@@ -1403,7 +1407,7 @@ async fn assert_query_runs_on_workers(
 /// Waiting on the gate's own arrival counter (not a session-builder or
 /// dispatch count) is what makes a test's "the workers hold blocked tasks"
 /// claim real: a dispatched task that never started reading would not block.
-async fn wait_until_all_reached(counters: &[Arc<AtomicUsize>], label: &str) {
+pub(crate) async fn wait_until_all_reached(counters: &[Arc<AtomicUsize>], label: &str) {
     for _ in 0..600 {
         if counters.iter().all(|c| c.load(Ordering::SeqCst) > 0) {
             return;

@@ -3088,6 +3088,93 @@ impl MetaDataClient {
         .await
     }
 
+    /// Publish a compaction of the mirrored read snapshot, preserving concurrent
+    /// commit IDs in head order. As in Spark, an intervening Update/Compaction
+    /// supersedes this result; Delete alone does not (even for an empty head).
+    pub async fn publish_compacted_snapshot(
+        &self,
+        table: &TableInfo,
+        read: &PartitionInfo,
+        commit_id: uuid::Uuid,
+        files: &[DataFileInfo],
+        discarded: &[&DataFileInfo],
+    ) -> Result<bool> {
+        let invalid =
+            || LakeSoulMetaDataError::Internal("invalid compaction file manifest".into());
+        // Replay preserves each surviving add. Use path membership only to
+        // keep a still-referenced object out of the discard list.
+        let retained: HashSet<_> = files.iter().map(|file| file.path.as_str()).collect();
+        if table.table_id != read.table_id
+            || files.iter().any(|f| {
+                f.partition_desc != read.partition_desc
+                    || f.file_op != "add"
+                    || f.path.is_empty()
+            })
+            || discarded.iter().any(|f| {
+                f.partition_desc != read.partition_desc
+                    || retained.contains(f.path.as_str())
+            })
+        {
+            return Err(invalid());
+        }
+        let mut identity = table.clone();
+        identity.properties =
+            serde_json::from_str::<serde_json::Value>(&table.properties)?.to_string();
+        let ops: Vec<_> = files
+            .iter()
+            .map(|f| DataFileOp {
+                path: f.path.clone(),
+                file_op: f.file_op.clone(),
+                size: f.size,
+                file_exist_cols: f.file_exist_cols.clone(),
+            })
+            .collect();
+        let paths: Vec<_> = discarded.iter().map(|f| f.path.as_str()).collect();
+        let timestamps: Vec<_> = discarded.iter().map(|f| f.modification_time).collect();
+        let pool = self.client.lock().await.clone();
+        let mut connection = pool.get(QueryType::RW).await?;
+        for _ in 0..self.max_retry.max(1) {
+            let tx = connection.transaction().await?;
+            lock_table_identity(&tx, &identity).await?;
+            let Some((version, snapshot)) =
+                plan_compaction_snapshot(&tx, read, commit_id).await?
+            else {
+                return Ok(false);
+            };
+            let inserted = insert_compaction_publication(
+                &tx, table, read, version, commit_id, &ops, &snapshot,
+            )
+            .await?;
+            if inserted == 0 {
+                tx.rollback().await?;
+                continue;
+            }
+            insert_compaction_discards(
+                &tx,
+                &table.table_path,
+                &read.partition_desc,
+                &paths,
+                &timestamps,
+            )
+            .await?;
+            tx.commit().await.map_err(commit_error)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Read the primary after losing a COMMIT acknowledgement.
+    pub async fn compaction_is_published(
+        &self,
+        read: &PartitionInfo,
+        id: uuid::Uuid,
+    ) -> Result<bool> {
+        let pool = self.client.lock().await.clone();
+        let connection = pool.get(QueryType::RW).await?;
+        Ok(connection.query_opt("select 1 from data_commit_info where table_id=$1 and partition_desc=$2 and commit_id=$3 and committed and commit_op='CompactionCommit'",
+            &[&read.table_id,&read.partition_desc,&id]).await?.is_some())
+    }
+
     /// Atomically replace partitions with new files using `UpdateCommit`.
     ///
     /// Unlike a compaction commit, the new snapshot is a logical update: the
@@ -4688,6 +4775,159 @@ fn exclude_compaction_outputs(
         return;
     }
     added_ids.retain(|id| !compaction_ids.contains(&(id.high, id.low)));
+}
+
+/// Decide the partition row one compaction attempt should publish.
+///
+/// Returns `(version, snapshot)` when the mirrored read snapshot is still
+/// publishable. `None` means the attempt must be dropped: the mirrored read is
+/// ahead of the source, its version no longer carries the mirrored snapshot,
+/// or an intervening update/compaction superseded this compaction. A delete in
+/// the window is deliberately not a conflict; it leaves an empty head snapshot,
+/// so the result is just the compaction commit (Spark parity).
+async fn plan_compaction_snapshot(
+    tx: &tokio_postgres::Transaction<'_>,
+    read: &PartitionInfo,
+    commit_id: uuid::Uuid,
+) -> Result<Option<(i32, Vec<uuid::Uuid>)>> {
+    let Some(head) = tx
+        .query_opt(
+            "select version, snapshot from partition_info
+             where table_id=$1 and partition_desc=$2
+             order by version desc limit 1 for share",
+            &[&read.table_id, &read.partition_desc],
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let head_version: i32 = head.get(0);
+    let head_snapshot: Vec<uuid::Uuid> = head.get(1);
+    let expected: Vec<_> = read
+        .snapshot
+        .iter()
+        .map(|id| uuid::Uuid::from_u64_pair(id.high, id.low))
+        .collect();
+    if head_version < read.version
+        || (head_version == read.version && head_snapshot != expected)
+    {
+        return Ok(None);
+    }
+
+    let mut snapshot = vec![commit_id];
+    if head_version > read.version {
+        // Verify the read lineage and completeness of the intervening history
+        // before using it to rule out a conflicting replacement.
+        let history = tx
+            .query_one(
+                "select count(*),
+                        count(*) filter (where version=$3 and snapshot=$5::uuid[]),
+                        count(*) filter (where version>$3 and commit_op in ('UpdateCommit','CompactionCommit'))
+                 from partition_info where table_id=$1 and partition_desc=$2
+                   and version between $3 and $4",
+                &[
+                    &read.table_id,
+                    &read.partition_desc,
+                    &read.version,
+                    &head_version,
+                    &expected,
+                ],
+            )
+            .await?;
+        let count = i64::from(head_version) - i64::from(read.version) + 1;
+        if history.get::<_, i64>(0) != count
+            || history.get::<_, i64>(1) != 1
+            || history.get::<_, i64>(2) != 0
+        {
+            return Ok(None);
+        }
+        let read_ids: HashSet<_> = expected.iter().copied().collect();
+        snapshot.extend(
+            head_snapshot
+                .into_iter()
+                .filter(|id| !read_ids.contains(id)),
+        );
+    }
+
+    let version = head_version.checked_add(1).ok_or_else(|| {
+        LakeSoulMetaDataError::Internal("compaction version overflow".into())
+    })?;
+    Ok(Some((version, snapshot)))
+}
+
+/// Write the compaction data commit and its partition row. The returned row
+/// count is zero when a concurrent writer already claimed this version; the
+/// caller must roll back and retry.
+async fn insert_compaction_publication(
+    tx: &tokio_postgres::Transaction<'_>,
+    table: &TableInfo,
+    read: &PartitionInfo,
+    version: i32,
+    commit_id: uuid::Uuid,
+    ops: &[DataFileOp],
+    snapshot: &[uuid::Uuid],
+) -> Result<u64> {
+    tx.execute(
+        "insert into data_commit_info
+             (table_id, partition_desc, commit_id, file_ops, commit_op, committed, domain, timestamp)
+         values ($1, $2, $3, $4, 'CompactionCommit', true, $5,
+                 (extract(epoch from clock_timestamp()) * 1000)::bigint)",
+        &[
+            &table.table_id,
+            &read.partition_desc,
+            &commit_id,
+            &ops,
+            &table.domain,
+        ],
+    )
+    .await?;
+    let inserted = tx
+        .execute(
+            "insert into partition_info
+                 (table_id, partition_desc, version, snapshot, commit_op, expression, domain)
+             values ($1, $2, $3, $4::uuid[], 'CompactionCommit', $5, $6)
+             on conflict (table_id, partition_desc, version) do nothing",
+            &[
+                &table.table_id,
+                &read.partition_desc,
+                &version,
+                &snapshot,
+                &read.expression,
+                &table.domain,
+            ],
+        )
+        .await?;
+    Ok(inserted)
+}
+
+/// Record the input files this compaction replaced. Only called after the
+/// partition row was inserted, so a skipped publication never creates cleanup
+/// candidates.
+async fn insert_compaction_discards(
+    tx: &tokio_postgres::Transaction<'_>,
+    table_path: &str,
+    partition: &str,
+    paths: &[&str],
+    timestamps: &[i64],
+) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    tx.execute(
+        "insert into discard_compressed_file_info
+             (file_path, table_path, partition_desc, timestamp, t_date)
+         select path, $1, $2, mtime, to_timestamp(mtime / 1000.0)::date
+         from unnest($3::text[], $4::bigint[]) as d(path,mtime)
+         where not exists (
+             select 1 from data_commit_info c
+             cross join lateral unnest(c.file_ops) as f
+             where c.pinned and f.path = d.path
+         )
+         on conflict (file_path) do nothing",
+        &[&table_path, &partition, &paths, &timestamps],
+    )
+    .await?;
+    Ok(())
 }
 
 /// Merge the snapshot submitted by a stale commit with the commits that landed
