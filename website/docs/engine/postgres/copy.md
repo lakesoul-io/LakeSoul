@@ -26,22 +26,23 @@ The client streams the rows, ends the copy, and the server answers
 
 ## Formats
 
-TEXT (the default) and CSV are implemented:
+TEXT (the default), CSV and binary are implemented for the import direction:
 
 ```sql
 COPY orders FROM STDIN;
 COPY orders FROM STDIN WITH (FORMAT csv, HEADER true);
+COPY orders FROM STDIN WITH (FORMAT binary);
 COPY orders FROM STDIN WITH (FORMAT text, DELIMITER '|', NULL 'NULL');
 ```
 
-| Option | TEXT | CSV |
-| --- | --- | --- |
-| `FORMAT text` / `FORMAT csv` | yes | yes |
-| `DELIMITER` | one byte, default tab | one byte, default comma |
-| `NULL` | default `\N` | default unquoted empty field |
-| `HEADER` | refused (`42601`) | import: skips the first record; export: writes column names |
-| `QUOTE`, `ESCAPE` | refused (`42601`) | one byte, default `"` |
-| `ENCODING` | `UTF8` only | `UTF8` only |
+| Option | TEXT | CSV | Binary (import) |
+| --- | --- | --- | --- |
+| `FORMAT text` / `FORMAT csv` / `FORMAT binary` | yes | yes | yes |
+| `DELIMITER` | one byte, default tab | one byte, default comma | refused (`42601`) |
+| `NULL` | default `\N` | default unquoted empty field | `-1` field length |
+| `HEADER` | refused (`42601`) | import: skips the first record; export: writes column names | refused (`42601`) |
+| `QUOTE`, `ESCAPE` | refused (`42601`) | one byte, default `"` | refused (`42601`) |
+| `ENCODING` | `UTF8` only | `UTF8` only | `UTF8` only |
 
 TEXT values follow PostgreSQL's COPY escaping: `\b`, `\f`, `\n`, `\r`, `\t`,
 `\v`, `\\`, octal and `\x` sequences, and a backslash before the delimiter
@@ -51,6 +52,17 @@ CSV values may be quoted, and a quoted field can contain the delimiter,
 newlines and doubled quotes; `\r\n` record terminators are accepted. Only an
 unquoted empty field is NULL, so `""` is the empty string. With a custom
 `NULL` string, a quoted field with that text is still data.
+
+Binary import follows PostgreSQL's `PGCOPY` stream format: a 19-byte header
+(`PGCOPY\n\xff\r\n\0`, zero flags, zero extension length), then one `int16`
+field count and one `int32` length plus payload per field, ending with an
+`int16` `-1` field count. A field length of `-1` is NULL. Any piece may be
+split across `CopyData` frames. The supported binary value types are the core
+scalars: `boolean`, `smallint`, `integer`, `bigint`, `real`, `double
+precision`, `numeric`, `text`/`varchar`/`char`, `bytea`, `uuid`, `money`,
+`date`, `time`, `timestamp`, `timestamptz`, `json` and `jsonb`. Binary arrays
+and pgvector values are refused with `0A000`. `COPY ... TO STDOUT WITH
+(FORMAT binary)` is also refused; export supports TEXT and CSV only.
 
 Column values are converted by the target column's PostgreSQL input rules:
 `boolean`, `smallint`/`integer`/`bigint`, `real`/`double precision`,
@@ -100,7 +112,9 @@ copy without `ORDER BY` has no guaranteed row order.
 These are refused explicitly instead of being approximated:
 
 - `COPY ... TO` a file or program, and `COPY ... FROM` a file or program
-- `FORMAT binary`
+- `FORMAT binary` on export, and binary arrays or vector values on import
+- text/CSV-only options (`DELIMITER`, `NULL`, `HEADER`, `QUOTE`, `ESCAPE`)
+  combined with `FORMAT binary`
 - `FREEZE`, `FORCE_QUOTE`, `FORCE_NOT_NULL`, `FORCE_NULL`
 - data embedded in the statement text (`COPY t FROM STDIN; ...`)
 

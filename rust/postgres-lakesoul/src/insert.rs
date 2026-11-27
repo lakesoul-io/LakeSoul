@@ -50,13 +50,14 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::TableProvider;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{DFSchema, ParamValues, ScalarValue};
 use datafusion::datasource::{DefaultTableSource, MemTable};
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::ExprSchemable;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{
-    LogicalPlan, LogicalPlanBuilder, Projection, TableSource,
+    Expr as DfExpr, LogicalPlan, LogicalPlanBuilder, Projection, TableSource,
 };
 use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
@@ -131,13 +132,28 @@ impl QueryHook for InsertStatementHook {
                             session_context,
                             status,
                             &database,
+                            &Format::UnifiedText,
                         )
                         .await;
                     }
                     if is_do_update(insert) {
-                        run_upsert(insert, session_context, status, &database).await
+                        run_upsert(
+                            insert,
+                            session_context,
+                            status,
+                            &database,
+                            &Format::UnifiedText,
+                        )
+                        .await
                     } else {
-                        run(insert, session_context, status, &database).await
+                        run(
+                            insert,
+                            session_context,
+                            status,
+                            &database,
+                            &Format::UnifiedText,
+                        )
+                        .await
                     }
                 }
                 .await,
@@ -174,6 +190,10 @@ impl QueryHook for InsertStatementHook {
                             UpsertSnapshotMode::PlanOnly,
                         )
                         .await?;
+                        if let Some(projection) = upsert_returning_plan(insert, &planned)?
+                        {
+                            return Ok(projection);
+                        }
                         return Ok(planned.plan.clone());
                     }
                     let target =
@@ -211,6 +231,7 @@ impl QueryHook for InsertStatementHook {
                             session_context,
                             status,
                             &database,
+                            &current_result_format(client),
                         )
                         .await;
                     }
@@ -263,8 +284,21 @@ impl QueryHook for InsertStatementHook {
                         {
                             return Err(stale_upsert_error(&table_name));
                         }
-                        return execute_upsert(&planned, Some(params), session_context)
-                            .await;
+                        let returning = upsert_returning_rows(
+                            insert,
+                            &planned,
+                            Some(params),
+                            &current_result_format(client),
+                            session_context,
+                        )
+                        .await?;
+                        return execute_upsert(
+                            &planned,
+                            Some(params),
+                            session_context,
+                            returning,
+                        )
+                        .await;
                     }
                     let target =
                         prepare(insert, session_context, status, &database).await?;
@@ -336,11 +370,60 @@ pub(crate) async fn prepare_upsert(
         .map_err(upsert_plan_error)
 }
 
+fn upsert_returning_spec(
+    insert: &Insert,
+    planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
+) -> PgWireResult<Option<ReturningSpec>> {
+    let (Some(items), Some((_, target_schema))) =
+        (insert.returning.as_deref(), planned.returning())
+    else {
+        return Ok(None);
+    };
+    ReturningSpec::new(items, target_schema).map(Some)
+}
+
+/// Parse-time RETURNING plan for a full-row `DO UPDATE` upsert.
+pub(crate) fn upsert_returning_plan(
+    insert: &Insert,
+    planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
+) -> PgWireResult<Option<LogicalPlan>> {
+    let Some(spec) = upsert_returning_spec(insert, planned)? else {
+        return Ok(None);
+    };
+    let (input, target_schema) = planned
+        .returning()
+        .ok_or_else(|| internal("the upsert plan has no RETURNING input"))?;
+    let projection = returning_projection_from(input, target_schema, &spec)?;
+    carry_parameter_types(&planned.plan, projection).map(Some)
+}
+
+/// Evaluate an upsert's RETURNING rows from the merged new-row plan. Because
+/// the PG wire form only permits `col = EXCLUDED.col` assignments, that plan
+/// is exactly the source row for both fresh inserts and conflicts.
+pub(crate) async fn upsert_returning_rows(
+    insert: &Insert,
+    planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
+    params: Option<&ParamValues>,
+    format: &Format,
+    session_context: &SessionContext,
+) -> PgWireResult<Option<ReturnedRows>> {
+    let Some(spec) = upsert_returning_spec(insert, planned)? else {
+        return Ok(None);
+    };
+    let (input, target_schema) = planned
+        .returning()
+        .ok_or_else(|| internal("the upsert plan has no RETURNING input"))?;
+    returning_rows_from(input, target_schema, &spec, params, format, session_context)
+        .await
+        .map(Some)
+}
+
 pub(crate) async fn run_upsert(
     insert: &Insert,
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
+    format: &Format,
 ) -> PgWireResult<Response> {
     // Upsert publishes through its own executor, which does not stage into the
     // block: refuse it before resolving the target, so a block never runs it.
@@ -352,16 +435,24 @@ pub(crate) async fn run_upsert(
         UpsertSnapshotMode::Capture,
     )
     .await?;
-    execute_upsert(&planned, None, session_context).await
+    let returning =
+        upsert_returning_rows(insert, &planned, None, format, session_context).await?;
+    execute_upsert(&planned, None, session_context, returning).await
 }
 
 async fn execute_upsert(
     planned: &lakesoul_datafusion::planner::upsert::PlannedUpsert,
     params: Option<&ParamValues>,
     session_context: &SessionContext,
+    returning: Option<ReturnedRows>,
 ) -> PgWireResult<Response> {
     let (rows, tag) = execute_upsert_plan(planned, params, session_context).await?;
-    Ok(Response::Execution(tag.with_rows(rows)))
+    match returning {
+        Some((fields, batches)) => {
+            returning_response_tagged(fields, batches, format!("INSERT 0 {rows}"))
+        }
+        None => Ok(Response::Execution(tag.with_rows(rows))),
+    }
 }
 
 /// Runs the prepared upsert and returns the written rows with the command tag.
@@ -492,18 +583,18 @@ enum TargetKind {
     ExternalFile,
 }
 
-/// One column of an `INSERT ... RETURNING` result.
-struct ReturningColumn {
-    output_name: String,
-    target_index: usize,
+/// One column of an `INSERT`/`UPDATE ... RETURNING` result.
+pub(crate) struct ReturningColumn {
+    pub(crate) output_name: String,
+    pub(crate) target_index: usize,
 }
 
-struct ReturningSpec {
-    columns: Vec<ReturningColumn>,
+pub(crate) struct ReturningSpec {
+    pub(crate) columns: Vec<ReturningColumn>,
 }
 
 impl ReturningSpec {
-    fn new(items: &[SelectItem], schema: &SchemaRef) -> PgWireResult<Self> {
+    pub(crate) fn new(items: &[SelectItem], schema: &SchemaRef) -> PgWireResult<Self> {
         let mut columns = Vec::new();
         for item in items {
             match item {
@@ -1161,24 +1252,23 @@ fn reject_unsupported(insert: &Insert) -> PgWireResult<()> {
         }
         let Some(source) = insert.source.as_deref() else {
             return Err(feature_not_supported(
-                "INSERT ... RETURNING needs a VALUES source".to_string(),
+                "INSERT ... RETURNING needs a source".to_string(),
             ));
         };
-        let SetExpr::Values(values) = source.body.as_ref() else {
-            return Err(feature_not_supported(
-                "INSERT ... RETURNING is only supported for INSERT ... VALUES; \
-                 INSERT ... SELECT ... RETURNING is not supported yet"
-                    .to_string(),
-            ));
-        };
-        for row in &values.rows {
-            for expr in &row.content {
-                if !returning_safe_expr(expr) {
-                    return Err(feature_not_supported(
-                        "INSERT ... RETURNING requires literal or parameter \
-                         VALUES; volatile expressions are not supported yet"
-                            .to_string(),
-                    ));
+        // A SELECT source is re-evaluated for RETURNING from the write's
+        // input plan. Table scans and parameters are deterministic; a volatile
+        // source function would be evaluated twice, so keep the same boundary
+        // VALUES uses and refuse it.
+        if let SetExpr::Values(values) = source.body.as_ref() {
+            for row in &values.rows {
+                for expr in &row.content {
+                    if !returning_safe_expr(expr) {
+                        return Err(feature_not_supported(
+                            "INSERT ... RETURNING requires literal or parameter \
+                             VALUES; volatile expressions are not supported yet"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
         }
@@ -1377,7 +1467,11 @@ pub(crate) async fn plan_checked(
     database: &str,
 ) -> PgWireResult<LogicalPlan> {
     let target = prepare(insert, session_context, status, database).await?;
-    plan_target(&target, session_context).await
+    if target.returning.is_some() {
+        returning_plan(&target, session_context).await
+    } else {
+        plan_target(&target, session_context).await
+    }
 }
 
 async fn plan_target(
@@ -1565,9 +1659,10 @@ pub(crate) async fn run(
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
+    format: &Format,
 ) -> PgWireResult<Response> {
     let (rows, tag, returning) =
-        execute_write(insert, session_context, status, database).await?;
+        execute_write(insert, session_context, status, database, format).await?;
     match returning {
         Some((fields, batches)) => returning_response(fields, batches, rows),
         None => Ok(Response::Execution(tag.with_rows(rows))),
@@ -1600,32 +1695,33 @@ pub(crate) async fn run_for_job(
         let (rows, tag) = execute_upsert_plan(&planned, None, session_context).await?;
         return Ok((rows, CommandComplete::from(tag).tag));
     }
-    let (rows, tag, _returning) =
-        execute_write(insert, session_context, TransactionStatus::Idle, database).await?;
+    let (rows, tag, _returning) = execute_write(
+        insert,
+        session_context,
+        TransactionStatus::Idle,
+        database,
+        &Format::UnifiedText,
+    )
+    .await?;
     let tag = CommandComplete::from(tag.with_rows(rows)).tag;
     Ok((rows, tag))
 }
 
-type ReturnedRows = (Arc<Vec<FieldInfo>>, Vec<RecordBatch>);
+pub(crate) type ReturnedRows = (Arc<Vec<FieldInfo>>, Vec<RecordBatch>);
 
 async fn execute_write(
     insert: &Insert,
     session_context: &SessionContext,
     status: TransactionStatus,
     database: &str,
+    format: &Format,
 ) -> PgWireResult<(usize, Tag, Option<ReturnedRows>)> {
     let target = prepare(insert, session_context, status, database).await?;
     let write_plan = plan_target(&target, session_context).await?;
     // Evaluate RETURNING before the write so a failing returning expression
     // cannot leave a committed insert without its response rows.
-    let returning = execute_returning(
-        &target,
-        &write_plan,
-        None,
-        &Format::UnifiedText,
-        session_context,
-    )
-    .await?;
+    let returning =
+        execute_returning(&target, &write_plan, None, format, session_context).await?;
     if let TargetKind::LakeSoul(mode) = target.kind {
         write_mode(session_context)?.set(mode);
     }
@@ -1666,19 +1762,16 @@ async fn returning_plan(
     let Some(spec) = &target.returning else {
         return Err(internal("RETURNING plan requested without a projection"));
     };
-    returning_projection(&write_plan, spec)
+    let projection = returning_projection(&write_plan, spec)?;
+    carry_parameter_types(&write_plan, projection)
 }
 
 /// The wire schema of a `RETURNING` result: the target table fields, renamed
 /// to the statement's output names.
-fn returning_schema(
-    write_plan: &LogicalPlan,
+pub(crate) fn returning_schema_from(
+    target_schema: &SchemaRef,
     spec: &ReturningSpec,
 ) -> PgWireResult<SchemaRef> {
-    let LogicalPlan::Dml(dml) = write_plan else {
-        return Err(internal("the INSERT plan is not a DML node"));
-    };
-    let target_schema = dml.target.schema();
     let mut fields = Vec::with_capacity(spec.columns.len());
     for column in &spec.columns {
         let field = target_schema
@@ -1708,9 +1801,18 @@ fn returning_projection(
     let LogicalPlan::Dml(dml) = write_plan else {
         return Err(internal("the INSERT plan is not a DML node"));
     };
-    let input = dml.input.as_ref();
+    returning_projection_from(dml.input.as_ref(), &dml.target.schema(), spec)
+}
+
+/// Builds the RETURNING projection over any plan that already holds the
+/// target's columns in table order. `UPDATE` passes the planner's full-row
+/// projection; `INSERT` passes its DML input.
+pub(crate) fn returning_projection_from(
+    input: &LogicalPlan,
+    target_schema: &SchemaRef,
+    spec: &ReturningSpec,
+) -> PgWireResult<LogicalPlan> {
     let input_schema = input.schema();
-    let target_schema = dml.target.schema();
 
     let mut projections = Vec::with_capacity(spec.columns.len());
     let mut fields = Vec::with_capacity(spec.columns.len());
@@ -1735,7 +1837,19 @@ fn returning_projection(
                 .clone()
                 .with_name(column.output_name.as_str()),
         );
-        projections.push(col(input_field.name()).alias(column.output_name.as_str()));
+        let expression = col(input_field.name());
+        // The wire field is declared from the target column, so the projected
+        // array must have exactly that type. A JSON-batch VALUES literal (or
+        // any source cast DataFusion kept narrower) otherwise emits Int32
+        // bytes under an Int8 field and the client cannot decode them.
+        let expression = if input_field.data_type() != target_field.data_type() {
+            expression
+                .cast_to(target_field.data_type(), input_schema)
+                .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+        } else {
+            expression
+        };
+        projections.push(expression.alias(column.output_name.as_str()));
         fields.push((None, output_field));
     }
     let output_schema = Arc::new(
@@ -1771,7 +1885,31 @@ async fn execute_returning(
     let Some(spec) = &target.returning else {
         return Ok(None);
     };
-    let plan = returning_projection(write_plan, spec)?;
+    let LogicalPlan::Dml(dml) = write_plan else {
+        return Err(internal("the INSERT plan is not a DML node"));
+    };
+    returning_rows_from(
+        dml.input.as_ref(),
+        &dml.target.schema(),
+        spec,
+        params,
+        format,
+        session_context,
+    )
+    .await
+    .map(Some)
+}
+
+/// Evaluate a RETURNING projection and encode its wire fields and batches.
+pub(crate) async fn returning_rows_from(
+    input: &LogicalPlan,
+    target_schema: &SchemaRef,
+    spec: &ReturningSpec,
+    params: Option<&ParamValues>,
+    format: &Format,
+    session_context: &SessionContext,
+) -> PgWireResult<ReturnedRows> {
+    let plan = returning_projection_from(input, target_schema, spec)?;
     let plan = match params {
         Some(params) => plan
             .replace_params_with_values(params)
@@ -1782,20 +1920,28 @@ async fn execute_returning(
     // Parse. The optimizer may rebuild the projection's fields (and drop
     // logical-type metadata), so build the wire schema from the target table
     // schema instead of the optimized dataframe schema.
-    let schema = returning_schema(write_plan, spec)?;
+    let schema = returning_schema_from(target_schema, spec)?;
     let dataframe = session_context
         .execute_logical_plan(plan)
         .await
         .map_err(insert_error)?;
     let fields = Arc::new(arrow_schema_to_pg_fields(&schema, format, None)?);
     let batches = dataframe.collect().await.map_err(insert_error)?;
-    Ok(Some((fields, batches)))
+    Ok((fields, batches))
 }
 
 fn returning_response(
     fields: Arc<Vec<FieldInfo>>,
     batches: Vec<RecordBatch>,
     affected: usize,
+) -> PgWireResult<Response> {
+    returning_response_tagged(fields, batches, format!("INSERT 0 {affected}"))
+}
+
+pub(crate) fn returning_response_tagged(
+    fields: Arc<Vec<FieldInfo>>,
+    batches: Vec<RecordBatch>,
+    tag: String,
 ) -> PgWireResult<Response> {
     let rows = batches
         .into_iter()
@@ -1804,8 +1950,50 @@ fn returning_response(
         })
         .collect::<Vec<_>>();
     let mut response = QueryResponse::new(fields, stream::iter(rows));
-    response.set_command_tag(&format!("INSERT 0 {affected}"));
+    response.set_command_tag(&tag);
     Ok(Response::Query(response))
+}
+
+/// Copy inferred parameter types from the write plan onto a `RETURNING`
+/// projection plan.
+///
+/// Describe reports parameter types from the plan the hook returns. A
+/// RETURNING projection reads the write's already-cast columns, so an
+/// untyped `$1` inside `INSERT ... SELECT` or `UPDATE ... SET` would no
+/// longer be visible to DataFusion's inference; the client would see
+/// `unknown` and fail to bind. The write plan still knows the type, so stamp
+/// it onto the placeholder expression in the projection plan.
+pub(crate) fn carry_parameter_types(
+    write_plan: &LogicalPlan,
+    plan: LogicalPlan,
+) -> PgWireResult<LogicalPlan> {
+    let inferred = write_plan
+        .get_parameter_types()
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    if inferred.values().all(Option::is_none) {
+        return Ok(plan);
+    }
+    plan.transform_up(|node| {
+        node.map_expressions(|expr| {
+            expr.transform_up(|item| match item {
+                DfExpr::Placeholder(mut placeholder) if placeholder.field.is_none() => {
+                    if let Some(Some(data_type)) = inferred.get(&placeholder.id) {
+                        placeholder.field = Some(Arc::new(Field::new(
+                            placeholder.id.clone(),
+                            data_type.clone(),
+                            true,
+                        )));
+                        Ok(Transformed::yes(DfExpr::Placeholder(placeholder)))
+                    } else {
+                        Ok(Transformed::no(DfExpr::Placeholder(placeholder)))
+                    }
+                }
+                item => Ok(Transformed::no(item)),
+            })
+        })
+    })
+    .map(|transformed| transformed.data)
+    .map_err(|error| PgWireError::ApiError(Box::new(error)))
 }
 
 /// The sink reports the written row count in its single `count` batch.

@@ -11,10 +11,13 @@
 //! a multi-row `INSERT`; inside a transaction block the write is staged and
 //! published by `COMMIT`, like every other write.
 //!
-//! Two formats are implemented: `text` (the default) and `csv`. Binary
-//! `COPY` is refused with `0A000`, as is `COPY ... FROM` a file or program:
-//! this endpoint only speaks stdio. The export direction lives in
-//! [`crate::copy_out`] and shares [`CopyOptions`] with this module.
+//! Three formats are implemented: `text` (the default), `csv` and `binary`.
+//! Binary COPY follows PostgreSQL's `PGCOPY` framing: a header, then a
+//! two-byte field count and a length-prefixed value per field, ending with a
+//! `-1` field count. The export direction lives in [`crate::copy_out`] and
+//! shares [`CopyOptions`] with this module; binary export is still refused.
+//! `COPY ... FROM` a file or program is also refused: this endpoint only
+//! speaks stdio.
 //!
 //! The statement is claimed by [`CopyStatementHook`] before DataFusion sees
 //! it. The hook resolves the target table and column list, records the copy
@@ -84,11 +87,12 @@ const INVALID_PARAMETER: &str = "22023";
 /// `57014 query_canceled`, PostgreSQL's SQLSTATE for a client `CopyFail`.
 const QUERY_CANCELED: &str = "57014";
 
-/// The two text encodings the copy sub-protocol supports.
+/// The encodings the copy sub-protocol supports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CopyFormat {
     Text,
     Csv,
+    Binary,
 }
 
 /// The options one `COPY` statement carries, already resolved against the
@@ -110,18 +114,18 @@ pub(crate) struct CopyOptions {
 
 /// A target column of the copy, in the order the client sends it.
 #[derive(Clone, Debug)]
-struct CopyColumn {
-    name: String,
-    data_type: DataType,
+pub(crate) struct CopyColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: DataType,
     /// `Some("json")` / `Some("jsonb")` for a JSON column, whose text must be
     /// validated (and, for `jsonb`, normalized) before it is stored.
-    json_kind: Option<&'static str>,
+    pub(crate) json_kind: Option<&'static str>,
     /// Semantic PostgreSQL type (`uuid`, `money`, `varchar`, `bpchar`, ...).
-    pg_type: Option<String>,
+    pub(crate) pg_type: Option<String>,
     /// PostgreSQL `atttypmod` for character length / numeric precision.
-    typmod: Option<i32>,
+    pub(crate) typmod: Option<i32>,
     /// Element column for a List array.
-    element: Option<Box<CopyColumn>>,
+    pub(crate) element: Option<Box<CopyColumn>>,
 }
 
 impl CopyColumn {
@@ -160,6 +164,7 @@ struct CopyInState {
     target_columns: Vec<String>,
     columns: Vec<CopyColumn>,
     schema: SchemaRef,
+    format: CopyFormat,
     decoder: RowDecoder,
     rows: Vec<Vec<ScalarValue>>,
     /// The CSV header record is skipped before the first data row.
@@ -184,6 +189,7 @@ impl CopyInState {
             target_columns,
             columns,
             schema,
+            format: options.format,
             decoder: RowDecoder::new(options),
             rows: Vec::new(),
             header_pending: options.header,
@@ -230,7 +236,19 @@ impl CopyInState {
             check_arity(&raw, &self.columns)?;
             let mut values = Vec::with_capacity(self.columns.len());
             for (column, field) in self.columns.iter().zip(raw.iter()) {
-                values.push(decode_value(column, field.as_deref())?);
+                let value = match field.as_deref() {
+                    None => ScalarValue::try_from(&column.data_type).map_err(|error| {
+                        feature_not_supported(format!(
+                            "COPY into column \"{}\" of type {} is not supported: {error}",
+                            column.name, column.data_type
+                        ))
+                    })?,
+                    Some(bytes) if self.format == CopyFormat::Binary => {
+                        crate::pg_binary::decode_binary_value(column, bytes)?
+                    }
+                    Some(bytes) => decode_value(column, Some(bytes))?,
+                };
+                values.push(value);
             }
             self.rows.push(values);
         }
@@ -351,12 +369,16 @@ where
     let request = parse_copy(statement)?;
     let state = plan_copy_state(request, session_context, client).await?;
     let columns = state.columns.len();
+    // `1` is the binary format code. pgwire appends the `FF FF` trailer to
+    // copy-out streams itself; for copy-in it only tells the client which
+    // framing to send.
+    let format = i8::from(state.format == CopyFormat::Binary);
     let cell = client
         .session_extensions()
         .get_or_insert_with(CopyInCell::default);
     *cell.0.lock() = Some(state);
     Ok(Response::CopyIn(CopyResponse::new(
-        0,
+        format,
         columns,
         stream::empty(),
     )))
@@ -572,11 +594,7 @@ pub(crate) fn parse_options(
     }
     for option in legacy {
         match option {
-            CopyLegacyOption::Binary => {
-                return Err(feature_not_supported(
-                    "COPY ... FROM STDIN BINARY is not supported".to_string(),
-                ));
-            }
+            CopyLegacyOption::Binary => set_format(&mut format, &Ident::new("binary"))?,
             CopyLegacyOption::Csv(_) => set_format(&mut format, &Ident::new("csv"))?,
             _ => {}
         }
@@ -587,10 +605,11 @@ pub(crate) fn parse_options(
         delimiter: match format {
             CopyFormat::Text => b'\t',
             CopyFormat::Csv => b',',
+            CopyFormat::Binary => 0,
         },
         null: match format {
             CopyFormat::Text => b"\\N".to_vec(),
-            CopyFormat::Csv => Vec::new(),
+            CopyFormat::Csv | CopyFormat::Binary => Vec::new(),
         },
         quote: b'"',
         escape: b'"',
@@ -600,10 +619,17 @@ pub(crate) fn parse_options(
         match option {
             CopyOption::Format(_) => {}
             CopyOption::Delimiter(delimiter) => {
+                reject_binary_option(format, "DELIMITER")?;
                 resolved.delimiter = option_byte("DELIMITER", *delimiter)?;
             }
-            CopyOption::Null(null) => resolved.null = null.clone().into_bytes(),
-            CopyOption::Header(header) => resolved.header = *header,
+            CopyOption::Null(null) => {
+                reject_binary_option(format, "NULL")?;
+                resolved.null = null.clone().into_bytes();
+            }
+            CopyOption::Header(header) => {
+                reject_binary_option(format, "HEADER")?;
+                resolved.header = *header;
+            }
             CopyOption::Quote(quote) => {
                 if resolved.format != CopyFormat::Csv {
                     return Err(user_error(
@@ -641,18 +667,30 @@ pub(crate) fn parse_options(
         match option {
             CopyLegacyOption::Binary => {}
             CopyLegacyOption::Delimiter(delimiter) => {
+                reject_binary_option(format, "DELIMITER")?;
                 resolved.delimiter = option_byte("DELIMITER", *delimiter)?;
             }
-            CopyLegacyOption::Null(null) => resolved.null = null.clone().into_bytes(),
-            CopyLegacyOption::Header => resolved.header = true,
+            CopyLegacyOption::Null(null) => {
+                reject_binary_option(format, "NULL")?;
+                resolved.null = null.clone().into_bytes();
+            }
+            CopyLegacyOption::Header => {
+                reject_binary_option(format, "HEADER")?;
+                resolved.header = true;
+            }
             CopyLegacyOption::Csv(csv) => {
                 for option in csv {
                     match option {
-                        CopyLegacyCsvOption::Header => resolved.header = true,
+                        CopyLegacyCsvOption::Header => {
+                            reject_binary_option(format, "CSV HEADER")?;
+                            resolved.header = true;
+                        }
                         CopyLegacyCsvOption::Quote(quote) => {
+                            reject_binary_option(format, "QUOTE")?;
                             resolved.quote = option_byte("QUOTE", *quote)?;
                         }
                         CopyLegacyCsvOption::Escape(escape) => {
+                            reject_binary_option(format, "ESCAPE")?;
                             resolved.escape = option_byte("ESCAPE", *escape)?;
                         }
                         CopyLegacyCsvOption::ForceQuote(_)
@@ -679,11 +717,7 @@ fn set_format(format: &mut Option<CopyFormat>, ident: &Ident) -> PgWireResult<()
     let detected = match ident.value.to_ascii_lowercase().as_str() {
         "text" => CopyFormat::Text,
         "csv" => CopyFormat::Csv,
-        "binary" => {
-            return Err(feature_not_supported(
-                "COPY ... FROM STDIN with FORMAT binary is not supported".to_string(),
-            ));
-        }
+        "binary" => CopyFormat::Binary,
         other => {
             return Err(user_error(
                 SYNTAX_ERROR,
@@ -695,6 +729,18 @@ fn set_format(format: &mut Option<CopyFormat>, ident: &Ident) -> PgWireResult<()
         return Err(user_error(
             SYNTAX_ERROR,
             "conflicting or redundant options".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Text/CSV-only options have no meaning in a binary stream; PostgreSQL
+/// rejects them at Parse time rather than ignoring them.
+fn reject_binary_option(format: CopyFormat, name: &str) -> PgWireResult<()> {
+    if format == CopyFormat::Binary {
+        return Err(user_error(
+            SYNTAX_ERROR,
+            format!("cannot specify {name} in binary mode"),
         ));
     }
     Ok(())
@@ -740,6 +786,7 @@ fn validate_options(options: &CopyOptions) -> PgWireResult<()> {
                 ));
             }
         }
+        CopyFormat::Binary => {}
         CopyFormat::Csv => {
             for (name, byte) in [("QUOTE", options.quote), ("ESCAPE", options.escape)] {
                 if byte == b'\n' || byte == b'\r' {
@@ -764,6 +811,7 @@ fn validate_options(options: &CopyOptions) -> PgWireResult<()> {
 enum RowDecoder {
     Text(TextDecoder),
     Csv(CsvDecoder),
+    Binary(BinaryDecoder),
 }
 
 impl RowDecoder {
@@ -776,6 +824,7 @@ impl RowDecoder {
                 ended: false,
             }),
             CopyFormat::Csv => RowDecoder::Csv(CsvDecoder::new(options)),
+            CopyFormat::Binary => RowDecoder::Binary(BinaryDecoder::new()),
         }
     }
 
@@ -783,6 +832,7 @@ impl RowDecoder {
         match self {
             RowDecoder::Text(decoder) => decoder.push(chunk),
             RowDecoder::Csv(decoder) => decoder.push(chunk),
+            RowDecoder::Binary(decoder) => decoder.push(chunk),
         }
     }
 
@@ -790,6 +840,7 @@ impl RowDecoder {
         match self {
             RowDecoder::Text(decoder) => decoder.finish(),
             RowDecoder::Csv(decoder) => decoder.finish(),
+            RowDecoder::Binary(decoder) => decoder.finish(),
         }
     }
 }
@@ -1121,6 +1172,229 @@ impl CsvDecoder {
             }
         }
         Ok(rows)
+    }
+}
+
+/// `COPY ... FROM STDIN` binary format.
+///
+/// The stream is a 19-byte header (`PGCOPY\n\xff\r\n\0`, flags, extension
+/// length), a sequence of rows (`i16` field count, then `i32` length and the
+/// payload for each field), and an `i16` `-1` end-of-data marker. A client may
+/// split any of those pieces across CopyData frames, so every phase below is
+/// resumable and keeps only the bytes of the piece it is currently reading.
+struct BinaryDecoder {
+    phase: BinaryPhase,
+    /// Bytes received but not yet consumed by the current phase.
+    buffer: Vec<u8>,
+    fields: Vec<Option<Vec<u8>>>,
+}
+
+enum BinaryPhase {
+    Header,
+    Extension {
+        remaining: usize,
+    },
+    FieldCount,
+    FieldLength {
+        count: usize,
+    },
+    FieldData {
+        count: usize,
+        remaining: usize,
+        value: Vec<u8>,
+    },
+    Done,
+}
+
+const BINARY_MAGIC: &[u8; 11] = b"PGCOPY\n\xff\r\n\0";
+const BINARY_HEADER_LEN: usize = 11 + 4 + 4;
+
+impl BinaryDecoder {
+    fn new() -> Self {
+        Self {
+            phase: BinaryPhase::Header,
+            buffer: Vec::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> PgWireResult<Vec<Vec<Option<Vec<u8>>>>> {
+        self.buffer.extend_from_slice(chunk);
+        self.drain()
+    }
+
+    fn finish(&mut self) -> PgWireResult<Vec<Vec<Option<Vec<u8>>>>> {
+        // A client may finish without sending any CopyData at all. That is an
+        // empty COPY, not a truncated binary stream.
+        if matches!(self.phase, BinaryPhase::Header) && self.buffer.is_empty() {
+            self.phase = BinaryPhase::Done;
+            return Ok(Vec::new());
+        }
+        self.drain()?;
+        if matches!(self.phase, BinaryPhase::Done) && self.buffer.is_empty() {
+            return Ok(Vec::new());
+        }
+        Err(user_error(
+            BAD_COPY_FORMAT,
+            "incomplete binary COPY stream: missing end-of-data marker".to_string(),
+        ))
+    }
+
+    fn drain(&mut self) -> PgWireResult<Vec<Vec<Option<Vec<u8>>>>> {
+        let mut rows = Vec::new();
+        loop {
+            // Take the phase by value so `FieldData` can hand its partial
+            // payload back without cloning; every path restores the phase it
+            // wants before returning or loops again.
+            match std::mem::replace(&mut self.phase, BinaryPhase::Done) {
+                BinaryPhase::Header => {
+                    if self.buffer.len() < BINARY_HEADER_LEN {
+                        self.phase = BinaryPhase::Header;
+                        return Ok(rows);
+                    }
+                    if &self.buffer[..BINARY_MAGIC.len()] != BINARY_MAGIC {
+                        return Err(user_error(
+                            BAD_COPY_FORMAT,
+                            "invalid binary COPY header".to_string(),
+                        ));
+                    }
+                    let flags =
+                        u32::from_be_bytes(self.buffer[11..15].try_into().unwrap());
+                    let extension =
+                        u32::from_be_bytes(self.buffer[15..19].try_into().unwrap())
+                            as usize;
+                    if flags != 0 {
+                        return Err(feature_not_supported(
+                            "binary COPY header flags are not supported".to_string(),
+                        ));
+                    }
+                    self.buffer.drain(..BINARY_HEADER_LEN);
+                    self.phase = if extension > 0 {
+                        BinaryPhase::Extension {
+                            remaining: extension,
+                        }
+                    } else {
+                        BinaryPhase::FieldCount
+                    };
+                }
+                BinaryPhase::Extension { remaining } => {
+                    let taken = remaining.min(self.buffer.len());
+                    self.buffer.drain(..taken);
+                    let remaining = remaining - taken;
+                    self.phase = if remaining == 0 {
+                        BinaryPhase::FieldCount
+                    } else {
+                        BinaryPhase::Extension { remaining }
+                    };
+                }
+                BinaryPhase::FieldCount => {
+                    if self.buffer.len() < 2 {
+                        self.phase = BinaryPhase::FieldCount;
+                        return Ok(rows);
+                    }
+                    let count = i16::from_be_bytes([self.buffer[0], self.buffer[1]]);
+                    self.buffer.drain(..2);
+                    self.fields.clear();
+                    match count {
+                        -1 => self.phase = BinaryPhase::Done,
+                        0 => {
+                            rows.push(Vec::new());
+                            self.phase = BinaryPhase::FieldCount;
+                        }
+                        positive if positive > 0 => {
+                            self.phase = BinaryPhase::FieldLength {
+                                count: positive as usize,
+                            };
+                        }
+                        other => {
+                            return Err(user_error(
+                                BAD_COPY_FORMAT,
+                                format!("invalid binary COPY field count {other}"),
+                            ));
+                        }
+                    }
+                }
+                BinaryPhase::FieldLength { count } => {
+                    if self.buffer.len() < 4 {
+                        self.phase = BinaryPhase::FieldLength { count };
+                        return Ok(rows);
+                    }
+                    let length = i32::from_be_bytes([
+                        self.buffer[0],
+                        self.buffer[1],
+                        self.buffer[2],
+                        self.buffer[3],
+                    ]);
+                    self.buffer.drain(..4);
+                    match length {
+                        -1 => {
+                            self.fields.push(None);
+                            if self.fields.len() == count {
+                                rows.push(std::mem::take(&mut self.fields));
+                                self.phase = BinaryPhase::FieldCount;
+                            } else {
+                                self.phase = BinaryPhase::FieldLength { count };
+                            }
+                        }
+                        non_negative if non_negative >= 0 => {
+                            self.phase = BinaryPhase::FieldData {
+                                count,
+                                remaining: non_negative as usize,
+                                value: Vec::with_capacity(non_negative as usize),
+                            };
+                        }
+                        other => {
+                            return Err(user_error(
+                                BAD_COPY_FORMAT,
+                                format!("invalid binary COPY field length {other}"),
+                            ));
+                        }
+                    }
+                }
+                BinaryPhase::FieldData {
+                    count,
+                    remaining,
+                    mut value,
+                } => {
+                    if self.buffer.is_empty() {
+                        self.phase = BinaryPhase::FieldData {
+                            count,
+                            remaining,
+                            value,
+                        };
+                        return Ok(rows);
+                    }
+                    let taken = remaining.min(self.buffer.len());
+                    value.extend_from_slice(&self.buffer[..taken]);
+                    self.buffer.drain(..taken);
+                    let remaining = remaining - taken;
+                    if remaining > 0 {
+                        self.phase = BinaryPhase::FieldData {
+                            count,
+                            remaining,
+                            value,
+                        };
+                        return Ok(rows);
+                    }
+                    self.fields.push(Some(value));
+                    if self.fields.len() == count {
+                        rows.push(std::mem::take(&mut self.fields));
+                        self.phase = BinaryPhase::FieldCount;
+                    } else {
+                        self.phase = BinaryPhase::FieldLength { count };
+                    }
+                }
+                BinaryPhase::Done => {
+                    if !self.buffer.is_empty() {
+                        return Err(user_error(
+                            BAD_COPY_FORMAT,
+                            "received COPY data after the end-of-data marker".to_string(),
+                        ));
+                    }
+                    return Ok(rows);
+                }
+            }
+        }
     }
 }
 
@@ -1457,7 +1731,7 @@ fn parse_money_cents(text: &str) -> Option<i128> {
     Some(cents)
 }
 
-fn parse_decimal_i256(
+pub(crate) fn parse_decimal_i256(
     bytes: &[u8],
     column: &str,
     precision: u8,
@@ -1589,7 +1863,7 @@ fn finish_array_element(value: &str, quoted: bool) -> Option<String> {
 }
 
 /// Validate (and for `jsonb`, canonicalize) a JSON column value.
-fn apply_json_kind(column: &CopyColumn, text: String) -> PgWireResult<String> {
+pub(crate) fn apply_json_kind(column: &CopyColumn, text: String) -> PgWireResult<String> {
     match column.json_kind {
         Some("jsonb") => {
             let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
@@ -1772,7 +2046,7 @@ fn split_offset(text: &str) -> (&str, i64) {
 }
 
 /// Parse a PostgreSQL numeric into a decimal128 mantissa at the column scale.
-fn parse_decimal(
+pub(crate) fn parse_decimal(
     bytes: &[u8],
     precision: u8,
     scale: i8,
@@ -1920,7 +2194,7 @@ fn parse_bytea(bytes: &[u8], column: &str) -> PgWireResult<Vec<u8>> {
     Ok(out)
 }
 
-fn invalid_input(ty: &str, column: &str, value: &[u8]) -> PgWireError {
+pub(crate) fn invalid_input(ty: &str, column: &str, value: &[u8]) -> PgWireError {
     user_error(
         INVALID_TEXT,
         format!(
@@ -2194,6 +2468,43 @@ mod tests {
         }
     }
 
+    fn binary_options() -> CopyOptions {
+        CopyOptions {
+            format: CopyFormat::Binary,
+            delimiter: 0,
+            null: Vec::new(),
+            quote: b'"',
+            escape: b'"',
+            header: false,
+        }
+    }
+
+    fn binary_row(fields: &[Option<&[u8]>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(fields.len() as i16).to_be_bytes());
+        for field in fields {
+            match field {
+                None => out.extend_from_slice(&(-1i32).to_be_bytes()),
+                Some(value) => {
+                    out.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                    out.extend_from_slice(value);
+                }
+            }
+        }
+        out
+    }
+
+    fn binary_stream(rows: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = BINARY_MAGIC.to_vec();
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        for row in rows {
+            out.extend_from_slice(row);
+        }
+        out.extend_from_slice(&(-1i16).to_be_bytes());
+        out
+    }
+
     fn decode_all(options: &CopyOptions, chunks: &[&[u8]]) -> Vec<Vec<Option<Vec<u8>>>> {
         let mut decoder = RowDecoder::new(options);
         let mut rows = Vec::new();
@@ -2273,6 +2584,54 @@ mod tests {
         decoder.push(b"1,\"open").unwrap();
         let error = decoder.finish().unwrap_err();
         assert!(error.to_string().contains("unterminated"));
+    }
+
+    #[test]
+    fn binary_decodes_rows_split_across_frames() {
+        let stream = binary_stream(&[
+            binary_row(&[Some(b"1"), None, Some(b"alice")]),
+            binary_row(&[Some(b"2"), Some(b"20"), Some(&[])]),
+        ]);
+        let split = 19 + 3;
+        let rows = decode_all(&binary_options(), &[&stream[..split], &stream[split..]]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].as_deref(), Some(b"1".as_slice()));
+        assert_eq!(rows[0][1], None);
+        assert_eq!(rows[0][2].as_deref(), Some(b"alice".as_slice()));
+        assert_eq!(rows[1][1].as_deref(), Some(b"20".as_slice()));
+        assert_eq!(rows[1][2].as_deref(), Some(b"".as_slice()));
+    }
+
+    #[test]
+    fn binary_refuses_data_after_the_trailer() {
+        let mut stream = binary_stream(&[binary_row(&[Some(b"1")])]);
+        stream.extend_from_slice(&[0, 1]);
+        let mut decoder = RowDecoder::new(&binary_options());
+        decoder.push(&stream).unwrap_err();
+    }
+
+    #[test]
+    fn binary_requires_a_trailer() {
+        let mut stream = binary_stream(&[binary_row(&[Some(b"1")])]);
+        stream.truncate(stream.len() - 2);
+        // The row is still emitted by push; finish reports the truncation.
+        let mut decoder = RowDecoder::new(&binary_options());
+        assert_eq!(decoder.push(&stream).unwrap().len(), 1);
+        assert!(decoder.finish().is_err());
+    }
+
+    #[test]
+    fn binary_checks_the_header_and_field_framing() {
+        let mut bad = binary_stream(&[]);
+        bad[0] = b'X';
+        let mut decoder = RowDecoder::new(&binary_options());
+        assert!(decoder.push(&bad).is_err());
+
+        let mut bad_length = binary_stream(&[binary_row(&[Some(b"1")])]);
+        // Corrupt the first field's length to a negative value other than -1.
+        bad_length[21] = 0xfe;
+        let mut decoder = RowDecoder::new(&binary_options());
+        assert!(decoder.push(&bad_length).is_err());
     }
 
     #[test]

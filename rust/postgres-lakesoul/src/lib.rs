@@ -53,6 +53,7 @@ mod ivm;
 mod jobs;
 mod json_insert;
 mod limits;
+mod pg_binary;
 mod pg_compat;
 mod pg_numeric;
 mod pg_settings;

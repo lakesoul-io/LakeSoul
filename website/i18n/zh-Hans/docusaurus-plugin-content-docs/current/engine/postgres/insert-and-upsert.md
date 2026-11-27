@@ -84,9 +84,16 @@ SET day = EXCLUDED.day,
 | `42601` | 源列与目标列对不上 |
 | `42804` | 表达式无法赋值转换到目标列 |
 | `22P02` | 字符串字面量无法转换为目标类型 |
-| `0A000` | `RETURNING` 搭配 `ON CONFLICT` 或非 `VALUES` 源、分区表或 CDC 表上的 `ON CONFLICT`、赋值列表缺少非主键列，或事务块内的通用 `DO UPDATE` |
+| `0A000` | `RETURNING` 搭配 `ON CONFLICT DO NOTHING`、`RETURNING` 表达式、分区表或 CDC 表上的 `ON CONFLICT`、赋值列表缺少非主键列，或事务块内的通用 `DO UPDATE` |
 
-`INSERT ... VALUES ... RETURNING` 会返回插入的行，支持 `RETURNING *`、列引用和列别名；表达式、`INSERT ... SELECT ... RETURNING`、`ON CONFLICT ... RETURNING` 和 `UPDATE ... RETURNING` 暂不支持。foreign table 和 external-file table 上的 `RETURNING` 也会被拒绝。
+`INSERT ... VALUES ... RETURNING`、`INSERT ... SELECT ... RETURNING` 和
+`UPDATE ... RETURNING` 和 `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` 会返回
+写入所消费的行，支持 `RETURNING *`、列引用和列别名；表达式和
+`ON CONFLICT DO NOTHING ... RETURNING` 暂不支持。foreign table 和 external-file
+table 上的 `RETURNING` 也会被拒绝。如果 prepared write 的参数出现在 `SELECT` 源或
+`UPDATE` 赋值中，必须给它们显式类型（`$1::integer`）或使用驱动的 typed-prepare
+接口；只有 `INSERT ... VALUES` 会从目标列推断参数类型。易失的源表达式会被求值两次
+（一次生成返回行、一次执行写入），因此会被拒绝。
 
 ## 索引维护
 
@@ -122,7 +129,8 @@ SET day = EXCLUDED.day,
 
 该函数只在 `INSERT ... SELECT * FROM jsonb_populate_recordset(NULL::table, $n)`
 这种形态下被识别，参数必须是 JSONB 标量。它不是通用的表函数，不能用于任意
-`SELECT`；这种形态也不支持 `RETURNING`。非法 JSON 以及按位置映射时长度不符的行
+`SELECT`；这种形态支持 `RETURNING`（包括 `DO UPDATE`），返回的是重写后的行。
+非法 JSON 以及按位置映射时长度不符的行
 分别以 `22P02` / `42601` 拒绝。
 
 ## 大批量写入建议

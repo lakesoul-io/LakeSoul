@@ -28,7 +28,7 @@ covered today.
 | --- | --- |
 | Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
 | DDL | `CREATE DATABASE [IF NOT EXISTS]` for LakeSoul namespaces, `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` schema evolution (add/widen columns, `SET`/`RESET` supported options), `CREATE INDEX` for vector/text declarations, `REINDEX TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` |
-| Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstone, partition clear or partition rewrite) and `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
+| Writes | `INSERT ... VALUES` and `INSERT ... SELECT` (both with `RETURNING *`/column references), `COPY ... FROM STDIN` (TEXT, CSV and binary) and `COPY ... TO STDOUT` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `DELETE` (CDC tombstone, partition clear or partition rewrite) and `TRUNCATE` (including `PARTITION (...)`), `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
 | Catalog | `pg_catalog`, `information_schema`, `psql \d`/`\dt`/`\l`/`\dn`, `pg_cursors`, `pg_settings`, `pg_roles`, `current_database()`, `current_user`/`session_user`, `to_regtype`, `current_setting`/`set_config`, SQLAlchemy reflection through the `psycopg2` dialect |
@@ -43,7 +43,8 @@ These return SQLSTATE `0A000` rather than being silently ignored:
 
 - `CREATE TABLE AS`, `CREATE TEMP TABLE`, `DELETE ... USING`
 - `COPY ... TO` a file or program, `COPY ... FROM` a file or program,
-  `FORMAT binary` and the COPY options listed in [COPY](copy.md)
+  `FORMAT binary` on export, binary arrays/vector values, and the COPY
+  options listed in [COPY](copy.md)
 - Writes, `COPY` and table DDL inside a multi-statement simple-query batch;
   `CREATE INDEX`, `REINDEX`, IVM maintenance, subscriptions, a non-CDC `DELETE`
   rewrite and `TRUNCATE` inside an explicit transaction block
@@ -95,9 +96,9 @@ known boundaries.
 A real-driver baseline lives in
 `rust/postgres-lakesoul/client-compat/`. It currently runs psycopg2, psycopg3,
 SQLAlchemy and pgjdbc against a live endpoint and covers connect/`SELECT`,
-parameterized writes including `bytea`, `COPY ... FROM STDIN` and
-`COPY ... TO STDOUT` (TEXT and CSV through psycopg2, psycopg3 and pgjdbc
-`CopyManager`), batches, UPSERT,
+parameterized writes including `bytea`, `COPY ... FROM STDIN` (TEXT, CSV and
+binary) and `COPY ... TO STDOUT` (TEXT and CSV through psycopg2, psycopg3 and
+pgjdbc `CopyManager`), batches, UPSERT,
 transactions, duplicate-key recovery, catalog discovery (`SHOW`, `pg_settings`,
 `pg_roles`, psql `\dt`/`\l`/`\dn`), SQLAlchemy reflection, forward-only named
 cursors, fetch-size cursors and Metabase-style startup statements.
@@ -106,8 +107,8 @@ The current baseline passes the core Python and JDBC workflows, including psql
 `\d`, `bytea` round-trips and SQLAlchemy reflection through the `psycopg2`
 dialect. Named cursors are forward-only and non-holdable; `WITH HOLD`,
 `SCROLL` and backward fetches are explicitly refused. Known gaps are kept
-visible rather than hidden: `RETURNING` for `INSERT ... SELECT`/`ON CONFLICT`/
-`UPDATE`, and `pg_dump --data-only` (it opens a REPEATABLE READ transaction and
+visible rather than hidden: `RETURNING` for `ON CONFLICT DO NOTHING` and
+`RETURNING` expressions, and `pg_dump --data-only` (it opens a REPEATABLE READ transaction and
 uses `OPERATOR(pg_catalog.=)` syntax this parser does not accept). Numeric
 `to_char` patterns are not
 implemented and fail explicitly; selecting `current_user` and `session_user`

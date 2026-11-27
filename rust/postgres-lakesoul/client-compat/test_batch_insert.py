@@ -86,6 +86,46 @@ def test_json_populate_conflict_and_nulls(driver, connector, table_factory):
             assert one(cursor, f"SELECT name FROM {table} WHERE id = 1") == ("changed",)
 
 
+def test_json_populate_returning(driver, connector, table_factory):
+    """The vector.dev shape can project RETURNING through both plain inserts
+    and full-row ON CONFLICT DO UPDATE."""
+    table = table_factory(
+        "id bigint primary key, name text, value double precision",
+        "client_json_returning",
+    )
+    plain = (
+        f"INSERT INTO {table} SELECT * FROM "
+        f"jsonb_populate_recordset(NULL::{table}, %s) RETURNING id, name, value"
+    )
+    upsert = (
+        f"INSERT INTO {table} SELECT * FROM jsonb_populate_recordset(NULL::{table}, %s) "
+        "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, value = EXCLUDED.value "
+        "RETURNING id, name, value"
+    )
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                plain, (json.dumps([{"id": 1, "name": "one", "value": 1.0}]),)
+            )
+            assert cursor.fetchall() == [(1, "one", 1.0)]
+
+            cursor.execute(
+                upsert,
+                (
+                    json.dumps(
+                        [
+                            {"id": 1, "name": "updated", "value": 2.0},
+                            {"id": 2, "name": "two", "value": 3.0},
+                        ]
+                    ),
+                ),
+            )
+            assert sorted(cursor.fetchall()) == [
+                (1, "updated", 2.0),
+                (2, "two", 3.0),
+            ]
+
+
 def test_multirow_values_round_trip(driver, connector, table_factory):
     table = table_factory(
         "id bigint primary key, name text, value double precision",

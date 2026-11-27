@@ -11,13 +11,13 @@ that ordinary PostgreSQL driver workflows can execute.
 
 | Client | Path |
 | --- | --- |
-| `psycopg2` | connect, SELECT, parameterized types including `bytea` and `jsonb`, `jsonb` operators (`->`, `->>`, `?`), `DELETE`/`TRUNCATE` (including `RETURNING`), `executemany`, `execute_values`, `COPY ... FROM STDIN` and `COPY ... TO STDOUT` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `SHOW`/`SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`, `to_char`, `psql \d`/`\dt`/`\l`/`\dn`, named cursors |
+| `psycopg2` | connect, SELECT, parameterized types including `bytea` and `jsonb`, `jsonb` operators (`->`, `->>`, `?`), `DELETE`/`TRUNCATE` (including `RETURNING`), `executemany`, `execute_values`, `COPY ... FROM STDIN` (TEXT/CSV/binary) and `COPY ... TO STDOUT` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `SHOW`/`SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`, `to_char`, `psql \d`/`\dt`/`\l`/`\dn`, named cursors |
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | `test_types.py` | psycopg2 + psycopg3 semantic types: `uuid`, `uuid[]`, `money`, `numeric(60,10)`/`numeric(76,0)`, `varchar(n)`/`char(n)`, `time`/`timestamp(p)`/`timestamptz`, arrays of int/text/numeric/varchar/money, OIDs and `pg_attribute` metadata, plus explicit refusals |
-| `test_batch_insert.py` | the vector.dev sink shape `INSERT INTO t SELECT * FROM jsonb_populate_recordset(NULL::t, $1)` (plain, `DO NOTHING`, `DO UPDATE`, NULL values) and large multi-row `VALUES`, through both drivers; `BEGIN … COMMIT` folds several JSON inserts into one metadata commit |
+| `test_batch_insert.py` | the vector.dev sink shape `INSERT INTO t SELECT * FROM jsonb_populate_recordset(NULL::t, $1)` (plain, `DO NOTHING`, `DO UPDATE`, NULL values and `RETURNING`) and large multi-row `VALUES`, through both drivers; `BEGIN … COMMIT` folds several JSON inserts into one metadata commit |
 | `test_pgvector.py` | pgvector type discovery, `Vector` parameters and `<->`/`<#>`/`<=>` distance, vector column round trip, `format_type`, SQLAlchemy `Vector` reflection/select, and `CREATE TABLE`/`CREATE INDEX` DDL (including `vector_index_columns` declarations, refused index forms and SQLAlchemy index creation) |
-| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT; semantic types and `ParameterMetaData` in `JdbcTypeSmoke`, pgvector type/query and `CREATE TABLE`/`CREATE INDEX` DDL via `com.pgvector:pgvector` in `JdbcVectorSmoke` |
+| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared `jsonb` SELECT/INSERT, prepared `DELETE`/`TRUNCATE`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV/binary), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT; semantic types and `ParameterMetaData` in `JdbcTypeSmoke`, pgvector type/query and `CREATE TABLE`/`CREATE INDEX` DDL via `com.pgvector:pgvector` in `JdbcVectorSmoke` |
 
 Time travel (`lakesoul_table_scan(table, mode, value)`) is also covered through
 both drivers: `test_time_travel.py` pins a scan to a `timestamp` between two
@@ -31,9 +31,11 @@ The suite asserts **explicit refusal** for currently unsupported paths:
 
 Named cursors are forward-only and non-holdable. `WITH HOLD`, `SCROLL`, binary
 cursors and backward fetches are explicitly refused instead of being silently
-downgraded. `INSERT ... RETURNING` currently covers `INSERT ... VALUES` with
-`*`, column references and aliases; expressions, `INSERT ... SELECT`,
-`ON CONFLICT` and `UPDATE ... RETURNING` remain explicit `0A000` gaps.
+downgraded. `INSERT ... RETURNING` covers `INSERT ... VALUES`,
+`INSERT ... SELECT` and the JSON-batch shape, including full-row `ON CONFLICT
+DO UPDATE`; `UPDATE ... RETURNING` covers the new rows. `*` column references
+and aliases are supported; expressions and `ON CONFLICT DO NOTHING RETURNING`
+remain explicit `0A000` gaps.
 
 If one of these starts working, the test fails and the compatibility contract
 must be updated rather than silently widening the claim.
@@ -87,12 +89,14 @@ recorded gap. The tests already cover:
 - `SHOW`, `SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`
   and PostgreSQL `to_char` date patterns, including the psql `\dt`/`\l`/`\dn`
   metadata commands;
-- `COPY ... FROM STDIN` and `COPY ... TO STDOUT` in TEXT and CSV, including
+- `COPY ... FROM STDIN` in TEXT, CSV and binary, and `COPY ... TO STDOUT` in
+  TEXT and CSV, including
   NULL, escaped newlines, quoted commas/newlines, a CSV header, an omitted
   column list, one-commit atomicity, transaction rollback, driver-side
   encoders (`copy_from`, `write_row`, `CopyManager.copyIn`/`copyOut`), psql
   `\copy TO` and CopyFail aborts;
-- `INSERT ... VALUES ... RETURNING` for `*`, column references and aliases, including SQLAlchemy Core;
+- `INSERT ... VALUES ... RETURNING`, `INSERT ... SELECT ... RETURNING` and
+  `UPDATE ... RETURNING` for `*`, column references and aliases, including SQLAlchemy Core;
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.

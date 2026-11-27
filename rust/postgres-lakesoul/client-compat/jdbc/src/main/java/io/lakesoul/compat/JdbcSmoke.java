@@ -8,9 +8,11 @@ import org.postgresql.PGConnection;
 import org.postgresql.copy.CopyManager;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -230,6 +232,14 @@ public final class JdbcSmoke {
         check(csvRows == 1, "CopyManager.copyIn csv rows");
         check("copied, csv".equals(nameOf(connection, table, 202)), "CopyManager csv value");
 
+        long binaryRows =
+                copy.copyIn(
+                        "COPY " + table + " (id, name) FROM STDIN WITH (FORMAT binary)",
+                        new ByteArrayInputStream(binaryCopyStream()));
+        check(binaryRows == 2, "CopyManager.copyIn binary rows");
+        check("copy-binary".equals(nameOf(connection, table, 300)), "CopyManager binary value");
+        check(nameOfOrNull(connection, table, 301) == null, "CopyManager binary NULL");
+
         try {
             copy.copyIn(
                     "COPY " + table + " (id, name) FROM STDIN",
@@ -279,6 +289,33 @@ public final class JdbcSmoke {
                 ResultSet result = statement.executeQuery("SELECT count(*) FROM " + table)) {
             check(result.next(), "count query returned a row");
             return result.getInt(1);
+        }
+    }
+
+    /** A two-row PostgreSQL binary COPY stream with one NULL field. */
+    private static byte[] binaryCopyStream() throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(new byte[] {'P', 'G', 'C', 'O', 'P', 'Y', '\n', (byte) 0xff, '\r', '\n', 0});
+        out.writeBytes(ByteBuffer.allocate(4).putInt(0).array());
+        out.writeBytes(ByteBuffer.allocate(4).putInt(0).array());
+        binaryCopyRow(out, 300L, "copy-binary");
+        binaryCopyRow(out, 301L, null);
+        out.writeBytes(ByteBuffer.allocate(2).putShort((short) -1).array());
+        return out.toByteArray();
+    }
+
+    private static void binaryCopyRow(ByteArrayOutputStream out, long id, String name)
+            throws IOException {
+        out.writeBytes(ByteBuffer.allocate(2).putShort((short) 2).array());
+        byte[] idBytes = ByteBuffer.allocate(8).putLong(id).array();
+        out.writeBytes(ByteBuffer.allocate(4).putInt(idBytes.length).array());
+        out.writeBytes(idBytes);
+        if (name == null) {
+            out.writeBytes(ByteBuffer.allocate(4).putInt(-1).array());
+        } else {
+            byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+            out.writeBytes(ByteBuffer.allocate(4).putInt(nameBytes.length).array());
+            out.writeBytes(nameBytes);
         }
     }
 

@@ -24,6 +24,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use arrow::datatypes::Field;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Column, TableReference};
 use datafusion::datasource::{DefaultTableSource, TableProvider, source_as_provider};
 use datafusion::error::DataFusionError;
@@ -90,6 +91,10 @@ pub struct PlannedUpdate {
     pub plan: LogicalPlan,
     pub identity: UpdateIdentity,
     pub snapshot: Option<Arc<Vec<PartitionInfo>>>,
+    /// The full-new-row projection the write consumes. `RETURNING` reads the
+    /// same values so the response cannot diverge from the committed rows.
+    returning_input: Option<Arc<LogicalPlan>>,
+    returning_schema: Option<SchemaRef>,
     _snapshot_guard: Option<LakeSoulSnapshotGuard>,
     _subquery_guard: Option<RuntimeSubqueryGuard>,
 }
@@ -98,6 +103,14 @@ impl PlannedUpdate {
     /// The plan to execute.
     pub fn plan(&self) -> &LogicalPlan {
         &self.plan
+    }
+
+    /// The plan and target schema a `RETURNING` projection should read.
+    pub fn returning(&self) -> Option<(&LogicalPlan, &SchemaRef)> {
+        Some((
+            self.returning_input.as_ref()?,
+            self.returning_schema.as_ref()?,
+        ))
     }
 }
 
@@ -256,9 +269,6 @@ impl From<DataFusionError> for UpdatePlanError {
 pub fn reject_clauses(update: &Update) -> Result<(), UpdatePlanError> {
     if update.from.is_some() {
         return Err(UpdatePlanError::Unsupported("UPDATE ... FROM".to_string()));
-    }
-    if update.returning.is_some() {
-        return Err(UpdatePlanError::Unsupported("RETURNING".to_string()));
     }
     if update.output.is_some() {
         return Err(UpdatePlanError::Unsupported("an OUTPUT clause".to_string()));
@@ -499,10 +509,13 @@ pub async fn plan_update(
         snapshot_guard = Some(installed);
     }
 
+    let wants_returning = update.returning.is_some();
     Ok(PlannedUpdate {
         plan,
         identity,
         snapshot,
+        returning_input: wants_returning.then(|| Arc::clone(&input)),
+        returning_schema: wants_returning.then(|| schema.clone()),
         _snapshot_guard: snapshot_guard,
         _subquery_guard: subquery_guard,
     })

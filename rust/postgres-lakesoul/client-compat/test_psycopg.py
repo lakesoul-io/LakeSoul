@@ -633,6 +633,47 @@ def test_copy_from_stdin_text_and_csv(driver, connector, table_factory):
             ]
 
 
+def _pgcopy_header():
+    return b"PGCOPY\n\xff\r\n\0" + (0).to_bytes(4, "big") + (0).to_bytes(4, "big")
+
+
+def _pgcopy_row(*fields):
+    out = len(fields).to_bytes(2, "big", signed=True)
+    for field in fields:
+        if field is None:
+            out += (-1).to_bytes(4, "big", signed=True)
+        else:
+            out += len(field).to_bytes(4, "big", signed=True) + field
+    return out
+
+
+def test_copy_from_stdin_binary(driver, connector, table_factory):
+    """Both drivers can stream PostgreSQL's binary COPY framing, including
+    a NULL field, and read the committed rows back."""
+    table = table_factory(
+        "id bigint primary key, name text, n integer", "client_copy_binary"
+    )
+    import struct
+
+    data = (
+        _pgcopy_header()
+        + _pgcopy_row(struct.pack(">q", 1), b"alice", struct.pack(">i", 10))
+        + _pgcopy_row(struct.pack(">q", 2), None, None)
+        + (-1).to_bytes(2, "big", signed=True)
+    )
+    sql = "COPY " + table + " (id, name, n) FROM STDIN WITH (FORMAT binary)"
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            if driver == "psycopg2":
+                cursor.copy_expert(sql, io.BytesIO(data))
+            else:
+                with cursor.copy(sql) as copy:
+                    copy.write(data[:12])
+                    copy.write(data[12:])
+            cursor.execute("SELECT id, name, n FROM " + table + " ORDER BY id")
+            assert rows(cursor) == [(1, "alice", 10), (2, None, None)]
+
+
 def test_copy_driver_encoders(driver, connector, table_factory):
     """`copy_from` and `write_row` are the driver-side encoders import tools
     use; they must produce TEXT COPY that the server decodes."""
@@ -776,6 +817,36 @@ def test_insert_returning(driver, connector, table_factory):
             assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
 
 
+def test_returning_from_select_and_update(driver, connector, table_factory):
+    """INSERT ... SELECT and UPDATE return the new rows to real drivers."""
+    table = table_factory(
+        "id bigint primary key, name text, n integer", "client_returning_select"
+    )
+    source = table_factory("id bigint, name text, n integer", "client_returning_src")
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"INSERT INTO {source} (id, name, n) VALUES (%s, %s, %s), (%s, %s, %s)",
+                (1, "a", 10, 2, None, None),
+            )
+            cursor.execute(
+                f"INSERT INTO {table} (id, name, n) "
+                f"SELECT id, name, n FROM {source} RETURNING id, name, n"
+            )
+            assert rows(cursor) == [(1, "a", 10), (2, None, None)]
+
+            cursor.execute(
+                f"UPDATE {table} SET n = %s WHERE id = %s RETURNING id, n, name",
+                (99, 1),
+            )
+            assert rows(cursor) == [(1, 99, "a")]
+            cursor.execute(
+                f"UPDATE {table} SET n = %s WHERE id = %s RETURNING *",
+                (0, -1),
+            )
+            assert rows(cursor) == []
+
+
 def test_insert_returning_unsupported_forms(driver, connector, table_factory):
     table = table_factory("id bigint primary key, name text", "client_returning_gap")
     with closing(connector(driver)) as connection:
@@ -789,10 +860,6 @@ def test_insert_returning_unsupported_forms(driver, connector, table_factory):
                 (
                     f"INSERT INTO {table} (id, name) VALUES (%s, %s) RETURNING id + 1",
                     (2, "b"),
-                ),
-                (
-                    f"INSERT INTO {table} (id, name) SELECT 3, 'c' RETURNING id",
-                    (),
                 ),
             ]:
                 with pytest.raises(Exception) as caught:

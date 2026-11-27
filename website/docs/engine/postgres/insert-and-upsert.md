@@ -98,13 +98,19 @@ general upserts in autocommit statements.
 | `42601` | Source and target columns do not line up |
 | `42804` | An expression is not assignment-castable to the target column |
 | `22P02` | A string literal does not convert to the target type |
-| `0A000` | `RETURNING` with `ON CONFLICT` or a non-`VALUES` source, `ON CONFLICT` on a range-partitioned or CDC table, an assignment list that misses a non-key column, or a general `DO UPDATE` inside a transaction block |
+| `0A000` | `RETURNING` with `ON CONFLICT DO NOTHING`, a `RETURNING` expression, `ON CONFLICT` on a range-partitioned or CDC table, an assignment list that misses a non-key column, or a general `DO UPDATE` inside a transaction block |
 
-`INSERT ... VALUES ... RETURNING` returns the inserted rows. `RETURNING *`,
-column references and column aliases are supported; expressions, `INSERT ...
-SELECT ... RETURNING`, `ON CONFLICT ... RETURNING` and `UPDATE ... RETURNING`
+`INSERT ... VALUES ... RETURNING`, `INSERT ... SELECT ... RETURNING` and
+`UPDATE ... RETURNING` and `INSERT ... ON CONFLICT DO UPDATE ... RETURNING`
+return the rows the write consumes. `RETURNING *`, column references and column
+aliases are supported; expressions and `ON CONFLICT DO NOTHING ... RETURNING`
 are not supported yet. `RETURNING` on foreign and external-file tables is also
-refused.
+refused. A prepared write whose parameters appear
+in a `SELECT` source or an `UPDATE` assignment must give them explicit types
+(`$1::integer`) or use the driver's typed-prepare API; only `INSERT ... VALUES`
+infers parameter types from the target columns. A volatile source expression
+would be evaluated twice (once for the returned rows, once for the write) and
+is therefore refused.
 
 ## Index maintenance
 
@@ -147,7 +153,8 @@ actions behave the same as for a `VALUES` insert.
 The function is recognised only in the `INSERT ... SELECT * FROM
 jsonb_populate_recordset(NULL::table, $n)` shape and only with a JSONB scalar
 parameter. It is not a general table function for arbitrary `SELECT`s;
-`RETURNING` is not supported on this shape. Invalid JSON and a positional row
+`RETURNING` is supported on this shape (including `DO UPDATE`); it is projected
+from the rewritten rows. Invalid JSON and a positional row
 of the wrong width are rejected with `22P02`/`42601`.
 
 ## Bulk write guidance

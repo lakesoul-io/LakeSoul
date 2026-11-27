@@ -42,6 +42,8 @@ async fn copy_contract() -> Result<()> {
 async fn copy_scenarios(h: &Harness) -> Result<()> {
     text_round_trip(h).await?;
     csv_round_trip(h).await?;
+    binary_round_trip(h).await?;
+    binary_stream_errors(h).await?;
     custom_options(h).await?;
     whole_table_and_omitted_columns(h).await?;
     typed_columns(h).await?;
@@ -157,6 +159,226 @@ async fn csv_round_trip(h: &Harness) -> Result<()> {
     );
     eprintln!("PASS case=copy-csv rows=3 header=skipped quotes=ok null=ok");
     Ok(())
+}
+
+/// Binary format carries the same values as TEXT/CSV, using PostgreSQL's
+/// `send` binary layout instead of text. The stream is split so that the
+/// header, a field length and a field payload each cross a CopyData boundary.
+async fn binary_round_trip(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute(
+            "CREATE TABLE copy_binary_types (\
+               id BIGINT NOT NULL PRIMARY KEY, flag BOOLEAN, n INTEGER, \
+               amount NUMERIC(20,4), day DATE, at TIMESTAMPTZ, data BYTEA, \
+               doc JSONB, uid UUID, cash MONEY\
+             )",
+        )
+        .await
+        .context("create copy_binary_types")?;
+
+    let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?;
+    let mut stream = binary_header();
+    stream.extend_from_slice(&binary_row(&[
+        Some(&1i64.to_be_bytes()),
+        Some(&[1]),
+        Some(&(-42i32).to_be_bytes()),
+        Some(&numeric_12_3400()),
+        Some(&8767i32.to_be_bytes()),
+        Some(&757_479_845_000_000i64.to_be_bytes()),
+        Some(&[0xde, 0xad]),
+        Some(&jsonb_binary(r#"{"a":1}"#)),
+        Some(id.as_bytes()),
+        Some(&123_456i64.to_be_bytes()),
+    ]));
+    stream.extend_from_slice(&binary_row(&[
+        Some(&2i64.to_be_bytes()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]));
+    stream.extend_from_slice(&(-1i16).to_be_bytes());
+
+    let mut sink = pin!(
+        h.lake
+            .copy_in("COPY copy_binary_types FROM STDIN WITH (FORMAT binary)")
+            .await
+            .context("start binary COPY")?
+    );
+    // Split inside the first row's field payload.
+    let split = 19 + 2 + 8;
+    sink.send(Bytes::copy_from_slice(&stream[..split]))
+        .await
+        .context("send first binary frame")?;
+    sink.send(Bytes::copy_from_slice(&stream[split..]))
+        .await
+        .context("send second binary frame")?;
+    ensure_eq!(sink.finish().await?, 2, "binary COPY tag row count");
+
+    let row = h
+        .lake
+        .query_one(
+            "SELECT flag, n, amount, day, at, data, doc::text, uid::text, cash::text \
+             FROM copy_binary_types WHERE id = 1",
+            &[],
+        )
+        .await
+        .context("read the binary row")?;
+    ensure_eq!(row.get::<_, bool>(0), true, "binary boolean");
+    ensure_eq!(row.get::<_, i32>(1), -42, "binary integer");
+    ensure_eq!(
+        row.get::<_, rust_decimal::Decimal>(2).to_string(),
+        "12.3400",
+        "binary numeric keeps its scale"
+    );
+    ensure_eq!(
+        row.get::<_, chrono::NaiveDate>(3).to_string(),
+        "2024-01-02",
+        "binary date uses the PostgreSQL epoch"
+    );
+    ensure_eq!(
+        row.get::<_, chrono::DateTime<chrono::Utc>>(4).to_rfc3339(),
+        "2024-01-02T03:04:05+00:00",
+        "binary timestamptz uses the PostgreSQL epoch"
+    );
+    ensure_eq!(row.get::<_, Vec<u8>>(5), vec![0xde, 0xad], "binary bytea");
+    ensure_eq!(row.get::<_, String>(6), r#"{"a":1}"#, "binary jsonb");
+    ensure_eq!(row.get::<_, String>(7), id.to_string(), "binary uuid");
+    ensure_eq!(row.get::<_, String>(8), "1234.56", "binary money");
+
+    let nulls = h
+        .lake
+        .query_one(
+            "SELECT flag, n, amount FROM copy_binary_types WHERE id = 2",
+            &[],
+        )
+        .await?;
+    ensure_eq!(nulls.get::<_, Option<bool>>(0), None, "binary NULL boolean");
+    ensure_eq!(nulls.get::<_, Option<i32>>(1), None, "binary NULL integer");
+    ensure_eq!(
+        nulls.get::<_, Option<rust_decimal::Decimal>>(2),
+        None,
+        "binary NULL numeric"
+    );
+    eprintln!("PASS case=copy-binary rows=2 split=ok nulls=ok");
+    Ok(())
+}
+
+/// Malformed binary framing is a `22P04` and publishes nothing.
+async fn binary_stream_errors(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute(
+            "CREATE TABLE copy_binary_errors (\
+               id BIGINT NOT NULL PRIMARY KEY, val INTEGER\
+             )",
+        )
+        .await
+        .context("create copy_binary_errors")?;
+
+    let good = binary_row(&[Some(&1i64.to_be_bytes()), Some(&7i32.to_be_bytes())]);
+
+    let mut bad_header = binary_header();
+    bad_header[0] = b'X';
+    bad_header.extend_from_slice(&good);
+    bad_header.extend_from_slice(&(-1i16).to_be_bytes());
+    binary_error(h, &bad_header, "bad header").await?;
+
+    let mut bad_count = binary_header();
+    bad_count.extend_from_slice(&3i16.to_be_bytes());
+    bad_count.extend_from_slice(&good[2..]);
+    bad_count.extend_from_slice(&(-1i16).to_be_bytes());
+    binary_error(h, &bad_count, "wrong field count").await?;
+
+    let mut truncated = binary_header();
+    truncated.extend_from_slice(&good);
+    binary_error(h, &truncated, "missing trailer").await?;
+
+    let mut trailing = binary_header();
+    trailing.extend_from_slice(&good);
+    trailing.extend_from_slice(&(-1i16).to_be_bytes());
+    trailing.extend_from_slice(&[0, 1]);
+    binary_error(h, &trailing, "trailing data").await?;
+
+    ensure_eq!(
+        h.lake
+            .query_one("SELECT count(*) FROM copy_binary_errors", &[])
+            .await?
+            .get::<_, i64>(0),
+        0,
+        "no malformed binary COPY published a row"
+    );
+    eprintln!("PASS case=copy-binary-errors header=count=trailer=trailing rows=0");
+    Ok(())
+}
+
+async fn binary_error(h: &Harness, stream: &[u8], case: &str) -> Result<()> {
+    let mut sink = pin!(
+        h.lake
+            .copy_in::<_, Bytes>(
+                "COPY copy_binary_errors FROM STDIN WITH (FORMAT binary)"
+            )
+            .await
+            .with_context(|| format!("start binary COPY for {case}"))?
+    );
+    sink.send(Bytes::copy_from_slice(stream))
+        .await
+        .with_context(|| format!("send {case}"))?;
+    let error = match sink.finish().await {
+        Ok(_) => bail!("{case}: malformed binary COPY was accepted"),
+        Err(error) => error,
+    };
+    ensure_eq!(
+        error.as_db_error().map(|error| error.code().code()),
+        Some("22P04"),
+        "{case} SQLSTATE"
+    );
+    // The connection must be usable after a failed copy.
+    h.lake.query_one("SELECT 1", &[]).await?;
+    Ok(())
+}
+
+fn binary_header() -> Vec<u8> {
+    let mut out = b"PGCOPY\n\xff\r\n\0".to_vec();
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out
+}
+
+fn binary_row(fields: &[Option<&[u8]>]) -> Vec<u8> {
+    let mut out = (fields.len() as i16).to_be_bytes().to_vec();
+    for field in fields {
+        match field {
+            None => out.extend_from_slice(&(-1i32).to_be_bytes()),
+            Some(value) => {
+                out.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                out.extend_from_slice(value);
+            }
+        }
+    }
+    out
+}
+
+/// `12.3400` in PostgreSQL's base-10000 numeric binary form.
+fn numeric_12_3400() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&2u16.to_be_bytes()); // ndigits
+    out.extend_from_slice(&0i16.to_be_bytes()); // weight
+    out.extend_from_slice(&0u16.to_be_bytes()); // sign
+    out.extend_from_slice(&4u16.to_be_bytes()); // dscale
+    out.extend_from_slice(&12u16.to_be_bytes());
+    out.extend_from_slice(&3400u16.to_be_bytes());
+    out
+}
+
+fn jsonb_binary(text: &str) -> Vec<u8> {
+    let mut out = vec![1];
+    out.extend_from_slice(text.as_bytes());
+    out
 }
 
 /// A custom delimiter must protect an escaped delimiter, and a custom NULL
@@ -766,9 +988,19 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
 
     for (sql, code, case) in [
         (
-            "COPY empty_items (id, val) FROM STDIN WITH (FORMAT binary)",
-            "0A000",
-            "binary format",
+            "COPY empty_items FROM STDIN WITH (FORMAT binary, DELIMITER '|')",
+            "42601",
+            "DELIMITER in binary mode",
+        ),
+        (
+            "COPY empty_items FROM STDIN WITH (FORMAT binary, HEADER true)",
+            "42601",
+            "HEADER in binary mode",
+        ),
+        (
+            "COPY empty_items FROM STDIN WITH (FORMAT csv, FORMAT binary)",
+            "42601",
+            "conflicting formats",
         ),
         (
             "COPY empty_items FROM '/tmp/items.csv'",
@@ -842,7 +1074,7 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
         before == after,
         "refused COPY statements changed metadata or the warehouse"
     );
-    eprintln!("PASS case=copy-refusals forms=10 snapshot=unchanged");
+    eprintln!("PASS case=copy-refusals binary-options=ok snapshot=unchanged");
     Ok(())
 }
 

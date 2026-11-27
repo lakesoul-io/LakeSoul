@@ -24,22 +24,23 @@ COPY orders (id, day, region, amount) FROM STDIN;
 
 ## 格式
 
-支持 TEXT（默认）和 CSV：
+导入方向支持 TEXT（默认）、CSV 和 binary：
 
 ```sql
 COPY orders FROM STDIN;
 COPY orders FROM STDIN WITH (FORMAT csv, HEADER true);
+COPY orders FROM STDIN WITH (FORMAT binary);
 COPY orders FROM STDIN WITH (FORMAT text, DELIMITER '|', NULL 'NULL');
 ```
 
-| 选项 | TEXT | CSV |
-| --- | --- | --- |
-| `FORMAT text` / `FORMAT csv` | 支持 | 支持 |
-| `DELIMITER` | 单字节，默认 tab | 单字节，默认逗号 |
-| `NULL` | 默认 `\N` | 默认未加引号的空字段 |
-| `HEADER` | 拒绝（`42601`） | 导入时跳过第一条记录；导出时写列名 |
-| `QUOTE`、`ESCAPE` | 拒绝（`42601`） | 单字节，默认 `"` |
-| `ENCODING` | 仅 `UTF8` | 仅 `UTF8` |
+| 选项 | TEXT | CSV | binary（导入） |
+| --- | --- | --- | --- |
+| `FORMAT text` / `csv` / `binary` | 支持 | 支持 | 支持 |
+| `DELIMITER` | 单字节，默认 tab | 单字节，默认逗号 | 拒绝（`42601`） |
+| `NULL` | 默认 `\N` | 默认未加引号的空字段 | 字段长度 `-1` |
+| `HEADER` | 拒绝（`42601`） | 导入时跳过第一条记录；导出时写列名 | 拒绝（`42601`） |
+| `QUOTE`、`ESCAPE` | 拒绝（`42601`） | 单字节，默认 `"` | 拒绝（`42601`） |
+| `ENCODING` | 仅 `UTF8` | 仅 `UTF8` | 仅 `UTF8` |
 
 TEXT 值遵循 PostgreSQL 的 COPY 转义：`\b`、`\f`、`\n`、`\r`、`\t`、`\v`、`\\`、
 八进制和 `\x` 序列；分隔符前的反斜杠表示它是数据。单独一行 `\.` 表示数据结束。
@@ -47,6 +48,16 @@ TEXT 值遵循 PostgreSQL 的 COPY 转义：`\b`、`\f`、`\n`、`\r`、`\t`、`
 CSV 字段可以加引号；引号字段内可以包含分隔符、换行和成对引号；接受 `\r\n` 行
 结束符。只有未加引号的空字段是 NULL，因此 `""` 是空字符串。使用自定义 `NULL`
 字符串时，内容相同的加引号字段仍然是数据。
+
+binary 导入遵循 PostgreSQL 的 `PGCOPY` 流格式：19 字节头（`PGCOPY\n\xff\r\n\0`、
+flags 为 0、扩展长度为 0），随后每行一个 `int16` 字段数，每个字段一个 `int32`
+长度加负载，以一个 `int16` 的 `-1` 字段数结束。字段长度为 `-1` 表示 NULL。
+任意一段都可以跨 `CopyData` 帧拆分。支持的 binary 值类型为核心标量：
+`boolean`、`smallint`、`integer`、`bigint`、`real`、`double precision`、
+`numeric`、`text`/`varchar`/`char`、`bytea`、`uuid`、`money`、`date`、`time`、
+`timestamp`、`timestamptz`、`json` 和 `jsonb`。binary 数组和 pgvector 值以
+`0A000` 拒绝。`COPY ... TO STDOUT WITH (FORMAT binary)` 同样拒绝；导出仅支持
+TEXT 和 CSV。
 
 列值按目标列的 PostgreSQL 输入规则转换：`boolean`、`smallint`/`integer`/
 `bigint`、`real`/`double precision`、`numeric(p,s)`（按列 scale 四舍五入）、
@@ -92,7 +103,9 @@ COPY (SELECT id, amount FROM orders WHERE amount > 0 ORDER BY id)
 以下形式会显式拒绝，而不是近似执行：
 
 - `COPY ... TO` 文件或程序，以及 `COPY ... FROM` 文件或程序
-- `FORMAT binary`
+- 导出使用 `FORMAT binary`，导入使用 binary 数组或 vector 值
+- `FORMAT binary` 与 TEXT/CSV 专用选项（`DELIMITER`、`NULL`、`HEADER`、
+  `QUOTE`、`ESCAPE`）组合
 - `FREEZE`、`FORCE_QUOTE`、`FORCE_NOT_NULL`、`FORCE_NULL`
 - 语句文本内嵌数据（`COPY t FROM STDIN; ...`）
 
