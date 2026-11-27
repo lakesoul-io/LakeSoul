@@ -2048,6 +2048,7 @@ pub struct LakeSoulHandlers {
     router: Arc<LakeSoulQueryRouter>,
     startup_handler: Arc<LakeSoulStartupHandler>,
     cancel_handler: Arc<LakeSoulCancelHandler>,
+    error_handler: Arc<LoggingErrorHandler>,
 }
 
 impl LakeSoulHandlers {
@@ -2068,6 +2069,7 @@ impl LakeSoulHandlers {
                 server_limits,
             )),
             cancel_handler: Arc::new(LakeSoulCancelHandler::new(cancel_registry)),
+            error_handler: Arc::new(LoggingErrorHandler),
         }
     }
 }
@@ -2086,7 +2088,7 @@ impl PgWireServerHandlers for LakeSoulHandlers {
     }
 
     fn error_handler(&self) -> Arc<impl ErrorHandler> {
-        Arc::new(LoggingErrorHandler)
+        self.error_handler.clone()
     }
 
     fn cancel_handler(&self) -> Arc<impl CancelHandler> {

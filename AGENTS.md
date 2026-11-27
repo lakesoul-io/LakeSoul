@@ -223,6 +223,7 @@ Local config files:
 - Use `cargo test --profile test-fast` (and other heavy Cargo builds with
   `--profile test-fast`); the default debug profile fills the local disk.
 - Use `mvn -q` instead of `mvn`.
+- Always run cargo/mvn/protoc commands inside the Nix shell: `nix develop -c cargo -q check -p <package>` (use `nix develop .#fhs -c mvn -q ...` for Java 11 Maven). On the bare host they fail (e.g. missing `libclang`, `protoc`). If a build fails with a missing tool, retry under `nix develop -c` before reporting an environment problem.
 - Prefer quiet command output unless debugging failures.
 
 ## Context budget
