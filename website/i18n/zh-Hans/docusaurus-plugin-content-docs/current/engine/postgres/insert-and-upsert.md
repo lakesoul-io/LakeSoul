@@ -130,8 +130,9 @@ SET day = EXCLUDED.day,
 该函数只在 `INSERT ... SELECT * FROM jsonb_populate_recordset(NULL::table, $n)`
 这种形态下被识别，参数必须是 JSONB 标量。它不是通用的表函数，不能用于任意
 `SELECT`；这种形态支持 `RETURNING`（包括 `DO UPDATE`），返回的是重写后的行。
-非法 JSON 以及按位置映射时长度不符的行
-分别以 `22P02` / `42601` 拒绝。
+ParameterDescription 会把该占位符报告为 `jsonb`，因此客户端绑定数组时无需
+额外提供类型提示。非法 JSON 以及按位置映射时长度不符的行分别以 `22P02` /
+`42601` 拒绝。
 
 ## 大批量写入建议
 

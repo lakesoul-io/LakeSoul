@@ -154,8 +154,10 @@ The function is recognised only in the `INSERT ... SELECT * FROM
 jsonb_populate_recordset(NULL::table, $n)` shape and only with a JSONB scalar
 parameter. It is not a general table function for arbitrary `SELECT`s;
 `RETURNING` is supported on this shape (including `DO UPDATE`); it is projected
-from the rewritten rows. Invalid JSON and a positional row
-of the wrong width are rejected with `22P02`/`42601`.
+from the rewritten rows. ParameterDescription reports the placeholder as
+`jsonb`, so clients do not have to supply a type hint when binding the array.
+Invalid JSON and a positional row of the wrong width are rejected with
+`22P02`/`42601`.
 
 ## Bulk write guidance
 

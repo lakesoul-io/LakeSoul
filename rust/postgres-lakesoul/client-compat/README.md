@@ -109,6 +109,8 @@ For log/iot ingestion, send rows in batches rather than one statement per row:
   sink is planned by a dedicated fast path: the array is decoded into one
   `VALUES` batch, and the client is acknowledged only after publication.
   `DO NOTHING` and `DO UPDATE` keep the same semantics as ordinary `INSERT`.
+  ParameterDescription reports `$1` as `jsonb`, so clients can bind the array
+  without sending a type hint.
 - A large `INSERT INTO t VALUES (...), (...), …` follows the same path.
 - Several writes inside `BEGIN … COMMIT` are published by one
   `commit_transaction`, which reduces metadata round trips.

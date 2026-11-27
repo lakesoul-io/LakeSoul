@@ -237,6 +237,7 @@ async fn insert_scenarios(h: &Harness) -> Result<()> {
     returning_returns_inserted_rows(h).await?;
     returning_from_select(h).await?;
     json_batch_returning(h).await?;
+    json_parameter_description(h).await?;
     cdc_delete_marker_hides_the_key(h).await?;
     duplicate_key_leaves_no_state(h).await?;
     not_null_violation_is_23502(h).await?;
@@ -825,6 +826,60 @@ async fn json_batch_returning(h: &Harness) -> Result<()> {
     )?;
     ensure_eq("JSON upsert RETURNING new id", rows[1].get::<_, i64>(0), 2)?;
     eprintln!("PASS case=insert-json-returning simple=row upsert=rows");
+    Ok(())
+}
+
+/// The JSON fast path publishes `jsonb` in ParameterDescription even though
+/// Parse replaces the parameter with a stub VALUES row, so a client that sends
+/// no type hint can bind the batch with the server-decided type.
+async fn json_parameter_description(h: &Harness) -> Result<()> {
+    h.lake
+        .batch_execute("CREATE TABLE json_param_types (id BIGINT PRIMARY KEY, val TEXT)")
+        .await
+        .context("CREATE TABLE json_param_types")?;
+
+    let statement = h
+        .lake
+        .prepare(
+            "INSERT INTO json_param_types \
+             SELECT * FROM jsonb_populate_recordset(NULL::json_param_types, $1) \
+             RETURNING id, val",
+        )
+        .await
+        .context("prepare JSON batch without a type hint")?;
+    ensure_eq(
+        "JSON batch parameter type",
+        statement.params().to_vec(),
+        vec![Type::JSONB],
+    )?;
+    let rows = h
+        .lake
+        .query(
+            &statement,
+            &[&serde_json::json!([
+                {"id": 1, "val": "a"},
+                {"id": 2, "val": "b"}
+            ])],
+        )
+        .await
+        .context("bind the JSON batch with the server-decided type")?;
+    ensure_eq("JSON batch with server-decided type rows", rows.len(), 2)?;
+    ensure_eq(
+        "JSON batch with server-decided type first row",
+        rows[0].get::<_, i64>(0),
+        1,
+    )?;
+    ensure_eq(
+        "JSON batch with server-decided type value",
+        rows[0].get::<_, String>(1),
+        "a".to_string(),
+    )?;
+    ensure_eq(
+        "committed JSON batch rows",
+        lake_i64(h, "SELECT count(*) FROM json_param_types").await?,
+        2,
+    )?;
+    eprintln!("PASS case=json-parameter-description type=jsonb bound=ok");
     Ok(())
 }
 
