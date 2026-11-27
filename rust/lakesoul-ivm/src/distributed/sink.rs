@@ -130,6 +130,15 @@ fn sink_key_columns(table: &IvmTable, mv: Option<&IvmTable>) -> Vec<String> {
 /// head stage; partitioning by the business key alone still makes every sink
 /// partition open one writer per bucket, which leaves many tiny files.  The
 /// bucket id gives each writer a disjoint bucket set.
+///
+/// Ordering invariant: a refresh frame may carry both the delete and the
+/// insert of one key in the same epoch. They hash to the same bucket and thus
+/// the same sink writer, whose key-stable sort keeps their arrival order. The
+/// frame must arrive delete-before-insert (the refresh SQL orders by keys and
+/// `rowKinds`, and callers that build the two sides sort them). Today the
+/// repartition input is a single partition, so its FIFO channel preserves that
+/// order; if a future plan makes it multi-partition, the shared channels can
+/// interleave the two branches and a tombstone could be committed last.
 fn partition_for_write(
     input: Arc<dyn ExecutionPlan>,
     table: &IvmTable,
