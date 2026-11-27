@@ -279,7 +279,12 @@ only. `shared-key` separates the streams that produce different artifacts:
   artifacts of several large crates
 - `gnu217-testfast`: `cargo zigbuild --profile test-fast --target
   x86_64-unknown-linux-gnu.2.17` builds (`maven-test`, `compatibility-ci`,
-  `consistency-ci`, `compaction-clean-e2e`, `python-ci`, CDC suites)
+  `consistency-ci`, `compaction-clean-e2e`, `python-ci` and the CDC suites).
+  All of them MUST call `.github/actions/build-zigbuild-superset`, which builds
+  one identical package/feature superset into `rust/target`. actions/cache
+  keeps only the first job that saves a key, so a single shared entry is only
+  complete when every producer compiles the same graph. Every workflow also
+  saves on `main` because their path filters fire independently.
 
 `native-build` and the release jobs keep the release profile and the
 `native-glibc217-v2` entry because they produce shipped artifacts. GitHub CI no

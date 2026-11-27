@@ -191,19 +191,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild@0.18.3
-      # Build the same zigbuild test-fast graph as the other CI jobs so they
-      # share one target cache.
-
-      - name: Build native libraries
-        env:
-          CARGO_PROFILE_RELEASE_STRIP: none
+      # All gnu217 jobs build the same superset via this action so the shared
+      # gnu217-testfast cache is complete no matter which job saves it first.
+      - uses: ./.github/actions/build-zigbuild-superset
+      - name: Install native libraries
         run: |
-          sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
-          export JAVA_HOME=/opt/lakesoul-jdk
-          cargo -q zigbuild --profile test-fast --target x86_64-unknown-linux-gnu.2.17 \
-            --package lakesoul-io-c --package lakesoul-metadata-c \
-            --package lakesoul-console --package lakesoul-python \
-            --features lakesoul-io-c/hdfs,lakesoul-python/ci-unify
           mkdir -p rust/target/release
           cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_io_c.so rust/target/release/
           cp rust/target/x86_64-unknown-linux-gnu/test-fast/liblakesoul_metadata_c.so rust/target/release/
