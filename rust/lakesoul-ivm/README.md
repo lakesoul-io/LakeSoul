@@ -214,9 +214,11 @@ Supported within the shapes above:
   primary key and stays while `rank <= count_r` (`INTERSECT ALL`) or
   `rank > count_r` (`EXCEPT ALL`), so a left insertion or deletion
   re-evaluates its whole tuple.  A NULL-capable join column makes the view
-  null-safe, so `NULL` matches `NULL` exactly as the set operations require
-  (DataFusion evaluates a raw `INTERSECT ALL`/`EXCEPT ALL` as a plain
-  membership join, without the counts);
+  null-safe, so `NULL` matches `NULL` exactly as the set operations require.
+  Plain (batch) `INTERSECT ALL`/`EXCEPT ALL` queries still use DataFusion's
+  plain membership join and do not honor the counts (LakeSoul issue #1320);
+  maintain the operation as an IVM view when exact multiset semantics are
+  required;
 * an **inner or outer join** may use null-safe keys (`a JOIN b ON a.v IS NOT
   DISTINCT FROM b.v`, plain columns only): NULL then matches NULL on both
   sides, and the join key columns of the output are nullable.  A `LEFT JOIN`

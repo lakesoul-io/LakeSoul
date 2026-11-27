@@ -62,6 +62,17 @@ These return SQLSTATE `0A000` rather than being silently ignored:
 - `STORED AS` / `LOCATION` in DDL (use `WITH (file_format = ...)`)
 - PostgreSQL extensions, PL/pgSQL and `LISTEN`/`NOTIFY`
 
+## Known limitations
+
+- `INTERSECT ALL` and `EXCEPT ALL` in plain queries currently use membership
+  semantics instead of SQL multiset counts: a row present on both sides keeps
+  all of its left duplicates for `INTERSECT ALL`, and `EXCEPT ALL` drops all of
+  them. PostgreSQL returns `min(m, n)` and `max(m - n, 0)` copies. The
+  `DISTINCT` variants are unaffected. Tracked in
+  [#1320](https://github.com/lakesoul-io/LakeSoul/issues/1320). IVM-maintained
+  views (`INSERT INTO ... SELECT ... INTERSECT ALL` / `EXCEPT ALL`) do keep the
+  correct per-tuple counts; use one when exact multiset semantics matter.
+
 ## SQLSTATE mapping
 
 | SQLSTATE | Meaning |
