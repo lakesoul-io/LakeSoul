@@ -280,7 +280,11 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
   维表更新（rebuild）7.3s → **3.3s**；增量 1% 仍 0.8–1.1s、5% 3.5s。
 - **交叉点变化**：5% 时全量（2.6s）已快于增量（3.5s）；代价回退应在约 3–5% 以上选择全量，
   1% 增量仍约 2–3×。这直接验证了「不是所有情况都追求增量」。
-- 剩余：聚合 rebuild 约 1.4s 未桶并行（可按 group 分区）；跨节点任务调度。
+- 剩余：跨节点任务调度。聚合 rebuild 的 scan 并行不需要算子特化：`IvmTableProvider::split_bucket_groups`
+  （#1219）对**所有** merge-on-read 读统一按 hash bucket 拆 `IvmStreamExec` 分区，因此聚合 rebuild 的
+  baseline scan 也天然按桶并行；本地由 DataFusion 并行执行，分布式由 planner 的 scan-split handler
+  把各桶分给 worker。写入走标准 LakeSoul partitioning writer，同样不是 IVM 专属路径。
+  `provider.rs::merge_on_read_scan_splits_files_by_hash_bucket` 回归测试锁定这一通用行为。
 
 #### P3b 结果：代价回退 + 快照识别（2026-10）
 

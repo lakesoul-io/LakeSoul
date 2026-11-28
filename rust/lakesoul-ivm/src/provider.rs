@@ -953,6 +953,9 @@ impl datafusion::physical_plan::RecordBatchStream for MetricStream {
 mod tests {
     use super::*;
     use arrow_schema::{DataType, Field, Schema};
+    use tempfile::tempdir;
+
+    use crate::{IvmRuntime, IvmTableOptions};
 
     fn table(schema: SchemaRef) -> IvmTable {
         IvmTable {
@@ -982,6 +985,64 @@ mod tests {
         assert_eq!(split.len(), 2);
         assert_eq!(split[0].files, vec!["a.parquet"]);
         assert_eq!(split[1].files, vec!["b.parquet"]);
+    }
+
+    /// A merge-on-read scan splits one metadata partition's files into one
+    /// group per hash bucket. This is the generic path every read uses,
+    /// including an aggregate rebuild's baseline scan, so the scan exposes one
+    /// DataFusion partition per bucket without any operator-specific code.
+    #[tokio::test]
+    async fn merge_on_read_scan_splits_files_by_hash_bucket() {
+        let runtime = IvmRuntime::from_env().await.unwrap();
+        runtime.init_schema().await.unwrap();
+        let dir = tempdir().unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let name = format!("ivm_bucket_split_{}", uuid::Uuid::new_v4().simple());
+        let table = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    name,
+                    format!("file://{}", dir.path().join("table").display()),
+                    schema,
+                )
+                .with_primary_keys(vec!["k".to_string()]),
+            )
+            .await
+            .unwrap();
+        // Four buckets, one file each, inside one metadata partition.
+        let files = vec![
+            "part-0_0.vortex".to_string(),
+            "part-0_1.vortex".to_string(),
+            "part-0_2.vortex".to_string(),
+            "part-0_3.vortex".to_string(),
+        ];
+        let groups = vec![PartitionFiles {
+            partition_desc: "-5".to_string(),
+            files: files.clone(),
+        }];
+        let provider = runtime.table_provider_groups(&table, groups.clone());
+
+        let split = provider.split_bucket_groups(groups.clone());
+        assert_eq!(split.len(), 4, "one group per hash bucket");
+        assert!(
+            split.iter().all(|group| group.files.len() == 1),
+            "each bucket keeps its own files: {split:?}"
+        );
+        let mut seen = split
+            .iter()
+            .flat_map(|group| group.files.iter().cloned())
+            .collect::<Vec<_>>();
+        seen.sort();
+        assert_eq!(seen, files, "splitting is exhaustive and disjoint");
+
+        // The resulting plan exposes one DataFusion partition per bucket, so
+        // both local parallel execution and the distributed planner's scan
+        // splitting can spread the work across buckets.
+        let plan = provider.stream_plan_groups(groups, None, &[]).unwrap();
+        assert!(
+            plan.output_partitioning().partition_count() > 1,
+            "the merge-on-read scan must expose parallel bucket partitions"
+        );
     }
 
     #[test]
