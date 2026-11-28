@@ -189,7 +189,8 @@ fn column_type(ty: &Type) -> Result<Column> {
         | Type::DATE
         | Type::TIMESTAMP
         | Type::TIMESTAMPTZ
-        | Type::INT4_ARRAY => Column::Text,
+        | Type::INT4_ARRAY
+        | Type::INT8_ARRAY => Column::Text,
         _ => bail!("SLT has no result decoder/category for {ty:?}"),
     })
 }
@@ -449,19 +450,34 @@ async fn simple_literal_null_reports_not_null_sqlstate() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "known upstream PostgreSQL differences: USING/FULL JOIN, scalar UNION syntax, float text"]
+#[ignore = "known PostgreSQL differences; see tests/upstream/postgresql/README.md"]
 async fn upstream_postgresql_known_defects() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/known_defects/upstream");
-    let scripts = files_in(&root)?
+    run_known_defects(&root, files_in(&root)?, "UPSTREAM").await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "known defect: INTERSECT ALL and EXCEPT ALL mishandle multiplicities"]
+async fn set_all_multiplicity_matches_postgres() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/known_defects");
+    run_known_defects(&root, vec![root.join("set_all.slt")], "SET ALL").await
+}
+
+async fn run_known_defects(
+    root: &Path,
+    paths: Vec<PathBuf>,
+    suite: &'static str,
+) -> Result<()> {
+    let scripts = paths
         .into_iter()
         .map(|path| {
-            let name = path.strip_prefix(&root)?.to_string_lossy().into_owned();
+            let name = path.strip_prefix(root)?.to_string_lossy().into_owned();
             let records = sqllogictest::parse_file::<Column>(path)?;
             validate(&records)?;
             Ok((name, records))
         })
         .collect::<Result<Vec<_>>>()?;
-    ensure!(!scripts.is_empty(), "no upstream defect reproductions");
+    ensure!(!scripts.is_empty(), "no {suite} defect reproductions");
 
     let mut failures = Vec::new();
     for execution in [Execution::Local, Execution::Distributed] {
@@ -470,13 +486,17 @@ async fn upstream_postgresql_known_defects() -> Result<()> {
             let result = match execution {
                 Execution::Local => {
                     support::run_suite(|h| {
-                        Box::pin(check_upstream_defects(h, protocol, execution, scripts))
+                        Box::pin(check_known_defects(
+                            h, protocol, execution, scripts, suite,
+                        ))
                     })
                     .await
                 }
                 Execution::Distributed => {
                     support::run_distributed_insert_suite(|h| {
-                        Box::pin(check_upstream_defects(h, protocol, execution, scripts))
+                        Box::pin(check_known_defects(
+                            h, protocol, execution, scripts, suite,
+                        ))
                     })
                     .await
                 }
@@ -490,11 +510,12 @@ async fn upstream_postgresql_known_defects() -> Result<()> {
     Ok(())
 }
 
-async fn check_upstream_defects(
+async fn check_known_defects(
     h: &support::Harness,
     protocol: Protocol,
     execution: Execution,
     scripts: Vec<(String, Vec<Record<Column>>)>,
+    suite: &str,
 ) -> Result<()> {
     if execution == Execution::Distributed {
         // Retain the ordinary runner's proof of actual worker use.
@@ -521,7 +542,7 @@ async fn check_upstream_defects(
         // PostgreSQL must accept every original SQL/answer first.
         check_records(&h.reference, protocol, &name, "postgres", &records).await?;
         eprintln!(
-            "PASS SLT upstream-reference file={name} protocol={protocol:?} execution={execution:?}"
+            "PASS SLT reference suite={suite} file={name} protocol={protocol:?} execution={execution:?}"
         );
         for record in &records {
             queries += usize::from(matches!(record, Record::Query { .. }));
@@ -543,13 +564,13 @@ async fn check_upstream_defects(
         }
     }
     eprintln!(
-        "UPSTREAM REPRO execution={execution:?} protocol={protocol:?} queries={queries} failures={}",
+        "{suite} REPRO execution={execution:?} protocol={protocol:?} queries={queries} failures={}",
         differences.len()
     );
     // Report all strict query failures, without accepting current wrong answers.
     ensure!(
         differences.is_empty(),
-        "upstream execution={execution:?} protocol={protocol:?}: {} differences:\n{}",
+        "{suite} execution={execution:?} protocol={protocol:?}: {} differences:\n{}",
         differences.len(),
         differences.join("\n")
     );

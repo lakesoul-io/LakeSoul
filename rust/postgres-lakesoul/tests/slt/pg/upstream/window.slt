@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: PostgreSQL
+# Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+# Portions Copyright (c) 1994, The Regents of the University of California
+# License: tests/upstream/postgresql/COPYRIGHT (the full upstream notice).
+# PostgreSQL REL_18_6 @ 724edf9bde9d356724ad384a2e196edc3c9f80f7
+# Original SQL and upstream answers; rowsort compares whole rows as a multiset.
+
+# upstream-sql: sql/window.sql:2020-2021
+# upstream-expected: expected/window.out:5568-5576
+query II rowsort
+SELECT i,SUM(v::int) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+  FROM (VALUES(1,1),(2,2),(3,NULL),(4,NULL)) t(i,v);
+----
+1 1
+2 2
+3 NULL
+4 NULL
+
+# upstream-sql: sql/window.sql:2023-2024
+# upstream-expected: expected/window.out:5578-5586
+query II rowsort
+SELECT i,SUM(v::int) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING)
+  FROM (VALUES(1,1),(2,2),(3,NULL),(4,NULL)) t(i,v);
+----
+1 3
+2 2
+3 NULL
+4 NULL
+
+# upstream-sql: sql/window.sql:2026-2027
+# upstream-expected: expected/window.out:5588-5596
+query II rowsort
+SELECT i,SUM(v::int) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+  FROM (VALUES(1,1),(2,2),(3,3),(4,4)) t(i,v);
+----
+1 3
+2 6
+3 9
+4 7
